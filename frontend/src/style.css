@@ -1,0 +1,69 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: Aptos, "Segoe UI", sans-serif;
+  color: #11212d;
+  background: #f8f4ec;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+}
+
+#app {
+  min-height: 100vh;
+}
+
+.calendar-shell .fc {
+  --fc-border-color: rgba(17, 33, 45, 0.08);
+  --fc-button-bg-color: #11212d;
+  --fc-button-border-color: #11212d;
+  --fc-button-hover-bg-color: #1a3546;
+  --fc-button-hover-border-color: #1a3546;
+  --fc-button-active-bg-color: #d97706;
+  --fc-button-active-border-color: #d97706;
+  --fc-page-bg-color: transparent;
+  --fc-neutral-bg-color: rgba(255, 255, 255, 0.8);
+  --fc-list-event-hover-bg-color: rgba(15, 118, 110, 0.08);
+}
+
+.calendar-shell .fc-toolbar-title {
+  font-family: "Palatino Linotype", "Book Antiqua", serif;
+  font-size: 1.45rem;
+}
+
+.calendar-shell .fc-theme-standard td,
+.calendar-shell .fc-theme-standard th {
+  border-color: rgba(17, 33, 45, 0.08);
+}
+
+.calendar-shell .fc-event {
+  border: 0;
+  border-radius: 0.85rem;
+  background: linear-gradient(135deg, #355c7d, #0f766e);
+  box-shadow: 0 12px 24px rgba(53, 92, 125, 0.18);
+  padding: 0.15rem 0.2rem;
+}
+
+.calendar-shell .fc-event.event-google-imported {
+  background: linear-gradient(135deg, #2563eb, #0ea5e9);
+  box-shadow: 0 12px 24px rgba(37, 99, 235, 0.18);
+}
+
+.calendar-shell .fc-event.event-sync-error {
+  background: linear-gradient(135deg, #be123c, #fb7185);
+  box-shadow: 0 12px 24px rgba(190, 24, 93, 0.18);
+}
+
+.calendar-shell .fc-event.event-sync-pending {
+  background: linear-gradient(135deg, #64748b, #334155);
+  box-shadow: 0 12px 24px rgba(71, 85, 105, 0.2);
+}
+
+.calendar-shell .fc-daygrid-day.fc-day-today,
+.calendar-shell .fc-timegrid-col.fc-day-today {
+  background: rgba(217, 119, 6, 0.08);
+}

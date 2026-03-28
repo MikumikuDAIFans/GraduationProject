@@ -1,0 +1,65 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+plan_doc/APIkey和对应文档链接.txt
+plan_doc/client_secret_*.json
+*.pem
+*.key
+*.p12
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.python-version
+.venv/
+venv/
+env/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# SQLite / local data
+*.db
+*.db-shm
+*.db-wal
+data/
+
+# Node / frontend
+node_modules/
+.pnpm-store/
+.npm/
+coverage/
+.vite/
+
+# Tauri / desktop
+src-tauri/target/
+
+# Capacitor / Android build outputs
+android/.gradle/
+android/app/build/
+android/build/
+
+# Logs
+*.log
+logs/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Claude Code session files
+.claude/
+backend/celerybeat-schedule.*
+
+# Frontend build output
+frontend/dist/

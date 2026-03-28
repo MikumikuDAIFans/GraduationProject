@@ -1,0 +1,79 @@
+services:
+  redis:
+    image: redis:7.4-alpine
+    container_name: graduation-project-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ./backend
+      args:
+        BASE_IMAGE: vcptoolbox-app
+    container_name: graduation-project-api
+    working_dir: /app
+    env_file:
+      - ./.env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./backend:/app
+      - ./backend/data:/app/data
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -lc
+      - /opt/venv/bin/python scripts/wait_for_redis.py && /opt/venv/bin/alembic upgrade head && /opt/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+  celery_worker:
+    build:
+      context: ./backend
+      args:
+        BASE_IMAGE: vcptoolbox-app
+    container_name: graduation-project-celery-worker
+    working_dir: /app
+    env_file:
+      - ./.env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./backend:/app
+      - ./backend/data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -lc
+      - /opt/venv/bin/python scripts/wait_for_redis.py && /opt/venv/bin/celery -A app.core.celery_app.celery_app worker -l info
+
+  celery_beat:
+    build:
+      context: ./backend
+      args:
+        BASE_IMAGE: vcptoolbox-app
+    container_name: graduation-project-celery-beat
+    working_dir: /app
+    env_file:
+      - ./.env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./backend:/app
+      - ./backend/data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -lc
+      - /opt/venv/bin/python scripts/wait_for_redis.py && /opt/venv/bin/celery -A app.core.celery_app.celery_app beat -l info
