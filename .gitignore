@@ -15,6 +15,7 @@ __pycache__/
 *.pyd
 .python-version
 .venv/
+.venv312/
 venv/
 env/
 build/

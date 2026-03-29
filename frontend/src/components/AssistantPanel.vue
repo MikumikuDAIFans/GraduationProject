@@ -19,10 +19,17 @@ const emit = defineEmits<{
 
 const draft = ref("");
 const messageContainer = ref<HTMLElement | null>(null);
-
+const inboxOpen = ref(false);
+const archivedIds = ref<Set<string>>(new Set());
 const canSend = computed(() => draft.value.trim().length > 0 && !props.sending);
 
+// Inbox items filtered to hide locally-archived ones
+const visibleInboxItems = computed(() =>
+  props.inboxItems.filter((i) => !archivedIds.value.has(i.id) && !i.archived),
+);
+
 function renderMarkdown(text: string): string {
+  // Strip raw markdown if it looks like unparsed output (safety net)
   return marked.parse(text, { async: false }) as string;
 }
 
@@ -34,360 +41,279 @@ function send() {
 }
 
 function handleKeydown(e: KeyboardEvent) {
-  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-    send();
-  }
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) send();
+}
+
+function archiveItem(id: string) {
+  archivedIds.value.add(id);
+  emit("updateInbox", id, "archive");
+}
+
+function markRead(id: string) {
+  emit("updateInbox", id, "read");
 }
 
 function actionLabel(type: string) {
-  if (type === "create_event") return "Created Event";
-  if (type === "create_task") return "Created Task";
-  if (type === "conflict_warning") return "Conflict Warning";
-  if (type === "suggest_schedule") return "Schedule Proposal";
-  if (type === "apply_schedule") return "Schedule Applied";
-  if (type === "propose_event") return "Event Proposal";
-  if (type === "apply_event_proposal") return "Event Applied";
-  return type;
+  const map: Record<string, string> = {
+    create_event: "Created Event",
+    create_task: "Created Task",
+    conflict_warning: "Conflict Warning",
+    suggest_schedule: "Schedule Proposal",
+    apply_schedule: "Schedule Applied",
+    propose_event: "Event Proposal",
+    apply_event_proposal: "Event Applied",
+  };
+  return map[type] ?? type;
 }
 
 function scheduleItems(action: AssistantAction) {
-  const payload = action.payload as { items?: Array<Record<string, unknown>> };
-  return payload.items ?? [];
+  return (action.payload as { items?: Array<Record<string, unknown>> }).items ?? [];
 }
-
 function appliedItems(action: AssistantAction) {
-  const payload = action.payload as { created_events?: Array<Record<string, unknown>> };
-  return payload.created_events ?? [];
+  return (action.payload as { created_events?: Array<Record<string, unknown>> }).created_events ?? [];
 }
-
 function appliedEvent(action: AssistantAction) {
-  const payload = action.payload as { created_event?: Record<string, unknown> };
-  return payload.created_event ?? null;
+  return (action.payload as { created_event?: Record<string, unknown> }).created_event ?? null;
 }
-
 function linkedTasks(action: AssistantAction) {
-  const payload = action.payload as { linked_tasks?: Array<Record<string, unknown>> };
-  return payload.linked_tasks ?? [];
-}
-
-function sendInboxAction(message: string | null | undefined) {
-  if (!message) return;
-  emit("send", message);
-}
-
-function markInbox(itemId: string, action: "read" | "archive") {
-  emit("updateInbox", itemId, action);
-}
-
-function inboxEntries(item: AssistantInboxItem) {
-  const meta = item.meta as { entries?: Array<Record<string, unknown>> } | undefined;
-  return meta?.entries ?? [];
+  return (action.payload as { linked_tasks?: Array<Record<string, unknown>> }).linked_tasks ?? [];
 }
 
 watch(
   () => props.messages.length,
   () => {
     requestAnimationFrame(() => {
-      messageContainer.value?.scrollTo({
-        top: messageContainer.value.scrollHeight,
-        behavior: "smooth",
-      });
+      messageContainer.value?.scrollTo({ top: messageContainer.value.scrollHeight, behavior: "smooth" });
     });
   },
 );
 </script>
 
 <template>
-  <section class="flex flex-col rounded-2xl border border-slate-700/60 bg-[#13181f] text-white shadow-panel" style="min-height: min(36rem, calc(100svh - 10rem)); max-height: calc(100svh - 8rem);">
+  <!-- Full-height flex column — parent must define height -->
+  <div class="flex h-full flex-col bg-white">
 
-    <!-- Panel header -->
-    <div class="shrink-0 border-b border-white/8 px-5 py-4">
-      <div class="flex items-center justify-between gap-3">
-        <div>
-          <p class="text-[10px] font-bold uppercase tracking-[0.28em] text-slate-500">Assistant</p>
-          <h2 class="mt-0.5 text-base font-bold text-white">Daily Copilot</h2>
+    <!-- Header -->
+    <div class="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
+      <div class="flex items-center gap-2">
+        <div class="flex h-7 w-7 items-center justify-center rounded-lg bg-accent-light">
+          <svg class="h-4 w-4 text-accent" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 0 1 .865-.501 48.172 48.172 0 0 0 3.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0 0 12 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018Z"/>
+          </svg>
         </div>
-        <div class="flex items-center gap-2">
-          <span
-            v-if="inboxUnreadTotal > 0"
-            class="rounded-full bg-warn px-2.5 py-0.5 text-[11px] font-bold text-white"
-          >
-            {{ inboxUnreadTotal }} new
-          </span>
-          <span
-            class="rounded-lg border px-2.5 py-1 text-[11px] font-semibold"
-            :class="sending
-              ? 'border-accent/30 bg-accent/10 text-accent-muted'
-              : 'border-white/10 bg-white/5 text-slate-400'"
-          >
-            {{ sending ? "Thinking…" : "Gemini" }}
-          </span>
-        </div>
+        <span class="text-sm font-semibold text-ink">Daily Copilot</span>
+        <span v-if="sending" class="rounded-full bg-accent-light px-2 py-0.5 text-[10px] font-semibold text-accent">Thinking…</span>
       </div>
+      <!-- Inbox toggle -->
+      <button
+        v-if="visibleInboxItems.length"
+        type="button"
+        class="flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 text-xs font-medium text-ink-3 transition hover:border-border-2 hover:text-ink-2"
+        @click="inboxOpen = !inboxOpen"
+      >
+        <span>Inbox</span>
+        <span class="rounded-full bg-warn px-1.5 py-0.5 text-[10px] font-bold text-white leading-none">{{ visibleInboxItems.length }}</span>
+        <svg class="h-3 w-3 transition-transform" :class="inboxOpen ? 'rotate-180' : ''" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5"/>
+        </svg>
+      </button>
     </div>
 
-    <!-- Inbox items -->
-    <div v-if="inboxItems.length" class="shrink-0 space-y-2 border-b border-white/8 px-4 py-3">
+    <!-- Inbox drawer (collapsible) -->
+    <div v-if="inboxOpen && visibleInboxItems.length" class="shrink-0 space-y-2 border-b border-border bg-surface-2 px-3 py-3">
       <div
-        v-for="item in inboxItems"
+        v-for="item in visibleInboxItems"
         :key="item.id"
-        class="rounded-xl border px-3 py-2.5"
-        :class="item.read ? 'border-white/8 bg-white/5' : 'border-warn/20 bg-warn/8'"
+        class="rounded-xl border bg-white px-3 py-2.5 shadow-card"
+        :class="item.read ? 'border-border' : 'border-warn/40'"
       >
-        <p class="text-[10px] font-bold uppercase tracking-[0.2em]" :class="item.read ? 'text-slate-500' : 'text-warn'">
-          {{ item.kind }}
-        </p>
-        <p class="mt-1 text-xs font-semibold text-white/90">{{ item.title }}</p>
-        <p class="mt-0.5 text-xs leading-5 text-white/60">{{ item.description }}</p>
-        <div v-if="item.kind === 'task_followup_group'" class="mt-2 space-y-1.5">
-          <div
-            v-for="(entry, i) in inboxEntries(item)"
-            :key="`${item.id}-${i}`"
-            class="rounded-lg border border-white/8 bg-white/5 px-2.5 py-1.5"
-          >
-            <p class="text-[10px] font-bold uppercase tracking-[0.15em] text-slate-400">{{ entry.kind || entry.title }}</p>
-            <p class="mt-0.5 text-xs text-white/75">{{ entry.description }}</p>
+        <div class="flex items-start justify-between gap-2">
+          <div class="min-w-0 flex-1">
+            <p class="text-[10px] font-bold uppercase tracking-widest" :class="item.read ? 'text-ink-3' : 'text-warn'">
+              {{ item.kind.replace(/_/g, ' ') }}
+            </p>
+            <p class="mt-0.5 text-xs font-semibold text-ink">{{ item.title }}</p>
+            <p v-if="item.description" class="mt-0.5 text-[11px] leading-5 text-ink-3">{{ item.description }}</p>
           </div>
+          <!-- Archive X button -->
+          <button
+            type="button"
+            class="shrink-0 rounded-md p-1 text-ink-3 transition hover:bg-surface-3 hover:text-danger"
+            title="Archive"
+            @click="archiveItem(item.id)"
+          >
+            <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/>
+            </svg>
+          </button>
         </div>
+
         <div class="mt-2 flex flex-wrap gap-1.5">
           <button
             v-if="item.action_label && item.action_message"
             type="button"
-            class="rounded-lg bg-white/10 px-2.5 py-1 text-[11px] font-semibold text-white transition hover:bg-white/20"
-            @click="sendInboxAction(item.action_message)"
-          >
-            {{ item.action_label }}
-          </button>
+            class="rounded-md bg-accent px-2.5 py-1 text-[11px] font-semibold text-white transition hover:bg-accent-hover"
+            @click="emit('send', item.action_message!)"
+          >{{ item.action_label }}</button>
           <button
+            v-if="!item.read"
             type="button"
-            class="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-[10px] font-semibold text-slate-400 transition hover:bg-white/10"
-            @click="markInbox(item.id, 'read')"
-          >
-            {{ item.read ? "Read" : "Mark read" }}
-          </button>
-          <button
-            type="button"
-            class="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-[10px] font-semibold text-slate-400 transition hover:bg-white/10"
-            @click="markInbox(item.id, 'archive')"
-          >
-            Archive
-          </button>
+            class="rounded-md border border-border px-2.5 py-1 text-[11px] text-ink-3 transition hover:text-ink"
+            @click="markRead(item.id)"
+          >Mark read</button>
           <button
             v-if="item.related_task_id != null"
             type="button"
-            class="rounded-lg border border-accent/30 bg-accent/10 px-2 py-1 text-[10px] font-semibold text-accent-muted transition hover:bg-accent/20"
+            class="rounded-md border border-accent/30 bg-accent-light px-2.5 py-1 text-[11px] font-semibold text-accent transition hover:bg-accent/20"
             @click="emit('focusTask', item.related_task_id!)"
-          >
-            View task →
-          </button>
+          >View task →</button>
         </div>
       </div>
     </div>
 
-    <!-- Messages -->
-    <div ref="messageContainer" class="flex-1 space-y-3 overflow-y-auto px-4 py-3">
+    <!-- Messages — fills remaining height and scrolls -->
+    <div ref="messageContainer" class="flex-1 space-y-3 overflow-y-auto px-3 py-4">
+
+      <!-- Empty state -->
+      <div
+        v-if="!messages.length && !sending"
+        class="flex flex-col items-center justify-center py-16 text-center"
+      >
+        <div class="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-accent-light">
+          <svg class="h-6 w-6 text-accent" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 0 1 .865-.501 48.172 48.172 0 0 0 3.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0 0 12 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018Z"/>
+          </svg>
+        </div>
+        <p class="text-sm font-medium text-ink-2">Ask Daily Copilot</p>
+        <p class="mt-1 text-xs text-ink-3">Scheduling, tasks, and weather-aware planning.</p>
+      </div>
+
+      <!-- Message bubbles -->
       <div
         v-for="message in messages"
         :key="message.id"
         class="flex"
         :class="message.role === 'user' ? 'justify-end' : 'justify-start'"
       >
+        <!-- AI avatar dot -->
+        <div v-if="message.role === 'assistant'" class="mr-2 mt-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent-light">
+          <svg class="h-3.5 w-3.5 text-accent" fill="currentColor" viewBox="0 0 20 20">
+            <path d="M10 2a8 8 0 1 0 0 16A8 8 0 0 0 10 2Zm0 14a6 6 0 1 1 0-12 6 6 0 0 1 0 12Z" opacity=".3"/>
+            <circle cx="10" cy="10" r="3"/>
+          </svg>
+        </div>
+
         <div
-          class="max-w-[85%] rounded-2xl px-3.5 py-2.5"
+          class="max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed"
           :class="message.role === 'user'
-            ? 'rounded-br-sm bg-accent/80 text-white'
-            : 'rounded-bl-sm bg-white/10 text-white/90'"
+            ? 'rounded-br-sm bg-accent text-white'
+            : 'rounded-bl-sm border border-border bg-surface-2 text-ink'"
         >
-          <p v-if="message.role === 'user'" class="whitespace-pre-wrap text-sm leading-6">{{ message.content }}</p>
-          <div v-else class="assistant-md text-sm leading-6" v-html="renderMarkdown(message.content)" />
+          <p v-if="message.role === 'user'" class="whitespace-pre-wrap">{{ message.content }}</p>
+          <!-- AI: render markdown with light-mode prose styles -->
+          <div v-else class="assistant-md-light" v-html="renderMarkdown(message.content)" />
         </div>
       </div>
 
-      <!-- Thinking indicator -->
-      <div v-if="sending" class="flex justify-start">
-        <div class="rounded-2xl rounded-bl-sm bg-white/10 px-4 py-3">
-          <div class="flex gap-1">
-            <span class="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.3s]" />
-            <span class="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.15s]" />
-            <span class="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400" />
-          </div>
-        </div>
-      </div>
-
-      <div
-        v-if="!messages.length && !inboxItems.length"
-        class="rounded-xl border border-white/8 bg-white/5 px-4 py-5 text-center text-xs leading-6 text-slate-400"
-      >
-        Ask for scheduling, task planning,<br />commute timing, or weather-aware advice.
-      </div>
-    </div>
-
-    <!-- Last actions -->
-    <div v-if="lastAssistantActions.length" class="shrink-0 border-t border-white/8 px-4 py-3">
-      <p class="mb-2 text-[10px] font-bold uppercase tracking-[0.22em] text-slate-500">Latest Actions</p>
-      <div class="space-y-2">
+      <!-- Inline action cards (after last AI message) -->
+      <template v-if="lastAssistantActions.length">
         <div
           v-for="(action, index) in lastAssistantActions"
           :key="`${action.type}-${index}`"
-          class="rounded-xl border border-white/8 bg-white/5 px-3 py-2.5"
+          class="ml-8 rounded-xl border border-border bg-white px-3 py-2.5 shadow-card"
         >
-          <p class="text-[10px] font-bold uppercase tracking-[0.2em] text-accent-muted">{{ actionLabel(action.type) }}</p>
+          <p class="text-[10px] font-bold uppercase tracking-widest text-accent">{{ actionLabel(action.type) }}</p>
 
-          <div v-if="action.type === 'create_event'" class="mt-1.5 text-xs text-white/80">
-            <p class="font-semibold">{{ action.payload.title }}</p>
-            <p class="text-white/50">{{ action.payload.start_time }} → {{ action.payload.end_time }}</p>
-            <p v-if="action.payload.advice_summary" class="mt-1 text-warn/80">{{ action.payload.advice_summary }}</p>
+          <div v-if="action.type === 'create_event' || action.type === 'conflict_warning'" class="mt-1.5">
+            <p class="text-xs font-semibold text-ink">{{ action.payload.title }}</p>
+            <p class="text-[11px] text-ink-3">{{ action.payload.start_time }} → {{ action.payload.end_time }}</p>
           </div>
 
-          <div v-else-if="action.type === 'create_task'" class="mt-1.5 text-xs text-white/80">
-            <p class="font-semibold">{{ action.payload.content }}</p>
-            <p v-if="action.payload.deadline" class="text-white/50">Deadline: {{ action.payload.deadline }}</p>
+          <div v-else-if="action.type === 'create_task'" class="mt-1.5">
+            <p class="text-xs font-semibold text-ink">{{ action.payload.content }}</p>
+            <p v-if="action.payload.deadline" class="text-[11px] text-ink-3">Deadline: {{ action.payload.deadline }}</p>
           </div>
 
-          <div v-else-if="action.type === 'conflict_warning'" class="mt-1.5 text-xs text-warn/90">
-            <p class="font-semibold">{{ action.payload.title }}</p>
-            <p class="text-white/50">{{ action.payload.start_time }} → {{ action.payload.end_time }}</p>
-          </div>
-
-          <div v-else-if="action.type === 'suggest_schedule'" class="mt-1.5 space-y-1.5">
+          <div v-else-if="action.type === 'suggest_schedule' || action.type === 'propose_event'" class="mt-2 space-y-1.5">
             <div
-              v-for="(item, i) in scheduleItems(action)"
+              v-for="(item, i) in action.type === 'suggest_schedule'
+                ? scheduleItems(action)
+                : [{ title: action.payload.title, start_time: action.payload.start_time, end_time: action.payload.end_time }]"
               :key="`${index}-${i}`"
-              class="rounded-lg border border-white/8 bg-white/5 px-2.5 py-1.5 text-xs"
+              class="rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-xs"
             >
-              <p class="font-semibold text-white/90">{{ item.title || item.type }}</p>
-              <p class="text-white/50">{{ item.start_time }} → {{ item.end_time }}</p>
+              <p class="font-semibold text-ink">{{ item.title }}</p>
+              <p class="text-ink-3">{{ item.start_time }} → {{ item.end_time }}</p>
             </div>
             <div class="flex gap-2 pt-1">
               <button
                 type="button"
-                class="rounded-lg bg-positive px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-emerald-500"
-                @click="emit('send', '按这个安排执行')"
-              >
-                Confirm
-              </button>
+                class="rounded-lg bg-positive px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-positive-hover"
+                @click="emit('send', action.type === 'propose_event' ? '按这个建议创建' : '按这个安排执行')"
+              >Confirm</button>
               <button
                 type="button"
-                class="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-semibold text-white/70 transition hover:bg-white/10"
+                class="rounded-lg border border-border px-3 py-1.5 text-[11px] font-semibold text-ink-3 transition hover:text-ink"
                 @click="emit('send', '取消这个计划')"
-              >
-                Cancel
-              </button>
+              >Cancel</button>
             </div>
           </div>
 
-          <div v-else-if="action.type === 'propose_event'" class="mt-1.5 space-y-1.5">
-            <div class="rounded-lg border border-white/8 bg-white/5 px-2.5 py-1.5 text-xs">
-              <p class="font-semibold text-white/90">{{ action.payload.title }}</p>
-              <p class="text-white/50">{{ action.payload.start_time }} → {{ action.payload.end_time }}</p>
-              <p v-if="action.payload.advice_summary" class="mt-1 text-warn/80">{{ action.payload.advice_summary }}</p>
+          <div v-else-if="action.type === 'apply_schedule'" class="mt-1.5 space-y-1">
+            <p class="text-[11px] text-ink-3">Created {{ action.payload.count || 0 }} block(s)</p>
+            <div v-for="(item, i) in appliedItems(action)" :key="`${index}-ev-${i}`"
+              class="rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-xs">
+              <p class="font-semibold text-ink">{{ item.title }}</p>
+              <p class="text-ink-3">{{ item.start_time }} → {{ item.end_time }}</p>
             </div>
-            <div class="flex gap-2 pt-1">
-              <button
-                type="button"
-                class="rounded-lg bg-positive px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-emerald-500"
-                @click="emit('send', '按这个建议创建')"
-              >
-                Create Event
-              </button>
-              <button
-                type="button"
-                class="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-semibold text-white/70 transition hover:bg-white/10"
-                @click="emit('send', '取消这个计划')"
-              >
-                Cancel
-              </button>
+            <div v-for="(task, i) in linkedTasks(action)" :key="`${index}-t-${i}`"
+              class="rounded-lg border border-positive/30 bg-positive-light px-2.5 py-1.5 text-xs">
+              <p class="font-semibold text-positive">{{ task.content }}</p>
+              <p class="text-positive/60">{{ task.scheduled_minutes }} min · {{ task.scheduled_blocks_count }} blocks</p>
             </div>
           </div>
 
-          <div v-else-if="action.type === 'apply_schedule'" class="mt-1.5 space-y-1.5 text-xs">
-            <p class="text-white/70">Created {{ action.payload.count || 0 }} block(s)</p>
-            <div
-              v-for="(item, i) in appliedItems(action)"
-              :key="`${index}-ev-${i}`"
-              class="rounded-lg border border-white/8 bg-white/5 px-2.5 py-1.5"
-            >
-              <p class="font-semibold text-white/90">{{ item.title }}</p>
-              <p class="text-white/50">{{ item.start_time }} → {{ item.end_time }}</p>
-            </div>
-            <div
-              v-for="(task, i) in linkedTasks(action)"
-              :key="`${index}-t-${i}`"
-              class="rounded-lg border border-positive/20 bg-positive/10 px-2.5 py-1.5"
-            >
-              <p class="font-semibold text-positive/90">{{ task.content }}</p>
-              <p class="text-white/50">{{ task.scheduled_minutes }} min scheduled · {{ task.scheduled_blocks_count }} blocks</p>
+          <div v-else-if="action.type === 'apply_event_proposal' && appliedEvent(action)" class="mt-1.5">
+            <div class="rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-xs">
+              <p class="font-semibold text-ink">{{ appliedEvent(action)?.title }}</p>
+              <p class="text-ink-3">{{ appliedEvent(action)?.start_time }} → {{ appliedEvent(action)?.end_time }}</p>
             </div>
           </div>
+        </div>
+      </template>
 
-          <div v-else-if="action.type === 'apply_event_proposal'" class="mt-1.5 text-xs">
-            <div v-if="appliedEvent(action)" class="rounded-lg border border-white/8 bg-white/5 px-2.5 py-1.5">
-              <p class="font-semibold text-white/90">{{ appliedEvent(action)?.title }}</p>
-              <p class="text-white/50">{{ appliedEvent(action)?.start_time }} → {{ appliedEvent(action)?.end_time }}</p>
-            </div>
+      <!-- Thinking dots -->
+      <div v-if="sending" class="flex justify-start">
+        <div class="ml-8 rounded-2xl rounded-bl-sm border border-border bg-surface-2 px-4 py-3">
+          <div class="flex gap-1">
+            <span class="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-3 [animation-delay:-0.3s]" />
+            <span class="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-3 [animation-delay:-0.15s]" />
+            <span class="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-3" />
           </div>
-
-          <div v-else class="mt-1 text-[11px] text-white/40">{{ JSON.stringify(action.payload) }}</div>
         </div>
       </div>
+
     </div>
 
     <!-- Input area -->
-    <div class="shrink-0 border-t border-white/8 px-4 py-3">
+    <div class="shrink-0 border-t border-border bg-white px-3 py-3">
       <div class="flex gap-2">
         <textarea
           v-model="draft"
           rows="2"
-          class="min-h-[4rem] flex-1 resize-none rounded-xl border border-white/10 bg-white/8 px-3.5 py-2.5 text-sm text-white placeholder:text-slate-500 focus:border-accent/50 focus:outline-none focus:ring-2 focus:ring-accent/10"
+          class="flex-1 resize-none rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm text-ink placeholder:text-ink-3 focus:border-accent/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-accent/20"
           placeholder="Ask about scheduling, tasks, or planning…"
           @keydown="handleKeydown"
         />
         <button
           type="button"
-          class="shrink-0 self-end rounded-xl bg-accent px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-40"
+          class="shrink-0 self-end rounded-xl bg-accent px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
           :disabled="!canSend"
           @click="send"
-        >
-          Send
-        </button>
+        >Send</button>
       </div>
-      <p class="mt-1.5 text-[10px] text-slate-600">Ctrl+Enter to send</p>
+      <p class="mt-1.5 text-[10px] text-ink-3">Ctrl+Enter to send</p>
     </div>
-  </section>
-</template>
 
-<style scoped>
-.assistant-md :deep(p) {
-  margin-top: 0.4rem;
-  margin-bottom: 0;
-}
-.assistant-md :deep(p:first-child) {
-  margin-top: 0;
-}
-.assistant-md :deep(ul),
-.assistant-md :deep(ol) {
-  margin-top: 0.4rem;
-  padding-left: 1.1rem;
-}
-.assistant-md :deep(li) {
-  margin-top: 0.2rem;
-}
-.assistant-md :deep(strong) {
-  color: rgba(255, 255, 255, 0.95);
-  font-weight: 600;
-}
-.assistant-md :deep(h1),
-.assistant-md :deep(h2),
-.assistant-md :deep(h3) {
-  font-size: 0.8rem;
-  font-weight: 700;
-  margin-top: 0.6rem;
-  color: rgba(255, 255, 255, 0.95);
-}
-.assistant-md :deep(code) {
-  background: rgba(255, 255, 255, 0.12);
-  border-radius: 0.25rem;
-  padding: 0.1em 0.35em;
-  font-size: 0.78em;
-}
-</style>
+  </div>
+</template>
