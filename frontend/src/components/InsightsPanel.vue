@@ -43,6 +43,8 @@ function taskStatus(status?: string | null) {
 function suggestionStyle(type: string) {
   if (type === "departure_plan")  return { cls: "border-warn/20 bg-warn-light",      label: "Departure" };
   if (type === "weather_watch")   return { cls: "border-sky-200 bg-sky-50",          label: "Weather" };
+  if (type === "weather_alert")   return { cls: "border-danger/20 bg-danger-light",  label: "Weather alert" };
+  if (type === "location_based_break") return { cls: "border-emerald-200 bg-emerald-50", label: "Nearby break" };
   if (type === "task_split_slot") return { cls: "border-danger/20 bg-danger-light",  label: "Split slot" };
   if (type === "task_replan_slot")return { cls: "border-orange-200 bg-orange-50",    label: "Replan" };
   if (type === "task_resume_slot")return { cls: "border-accent/20 bg-accent-light",  label: "Resume" };

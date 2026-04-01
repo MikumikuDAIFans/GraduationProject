@@ -3,6 +3,7 @@ uvicorn==0.34.0
 sqlalchemy==2.0.40
 aiosqlite==0.21.0
 alembic==1.15.2
+python-multipart==0.0.20
 pydantic==2.11.3
 pydantic-settings==2.8.1
 celery==5.4.0
@@ -13,3 +14,9 @@ websockets==15.0.1
 google-api-python-client==2.169.0
 google-auth==2.40.1
 google-auth-oauthlib==1.2.2
+aiohttp==3.12.13
+requests>=2.31.0
+gTTS>=2.5.4
+openai-whisper>=20231117
+torch>=2.0.0
+torchaudio>=2.0.0

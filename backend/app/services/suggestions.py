@@ -10,6 +10,7 @@ from app.repositories.events import EventRepository
 from app.repositories.profiles import UserProfileRepository
 from app.repositories.tasks import TaskRepository
 from app.services.context import ContextService
+from app.tools.maps import MapsClient
 
 
 class SuggestionService:
@@ -21,6 +22,7 @@ class SuggestionService:
         self.profile_repository = UserProfileRepository(session_factory)
         self.task_repository = TaskRepository(session_factory)
         self.context_service = ContextService()
+        self.maps_client = MapsClient()
 
     async def get_today_suggestions(self, user_id: str) -> SuggestionList:
         target_date = datetime.now().date()
@@ -272,9 +274,13 @@ class SuggestionService:
         gaps: list[tuple[datetime, datetime]] = []
         cursor = working_start
         for event in day_events:
-            if event.start_time > cursor:
-                gaps.append((cursor, event.start_time))
-            cursor = max(cursor, event.end_time)
+            buffer_before = getattr(event, "buffer_before", None) or 0
+            buffer_after = getattr(event, "buffer_after", None) or 0
+            effective_start = event.start_time - timedelta(minutes=buffer_before)
+            effective_end = event.end_time + timedelta(minutes=buffer_after)
+            if effective_start > cursor:
+                gaps.append((cursor, effective_start))
+            cursor = max(cursor, effective_end)
 
         if cursor < working_end:
             gaps.append((cursor, working_end))
@@ -324,10 +330,114 @@ class SuggestionService:
                         estimated_minutes=30,
                     )
                 )
+                suggestions.extend(
+                    self._build_weather_risk_suggestions(
+                        events=events,
+                        dates=dates,
+                        weather=weather,
+                        now=today,
+                    )
+                )
             except Exception:
                 pass
 
+        suggestions.extend(
+            await self._build_location_break_suggestions(
+                events=events,
+                profile=profile,
+                dates=dates,
+            )
+        )
+
         return suggestions
+
+    async def _build_location_break_suggestions(self, *, events, profile, dates: list[date]) -> list[SuggestionRead]:
+        if not dates:
+            return []
+        location = self._parse_coords(getattr(profile, "home_location_coords", None))
+        if location is None:
+            return []
+        if not self.maps_client.enabled:
+            return []
+
+        target_date = dates[0]
+        gaps = self._compute_gaps_for_date(events=events, profile=profile, target_date=target_date)
+        long_gaps = [gap for gap in gaps if int((gap[1] - gap[0]).total_seconds() // 60) >= 45]
+        if not long_gaps:
+            return []
+
+        try:
+            pois = await self.maps_client.search_poi(keyword="咖啡厅", location=location, radius=2000)
+        except Exception:
+            return []
+        if not pois:
+            return []
+
+        gap_start, gap_end = long_gaps[0]
+        poi = pois[0]
+        return [
+            SuggestionRead(
+                type="location_based_break",
+                title=f"Nearby break option: {poi.get('name') or 'Recommended spot'}",
+                description=(
+                    f"Take a break during {gap_start.isoformat()} - {gap_end.isoformat()}. "
+                    f"Nearby option: {poi.get('address') or poi.get('name')}. Distance {poi.get('distance') or 'unknown'}."
+                ),
+                start_time=gap_start,
+                end_time=min(gap_start + timedelta(minutes=30), gap_end),
+                confidence=0.58,
+                estimated_minutes=30,
+            )
+        ]
+
+    def _build_weather_risk_suggestions(self, *, events, dates: list[date], weather, now: datetime) -> list[SuggestionRead]:
+        if not dates:
+            return []
+        weather_text = (getattr(weather, "text", "") or "").lower()
+        risk_terms = ("rain", "storm", "snow", "shower", "thunder", "暴雨", "雷", "雪", "雨")
+        if not any(term in weather_text for term in risk_terms):
+            return []
+
+        target_dates = set(dates)
+        suggestions: list[SuggestionRead] = []
+        for event in events:
+            if event.start_time is None or event.end_time is None:
+                continue
+            if event.start_time.date() not in target_dates:
+                continue
+            if not self._is_outdoor_event(event):
+                continue
+            suggestions.append(
+                SuggestionRead(
+                    type="weather_alert",
+                    title=f"Weather risk for {event.title}",
+                    description=(
+                        f"Current weather is {getattr(weather, 'text', 'changing')}. "
+                        "Consider bringing an umbrella or adjusting the time and location."
+                    ),
+                    start_time=max(now, event.start_time - timedelta(minutes=30)),
+                    end_time=event.start_time,
+                    related_event_id=event.id,
+                    confidence=0.68,
+                    estimated_minutes=30,
+                )
+            )
+        return suggestions[:2]
+
+    def _parse_coords(self, raw_value: str | None) -> tuple[float, float] | None:
+        if not raw_value or "," not in raw_value:
+            return None
+        try:
+            lng, lat = raw_value.split(",", 1)
+            return float(lat), float(lng)
+        except ValueError:
+            return None
+
+    def _is_outdoor_event(self, event) -> bool:
+        title = (getattr(event, "title", "") or "").lower()
+        location_name = (getattr(event, "location_name", "") or "").lower()
+        keywords = ("park", "outdoor", "run", "walk", "campus", "field", "公园", "操场", "户外", "球场", "广场")
+        return any(keyword in title or keyword in location_name for keyword in keywords)
 
     def _working_window_for_date(self, *, profile, target_date: date) -> tuple[datetime, datetime]:
         wake_time = self._parse_profile_time(getattr(profile, "wake_up_time", None), fallback=time(hour=8))

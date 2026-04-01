@@ -388,3 +388,13 @@ pnpm dev
 4. **P3 — 体验增强**
    - WebSocket 流式输出 AI 回复
    - 语音输入适配器接口
+---
+
+## 2026-04 V4 Update
+
+- Added Tauri desktop shell scaffolding in `frontend/src-tauri/`
+- Added Capacitor mobile configuration in `frontend/capacitor.config.ts`
+- Added PWA manifest and service worker for offline shell caching
+- Added map/weather-aware suggestion enhancements
+- Added voice input and speech synthesis endpoints
+- Added mobile and desktop notification integration layers

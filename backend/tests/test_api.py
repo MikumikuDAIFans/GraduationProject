@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api import deps
+from app.api.routes import assistant as assistant_routes
 from app.api.router import api_router
 
 
@@ -523,6 +524,32 @@ def test_assistant_message_and_session() -> None:
     assert read_response.json()["unread_total"] == 0
     assert archive_response.status_code == 200
     assert archive_response.json()["total"] == 0
+
+
+def test_assistant_voice_and_speak_endpoints(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _, _, _, _, _, _, _, _ = build_client()
+
+    async def fake_process_input(data: bytes) -> str:
+        assert data == b"audio-bytes"
+        return "voice transcript"
+
+    async def fake_synthesize(text: str) -> bytes:
+        assert text == "hello audio"
+        return b"fake-mp3"
+
+    monkeypatch.setattr(assistant_routes.whisper_adapter, "process_input", fake_process_input)
+    monkeypatch.setattr(assistant_routes.tts_adapter, "synthesize", fake_synthesize)
+
+    voice_response = client.post(
+        "/api/assistant/voice",
+        files={"audio": ("voice.wav", b"audio-bytes", "audio/wav")},
+    )
+    speak_response = client.post("/api/assistant/speak", json={"text": "hello audio"})
+
+    assert voice_response.status_code == 200
+    assert voice_response.json()["transcript"] == "voice transcript"
+    assert speak_response.status_code == 200
+    assert speak_response.content == b"fake-mp3"
 
 
 def test_suggestions_endpoints() -> None:

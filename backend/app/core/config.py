@@ -36,6 +36,7 @@ class Settings(BaseSettings):
 
     map_provider: str = Field(default="amap", alias="MAP_PROVIDER")
     map_api_key: str | None = Field(default=None, alias="MAP_API_KEY")
+    amap_secret: str | None = Field(default=None, alias="AMAP_SECRET")
 
     weather_provider: str = Field(default="qweather", alias="WEATHER_PROVIDER")
     qweather_api_key: str | None = Field(default=None, alias="QWEATHER_API_KEY")
@@ -56,6 +57,8 @@ class Settings(BaseSettings):
 
     voice_input_enabled: bool = Field(default=False, alias="VOICE_INPUT_ENABLED")
     voice_output_enabled: bool = Field(default=False, alias="VOICE_OUTPUT_ENABLED")
+    voice_input_model: str = Field(default="base", alias="VOICE_INPUT_MODEL")
+    voice_output_lang: str = Field(default="zh-CN", alias="VOICE_OUTPUT_LANG")
 
     @property
     def database_url(self) -> str:

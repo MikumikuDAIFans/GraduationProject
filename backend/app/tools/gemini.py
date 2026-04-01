@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any
+from typing import Any, AsyncIterator
 
 import httpx
 
@@ -66,6 +66,68 @@ class GeminiClient:
             external_context=external_context,
         )
         return await self._generate_text(prompt)
+
+    async def generate_plan_stream(
+        self,
+        *,
+        user_message: str,
+        history: list[dict[str, Any]],
+        events: list[dict[str, Any]],
+        tasks: list[dict[str, Any]],
+        profile: dict[str, Any] | None = None,
+        external_context: dict[str, Any] | None = None,
+    ) -> AsyncIterator[str]:
+        """Stream text chunks from Gemini's SSE endpoint."""
+        if not self.enabled:
+            raise RuntimeError("Gemini is not configured.")
+
+        prompt = self._build_plan_prompt(
+            user_message=user_message,
+            history=history,
+            events=events,
+            tasks=tasks,
+            profile=profile,
+            external_context=external_context,
+        )
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/"
+            f"{self.settings.gemini_model}:streamGenerateContent"
+        )
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            async with client.stream(
+                "POST",
+                url,
+                params={"key": self.settings.gemini_api_key, "alt": "sse"},
+                json={
+                    "contents": [
+                        {
+                            "parts": [
+                                {"text": prompt},
+                            ]
+                        }
+                    ]
+                },
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data_str = line[6:].strip()
+                    if not data_str or data_str == "[DONE]":
+                        continue
+                    try:
+                        chunk = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+                    candidates = chunk.get("candidates", [])
+                    if not candidates:
+                        continue
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    for part in parts:
+                        text = part.get("text")
+                        if text:
+                            yield text
 
     async def _generate_text(self, prompt: str) -> str:
         url = (

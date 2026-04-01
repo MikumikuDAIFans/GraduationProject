@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 import re
-from typing import Any
+from typing import Any, AsyncIterator
 
 from fastapi import HTTPException, status
 from pydantic import ValidationError
@@ -171,6 +171,145 @@ class AssistantService:
         )
 
         return AssistantResponse(session_id=session.id, reply=reply, actions=actions)
+
+    async def send_message_stream(
+        self,
+        user_id: str,
+        payload: AssistantMessageCreate,
+    ) -> AsyncIterator[dict[str, Any]]:
+        if payload.session_id is None:
+            current = await self.get_current_session(user_id=user_id)
+            session = await self.repository.get_session(current.session.id, user_id=user_id)
+            if session is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="assistant session not found")
+        else:
+            session = await self.repository.get_session(payload.session_id, user_id=user_id)
+            if session is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="assistant session not found")
+
+        await self.repository.create_message(
+            session_id=session.id,
+            role="user",
+            content=payload.message,
+        )
+
+        history = await self.repository.list_messages(session.id)
+        events = await self.event_repository.list_events(user_id=user_id)
+        profile = await self.profile_repository.get_profile(user_id)
+        tasks = await self.task_service.list_tasks(user_id=user_id)
+        external_context = await self._build_external_context(profile=profile)
+        session_context = dict(session.context_json or {})
+
+        pending_decision = await self._maybe_handle_pending_action_decision(
+            user_id=user_id,
+            session_id=session.id,
+            session_context=session_context,
+            user_message=payload.message,
+            profile=profile,
+        )
+        if pending_decision is not None:
+            await self.repository.create_message(
+                session_id=session.id,
+                role="assistant",
+                content=pending_decision.reply,
+                tool_calls_json=[action.model_dump() for action in pending_decision.actions] or None,
+            )
+            for chunk in self._chunk_text(pending_decision.reply):
+                yield {"type": "token", "text": chunk}
+            yield {"type": "actions", "actions": [action.model_dump() for action in pending_decision.actions]}
+            yield {"type": "done", "session_id": session.id, "full_reply": pending_decision.reply}
+            return
+
+        full_reply = ""
+        used_streaming = False
+        if self.gemini.enabled:
+            try:
+                async for chunk in self.gemini.generate_plan_stream(
+                    user_message=payload.message,
+                    history=[{"role": message.role, "content": message.content} for message in history[-6:]],
+                    events=[EventRead.model_validate(event).model_dump(mode="json") for event in events[:8]],
+                    tasks=[task.model_dump(mode="json") if hasattr(task, "model_dump") else {} for task in tasks[:8]],
+                    profile=profile.__dict__ if profile else None,
+                    external_context=external_context,
+                ):
+                    used_streaming = True
+                    full_reply += chunk
+                    yield {"type": "token", "text": chunk}
+            except Exception:
+                full_reply = ""
+                used_streaming = False
+
+        if used_streaming and full_reply.strip():
+            try:
+                plan = self.gemini._parse_json_payload(full_reply)
+                requested_actions = plan.get("actions", [])
+                actions = await self._execute_actions(
+                    user_id=user_id,
+                    actions=requested_actions,
+                    user_message=payload.message,
+                    existing_events=events,
+                    profile=profile,
+                )
+                reply_text = self._compose_reply(
+                    user_message=payload.message,
+                    base_reply=plan.get("reply"),
+                    actions=actions,
+                    requested_actions=requested_actions,
+                    fallback_message=payload.message,
+                    event_count=len(events),
+                    task_count=len(tasks),
+                    external_context=external_context,
+                )
+            except Exception:
+                reply_text = full_reply
+                actions = []
+        else:
+            plan = await self._build_plan(
+                user_id=user_id,
+                user_message=payload.message,
+                history=history,
+                events=events,
+                tasks=tasks,
+                profile=profile,
+                external_context=external_context,
+            )
+            requested_actions = plan.get("actions", [])
+            actions = await self._execute_actions(
+                user_id=user_id,
+                actions=requested_actions,
+                user_message=payload.message,
+                existing_events=events,
+                profile=profile,
+            )
+            reply_text = self._compose_reply(
+                user_message=payload.message,
+                base_reply=plan.get("reply"),
+                actions=actions,
+                requested_actions=requested_actions,
+                fallback_message=payload.message,
+                event_count=len(events),
+                task_count=len(tasks),
+                external_context=external_context,
+            )
+            for chunk in self._chunk_text(reply_text):
+                yield {"type": "token", "text": chunk}
+
+        await self._persist_pending_action(
+            user_id=user_id,
+            session_id=session.id,
+            existing_context=session_context,
+            actions=actions,
+        )
+
+        await self.repository.create_message(
+            session_id=session.id,
+            role="assistant",
+            content=reply_text,
+            tool_calls_json=[action.model_dump() for action in actions] or None,
+        )
+
+        yield {"type": "actions", "actions": [action.model_dump() for action in actions]}
+        yield {"type": "done", "session_id": session.id, "full_reply": reply_text}
 
     async def get_session(self, user_id: str, session_id: int) -> AssistantSessionRead:
         session = await self.repository.get_session(session_id, user_id=user_id)
@@ -732,29 +871,53 @@ class AssistantService:
                     event_payload = EventCreate.model_validate(payload)
                     if event_payload.start_time is None or event_payload.end_time is None:
                         continue
-                    conflicts = self._find_event_conflicts(
-                        existing_events=existing_events,
+                    conflicts = await self.event_service.detect_conflicts(
+                        user_id=user_id,
                         start_time=event_payload.start_time,
                         end_time=event_payload.end_time,
+                        buffer_before=event_payload.buffer_before or 0,
+                        buffer_after=event_payload.buffer_after or 0,
                     )
                     if conflicts:
-                        suggestions = self._suggest_alternative_slots(
-                            existing_events=existing_events,
-                            start_time=event_payload.start_time,
-                            end_time=event_payload.end_time,
+                        serialized_conflicts = [
+                            {
+                                "event_id": conflict.id,
+                                "title": conflict.title,
+                                "start_time": conflict.start_time.isoformat() if conflict.start_time else None,
+                                "end_time": conflict.end_time.isoformat() if conflict.end_time else None,
+                            }
+                            for conflict in conflicts
+                        ]
+                        suggestions = await self.event_service.find_alternative_slots(
+                            user_id=user_id,
+                            duration_minutes=int((event_payload.end_time - event_payload.start_time).total_seconds() // 60),
+                            preferred_date=event_payload.start_time.date(),
+                            buffer_before=event_payload.buffer_before or 0,
+                            buffer_after=event_payload.buffer_after or 0,
                         )
                         executed.append(
                             AssistantAction(
                                 type="conflict_warning",
                                 payload={
                                     "title": event_payload.title,
+                                    "event_title": event_payload.title,
                                     "start_time": event_payload.start_time.isoformat(),
                                     "end_time": event_payload.end_time.isoformat(),
-                                    "conflicts": conflicts,
+                                    "conflicts": serialized_conflicts,
                                     "suggestions": suggestions,
                                 },
                             )
                         )
+                        if suggestions:
+                            executed.append(
+                                AssistantAction(
+                                    type="suggest_reschedule",
+                                    payload={
+                                        "event_title": event_payload.title,
+                                        "alternatives": suggestions,
+                                    },
+                                )
+                            )
                         continue
                     created = await self.event_service.create_event(user_id=user_id, payload=event_payload)
                     event_context = await self._build_event_specific_context(
@@ -873,7 +1036,10 @@ class AssistantService:
         external_context: dict[str, Any],
     ) -> str:
         conflict_actions = [action for action in actions if action.type == "conflict_warning"]
-        created_actions = [action for action in actions if action.type != "conflict_warning"]
+        created_actions = [
+            action for action in actions
+            if action.type not in {"conflict_warning", "suggest_reschedule"}
+        ]
 
         if conflict_actions and not created_actions:
             conflict = conflict_actions[0]
@@ -1005,6 +1171,11 @@ class AssistantService:
         return "Created schedule blocks: " + "; ".join(
             f"{item.get('title')}: {item.get('start_time')} -> {item.get('end_time')}" for item in items[:5]
         )
+
+    def _chunk_text(self, text: str, chunk_size: int = 24) -> list[str]:
+        if not text:
+            return [""]
+        return [text[index:index + chunk_size] for index in range(0, len(text), chunk_size)]
 
     def _format_proposed_event_summary(self, *, action: AssistantAction, prefers_chinese: bool) -> str:
         if prefers_chinese:

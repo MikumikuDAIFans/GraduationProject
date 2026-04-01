@@ -3,7 +3,14 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from app.jobs.reminders import _build_departure_reminder_payload, _build_event_start_reminder_payload
+from app.jobs.reminders import (
+    _build_departure_reminder_payload,
+    _build_event_start_reminder_payload,
+    scan_conflict_warnings,
+    scan_departure_reminders,
+    scan_idle_slot_risks,
+    scan_upcoming_reminders,
+)
 
 
 def test_build_event_start_reminder_payload() -> None:
@@ -48,3 +55,19 @@ def test_build_departure_reminder_payload() -> None:
     assert payload["remind_type"] == "departure"
     assert payload["target_id"] == 11
     assert payload["message"] == "Time to leave for: Defense rehearsal"
+
+
+def test_scan_upcoming_reminders_is_callable() -> None:
+    assert callable(scan_upcoming_reminders)
+
+
+def test_scan_departure_reminders_is_callable() -> None:
+    assert callable(scan_departure_reminders)
+
+
+def test_scan_idle_slot_risks_is_callable() -> None:
+    assert callable(scan_idle_slot_risks)
+
+
+def test_scan_conflict_warnings_is_callable() -> None:
+    assert callable(scan_conflict_warnings)

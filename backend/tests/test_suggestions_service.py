@@ -27,8 +27,43 @@ def test_compute_gaps_for_date_respects_profile_window() -> None:
     assert gaps[-1][1].hour == 21
 
 
+def test_compute_gaps_deducts_buffer() -> None:
+    service = SuggestionService()
+    events = [
+        SimpleNamespace(
+            start_time=datetime(2026, 3, 26, 10, 0),
+            end_time=datetime(2026, 3, 26, 11, 0),
+            buffer_before=10,
+            buffer_after=15,
+        ),
+    ]
+    profile = SimpleNamespace(wake_up_time="08:00", sleep_time="22:00")
+
+    gaps = service._compute_gaps_for_date(events=events, profile=profile, target_date=date(2026, 3, 26))
+
+    assert gaps[0][0].hour == 8 and gaps[0][0].minute == 0
+    assert gaps[0][1].hour == 9 and gaps[0][1].minute == 50
+    assert gaps[1][0].hour == 11 and gaps[1][0].minute == 15
+    assert gaps[1][1].hour == 22
+
+
 async def _fake_weather_now(*, location: str):
     return SimpleNamespace(text="Sunny", temp="18", humidity="33")
+
+
+async def _fake_rainy_weather_now(*, location: str):
+    return SimpleNamespace(text="Rain", temp="16", humidity="80")
+
+
+async def _fake_search_poi(*, keyword: str, location, radius: int):
+    return [
+        {
+            "name": "星巴克",
+            "address": "Campus Road 1",
+            "location": "116.3974,39.9080",
+            "distance": "500",
+        }
+    ]
 
 
 def test_build_context_suggestions_includes_departure_and_weather() -> None:
@@ -58,6 +93,56 @@ def test_build_context_suggestions_includes_departure_and_weather() -> None:
     types = [item.type for item in suggestions]
     assert "departure_plan" in types
     assert "weather_watch" in types
+
+
+def test_build_context_suggestions_includes_location_break() -> None:
+    service = SuggestionService()
+    service.maps_client.amap.settings.map_api_key = "test-key"
+    service.maps_client.search_poi = _fake_search_poi  # type: ignore[method-assign]
+    today = date.today()
+
+    events = []
+    profile = SimpleNamespace(
+        home_location_coords="116.397,39.908",
+        wake_up_time="08:00",
+        sleep_time="22:00",
+    )
+
+    import asyncio
+
+    suggestions = asyncio.run(
+        service._build_context_suggestions(events=events, profile=profile, dates=[today])
+    )
+
+    types = [item.type for item in suggestions]
+    assert "location_based_break" in types
+
+
+def test_build_context_suggestions_includes_weather_alert_for_outdoor_event() -> None:
+    service = SuggestionService()
+    service.context_service.weather_now = _fake_rainy_weather_now  # type: ignore[method-assign]
+    today = date.today()
+    events = [
+        SimpleNamespace(
+            id=1,
+            title="Campus run",
+            location_name="Outdoor track",
+            departure_time=None,
+            start_time=datetime.combine(today, datetime.min.time()).replace(hour=10),
+            end_time=datetime.combine(today, datetime.min.time()).replace(hour=11),
+            travel_duration_minutes=None,
+        )
+    ]
+    profile = SimpleNamespace(home_location_coords="116.397,39.908")
+
+    import asyncio
+
+    suggestions = asyncio.run(
+        service._build_context_suggestions(events=events, profile=profile, dates=[today])
+    )
+
+    types = [item.type for item in suggestions]
+    assert "weather_alert" in types
 
 
 def test_build_split_task_suggestions_creates_multiple_segments() -> None:

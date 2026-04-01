@@ -2,12 +2,26 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, File, Form, Path, Query, UploadFile
+from fastapi.responses import StreamingResponse
 
 from app.api.deps import AssistantService, get_assistant_service, get_current_user_id
-from app.api.schemas import AssistantCurrentSessionRead, AssistantInboxRead, AssistantMessageCreate, AssistantResponse, AssistantSessionRead, AssistantSummaryRead
+from app.api.schemas import (
+    AssistantCurrentSessionRead,
+    AssistantInboxRead,
+    AssistantMessageCreate,
+    AssistantResponse,
+    AssistantSessionRead,
+    AssistantSummaryRead,
+    SpeechSynthesisRequest,
+    VoiceAssistantResponse,
+)
+from app.input_adapters import WhisperInputAdapter
+from app.output_adapters import GTTSOutputAdapter
 
 router = APIRouter(prefix="/assistant", tags=["assistant"])
+whisper_adapter = WhisperInputAdapter()
+tts_adapter = GTTSOutputAdapter()
 
 
 @router.post("/message", response_model=AssistantResponse)
@@ -17,6 +31,43 @@ async def send_message(
     service: AssistantService = Depends(get_assistant_service),
 ) -> AssistantResponse:
     return await service.send_message(user_id=user_id, payload=payload)
+
+
+@router.post("/voice", response_model=VoiceAssistantResponse)
+async def send_voice_message(
+    audio: UploadFile = File(...),
+    session_id: int | None = Form(default=None),
+    user_id: str = Depends(get_current_user_id),
+    service: AssistantService = Depends(get_assistant_service),
+) -> VoiceAssistantResponse:
+    audio_bytes = await audio.read()
+    transcript = await whisper_adapter.process_input(audio_bytes)
+    response = await service.send_message(
+        user_id=user_id,
+        payload=AssistantMessageCreate(session_id=session_id, message=transcript),
+    )
+    if isinstance(response, dict):
+        return VoiceAssistantResponse.model_validate({**response, "transcript": transcript})
+    return VoiceAssistantResponse(
+        session_id=response.session_id,
+        reply=response.reply,
+        actions=response.actions,
+        transcript=transcript,
+    )
+
+
+@router.post("/speak")
+async def synthesize_speech(
+    payload: SpeechSynthesisRequest,
+    user_id: str = Depends(get_current_user_id),
+) -> StreamingResponse:
+    del user_id
+    audio_bytes = await tts_adapter.synthesize(payload.text)
+    return StreamingResponse(
+        iter([audio_bytes]),
+        media_type="audio/mpeg",
+        headers={"Content-Disposition": 'inline; filename="assistant-reply.mp3"'},
+    )
 
 
 @router.get("/sessions/{session_id}", response_model=AssistantSessionRead)

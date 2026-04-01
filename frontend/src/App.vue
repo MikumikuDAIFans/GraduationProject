@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from "vue";
-import CalendarPanel from "@/components/CalendarPanel.vue";
-import AssistantPanel from "@/components/AssistantPanel.vue";
-import ContextPanel from "@/components/ContextPanel.vue";
-import GoogleCalendarPanel from "@/components/GoogleCalendarPanel.vue";
-import InsightsPanel from "@/components/InsightsPanel.vue";
-import ProfilePanel from "@/components/ProfilePanel.vue";
-import SummaryPanel from "@/components/SummaryPanel.vue";
+import { defineAsyncComponent, onBeforeUnmount, onMounted, ref } from "vue";
+const CalendarPanel = defineAsyncComponent(() => import("@/components/CalendarPanel.vue"));
+const AssistantPanel = defineAsyncComponent(() => import("@/components/AssistantPanel.vue"));
+const ContextPanel = defineAsyncComponent(() => import("@/components/ContextPanel.vue"));
+const GoogleCalendarPanel = defineAsyncComponent(() => import("@/components/GoogleCalendarPanel.vue"));
+const InsightsPanel = defineAsyncComponent(() => import("@/components/InsightsPanel.vue"));
+const ProfilePanel = defineAsyncComponent(() => import("@/components/ProfilePanel.vue"));
+const SummaryPanel = defineAsyncComponent(() => import("@/components/SummaryPanel.vue"));
+const ToastNotification = defineAsyncComponent(() => import("@/components/ToastNotification.vue"));
 import { useWorkspaceStore } from "@/stores/workspace";
 
 const workspace = useWorkspaceStore();
@@ -73,6 +74,7 @@ onBeforeUnmount(() => { workspace.disconnectNotifications(); });
 
 <template>
   <div class="min-h-screen bg-surface-2 font-body text-ink">
+    <ToastNotification :items="workspace.toasts" @dismiss="workspace.dismissToast" />
 
     <!-- Google Auth overlay -->
     <div

@@ -1,5 +1,9 @@
 import { defineStore } from "pinia";
 import { api } from "@/api/client";
+import { defaultInputAdapter } from "@/inputAdapters/textInput";
+import { defaultOutputAdapter } from "@/outputAdapters/textOutput";
+import { MobileNotificationService } from "@/plugins/capacitor";
+import { sendPlatformNotification } from "@/platform/notifications";
 
 export interface CalendarEvent {
   id: number;
@@ -103,6 +107,13 @@ export interface AssistantMessage {
   content: string;
   tool_calls_json?: AssistantAction[] | null;
   created_at?: string;
+}
+
+export interface ToastItem {
+  id: string;
+  message: string;
+  type: "info" | "warn" | "danger";
+  createdAt: number;
 }
 
 export interface WeatherNow {
@@ -223,6 +234,7 @@ export const useWorkspaceStore = defineStore("workspace", {
     googleCalendarSyncResult: null as GoogleCalendarSyncResult | null,
     googleCalendarFeedback: null as string | null,
     socket: null as WebSocket | null,
+    toasts: [] as ToastItem[],
     seenReminderIds: [] as number[],
     focusedTaskId: null as number | null,
     focusedEventId: null as number | null,
@@ -243,6 +255,7 @@ export const useWorkspaceStore = defineStore("workspace", {
           this.fetchTravelEstimate(),
           this.fetchGoogleCalendarStatus(),
         ]);
+        await MobileNotificationService.registerPushNotifications();
         this.connectNotifications();
       } finally {
         this.loading = false;
@@ -419,16 +432,153 @@ export const useWorkspaceStore = defineStore("workspace", {
       this.sessionId = response.data.id;
       this.messages = response.data.messages;
     },
-    async sendAssistantMessage(message: string) {
-      if (!message.trim()) {
+    buildWebSocketUrl(path: string) {
+      const fallbackBase = "http://127.0.0.1:8000/api";
+      const base = typeof api.defaults.baseURL === "string" ? api.defaults.baseURL : fallbackBase;
+      const httpUrl = new URL(base, typeof window !== "undefined" ? window.location.origin : undefined);
+      const wsProtocol = httpUrl.protocol === "https:" ? "wss:" : "ws:";
+      return `${wsProtocol}//${httpUrl.host}${path}`;
+    },
+    async refreshAssistantWorkspace() {
+      await Promise.all([
+        this.fetchEvents(),
+        this.fetchTasks(),
+        this.fetchReminders(),
+        this.fetchSuggestions(),
+        this.fetchAssistantInbox(),
+        this.fetchAssistantSummary(),
+        this.sessionId != null ? this.fetchSession(this.sessionId) : Promise.resolve(),
+      ]);
+    },
+    async sendAssistantMessageStream(message: string) {
+      const parsedMessage = await defaultInputAdapter.parse(message);
+      const normalizedMessage = parsedMessage.trim();
+      if (!normalizedMessage) {
         return;
+      }
+
+      this.sending = true;
+      const userMessageId = `local-${Date.now()}`;
+      const assistantMsgId = `assistant-stream-${Date.now()}`;
+      this.messages.push({
+        id: userMessageId,
+        role: "user",
+        content: normalizedMessage,
+      });
+      this.messages.push({
+        id: assistantMsgId,
+        role: "assistant",
+        content: "",
+      });
+      this.lastAssistantActions = [];
+
+      let completed = false;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          let finished = false;
+          const ws = new WebSocket(this.buildWebSocketUrl("/ws/assistant?user_id=local-user"));
+
+          const rejectOnce = (error: unknown) => {
+            if (finished) {
+              return;
+            }
+            finished = true;
+            try {
+              ws.close();
+            } catch {
+              // ignore close errors
+            }
+            reject(error);
+          };
+
+          ws.onopen = () => {
+            ws.send(JSON.stringify({ message: normalizedMessage, session_id: this.sessionId }));
+          };
+
+          ws.onmessage = (event) => {
+            void (async () => {
+              const data = JSON.parse(event.data) as {
+                type: string;
+                text?: string;
+                actions?: AssistantAction[];
+                session_id?: number;
+                full_reply?: string;
+              };
+              const assistantMessage = this.messages.find((item) => item.id === assistantMsgId);
+
+              if (data.type === "token") {
+                if (assistantMessage) {
+                  assistantMessage.content += data.text ?? "";
+                }
+                return;
+              }
+
+              if (data.type === "actions") {
+                this.lastAssistantActions = data.actions ?? [];
+                return;
+              }
+
+              if (data.type === "done") {
+                finished = true;
+                this.sessionId = data.session_id ?? this.sessionId;
+                const rendered = await defaultOutputAdapter.render(data.full_reply ?? "");
+                if (assistantMessage) {
+                  assistantMessage.content = rendered;
+                }
+                ws.close();
+                completed = true;
+                this.sending = false;
+                await this.refreshAssistantWorkspace();
+                resolve();
+                return;
+              }
+
+              if (data.type === "error") {
+                rejectOnce(new Error(data.text || "Assistant WebSocket failed."));
+              }
+            })().catch(rejectOnce);
+          };
+
+          ws.onerror = () => {
+            rejectOnce(new Error("Assistant WebSocket connection failed."));
+          };
+
+          ws.onclose = () => {
+            if (!finished) {
+              rejectOnce(new Error("Assistant WebSocket closed unexpectedly."));
+            }
+          };
+        });
+      } catch (error) {
+        this.messages = this.messages.filter((item) => item.id !== userMessageId && item.id !== assistantMsgId);
+        this.lastAssistantActions = [];
+        this.sending = false;
+        throw error;
+      } finally {
+        if (!completed) {
+          this.sending = false;
+        }
+      }
+    },
+    async sendAssistantMessage(message: string) {
+      const parsedMessage = await defaultInputAdapter.parse(message);
+      const normalizedMessage = parsedMessage.trim();
+      if (!normalizedMessage) {
+        return;
+      }
+
+      try {
+        await this.sendAssistantMessageStream(normalizedMessage);
+        return;
+      } catch {
+        // Fallback to REST when WebSocket streaming is unavailable.
       }
 
       this.sending = true;
       this.messages.push({
         id: `local-${Date.now()}`,
         role: "user",
-        content: message,
+        content: normalizedMessage,
       });
 
       try {
@@ -438,27 +588,20 @@ export const useWorkspaceStore = defineStore("workspace", {
           actions: AssistantAction[];
         }>("/assistant/message", {
           session_id: this.sessionId,
-          message,
+          message: normalizedMessage,
         });
 
         this.sessionId = response.data.session_id;
+        const renderedReply = await defaultOutputAdapter.render(response.data.reply);
         this.messages.push({
           id: `assistant-${Date.now()}`,
           role: "assistant",
-          content: response.data.reply,
+          content: renderedReply,
           tool_calls_json: response.data.actions,
         });
         this.lastAssistantActions = response.data.actions;
 
-        await Promise.all([
-          this.fetchEvents(),
-          this.fetchTasks(),
-          this.fetchReminders(),
-          this.fetchSuggestions(),
-          this.fetchAssistantInbox(),
-          this.fetchAssistantSummary(),
-          this.fetchSession(this.sessionId),
-        ]);
+        await this.refreshAssistantWorkspace();
       } finally {
         this.sending = false;
       }
@@ -483,7 +626,7 @@ export const useWorkspaceStore = defineStore("workspace", {
         return;
       }
 
-      const socket = new WebSocket("ws://127.0.0.1:8000/ws/notifications?user_id=local-user");
+      const socket = new WebSocket(this.buildWebSocketUrl("/ws/notifications?user_id=local-user"));
       socket.onerror = () => {
         socket.close();
       };
@@ -511,7 +654,15 @@ export const useWorkspaceStore = defineStore("workspace", {
 
         for (const reminder of payload.reminders) {
           if (!previousIds.has(reminder.id) && reminder.status !== "read") {
-            this.notifyBrowser(reminder.message || reminder.remind_type);
+            const message = reminder.message || reminder.remind_type;
+            const toastType =
+              reminder.remind_type === "conflict_warning"
+                ? "danger"
+                : reminder.remind_type === "departure" || reminder.remind_type === "task_deadline"
+                  ? "warn"
+                  : "info";
+            this.pushToast(message, toastType);
+            void this.notifyUser("Personal Affairs Assistant", message, reminder);
           }
         }
       };
@@ -527,13 +678,23 @@ export const useWorkspaceStore = defineStore("workspace", {
       this.socket?.close();
       this.socket = null;
     },
-    notifyBrowser(message: string) {
-      if (typeof window === "undefined" || !("Notification" in window)) {
-        return;
+    async notifyUser(title: string, message: string, reminder?: Reminder) {
+      void reminder;
+      await sendPlatformNotification(title, message);
+    },
+    pushToast(message: string, type: "info" | "warn" | "danger" = "info") {
+      this.toasts.push({
+        id: `toast-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        message,
+        type,
+        createdAt: Date.now(),
+      });
+      if (this.toasts.length > 5) {
+        this.toasts = this.toasts.slice(-5);
       }
-      if (Notification.permission === "granted") {
-        new Notification("Personal Affairs Assistant", { body: message });
-      }
+    },
+    dismissToast(id: string) {
+      this.toasts = this.toasts.filter((toast) => toast.id !== id);
     },
     extractApiError(error: unknown, fallback: string) {
       const maybeAxios = error as {

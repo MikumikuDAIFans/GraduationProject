@@ -78,6 +78,9 @@ function appliedEvent(action: AssistantAction) {
 function linkedTasks(action: AssistantAction) {
   return (action.payload as { linked_tasks?: Array<Record<string, unknown>> }).linked_tasks ?? [];
 }
+function rescheduleAlternatives(action: AssistantAction) {
+  return (action.payload as { alternatives?: Array<Record<string, unknown>> }).alternatives ?? [];
+}
 
 watch(
   () => props.messages.length,
@@ -277,6 +280,22 @@ watch(
             <div class="rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-xs">
               <p class="font-semibold text-ink">{{ appliedEvent(action)?.title }}</p>
               <p class="text-ink-3">{{ appliedEvent(action)?.start_time }} → {{ appliedEvent(action)?.end_time }}</p>
+            </div>
+          </div>
+
+          <div v-else-if="action.type === 'suggest_reschedule'" class="mt-2 space-y-1.5">
+            <p class="text-xs font-semibold text-accent">Alternative times for {{ action.payload.event_title }}</p>
+            <div
+              v-for="(alt, i) in rescheduleAlternatives(action)"
+              :key="`${index}-alt-${i}`"
+              class="flex items-center justify-between rounded-lg border border-border bg-surface-2 px-2.5 py-2 text-xs"
+            >
+              <span class="text-ink-3">{{ alt.start_time }} -> {{ alt.end_time }}</span>
+              <button
+                type="button"
+                class="rounded-md bg-accent px-2.5 py-1 text-[11px] font-semibold text-white transition hover:bg-accent-hover"
+                @click="emit('send', `Move ${action.payload.event_title} to ${alt.start_time} -> ${alt.end_time}`)"
+              >Use</button>
             </div>
           </div>
         </div>

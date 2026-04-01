@@ -37,7 +37,10 @@ class EventBase(APIBaseModel):
     start_time: datetime | None = None
     end_time: datetime | None = None
     location_name: str | None = None
+    location_address: str | None = None
     location_coords: str | None = None
+    location_lat: float | None = None
+    location_lng: float | None = None
     event_type: str | None = None
     source: str | None = None
     is_fixed: bool = False
@@ -65,7 +68,10 @@ class EventUpdate(APIBaseModel):
     start_time: datetime | None = None
     end_time: datetime | None = None
     location_name: str | None = None
+    location_address: str | None = None
     location_coords: str | None = None
+    location_lat: float | None = None
+    location_lng: float | None = None
     event_type: str | None = None
     source: str | None = None
     is_fixed: bool | None = None
@@ -168,6 +174,14 @@ class AssistantResponse(ReadModel):
     session_id: int
     reply: str
     actions: list[AssistantAction] = Field(default_factory=list)
+
+
+class VoiceAssistantResponse(AssistantResponse):
+    transcript: str
+
+
+class SpeechSynthesisRequest(APIBaseModel):
+    text: str
 
 
 class AssistantInboxItem(ReadModel):

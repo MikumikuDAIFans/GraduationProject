@@ -7,6 +7,11 @@ from types import SimpleNamespace
 from app.services.events import EventService
 
 
+class AsyncEmptyList:
+    async def __call__(self, **kwargs):
+        return []
+
+
 def _make_existing_event(**kwargs) -> SimpleNamespace:
     defaults = dict(
         id=99,
@@ -65,6 +70,7 @@ def test_update_event_syncs_linked_task_state() -> None:
         pass
 
     service.repository.get_event = fake_get_event  # type: ignore[method-assign]
+    service.repository.list_events = AsyncEmptyList()  # type: ignore[method-assign]
     service.repository.update_event = fake_update_event  # type: ignore[method-assign]
     service.repository.write_change_log = fake_write_change_log  # type: ignore[method-assign]
     service.google_calendar_service.sync_event = fake_sync_event  # type: ignore[method-assign]
@@ -117,6 +123,7 @@ def test_update_event_creates_task_replan_reminder_for_canceled_focus_block() ->
         pass
 
     service.repository.get_event = fake_get_event  # type: ignore[method-assign]
+    service.repository.list_events = AsyncEmptyList()  # type: ignore[method-assign]
     service.repository.update_event = fake_update_event  # type: ignore[method-assign]
     service.repository.write_change_log = fake_write_change_log  # type: ignore[method-assign]
     service.google_calendar_service.sync_event = fake_sync_event  # type: ignore[method-assign]
@@ -170,6 +177,7 @@ def test_update_event_creates_task_progress_reminder_for_completed_focus_block()
         pass
 
     service.repository.get_event = fake_get_event  # type: ignore[method-assign]
+    service.repository.list_events = AsyncEmptyList()  # type: ignore[method-assign]
     service.repository.update_event = fake_update_event  # type: ignore[method-assign]
     service.repository.write_change_log = fake_write_change_log  # type: ignore[method-assign]
     service.google_calendar_service.sync_event = fake_sync_event  # type: ignore[method-assign]
@@ -204,6 +212,7 @@ def test_create_event_writes_change_log() -> None:
     async def fake_write_change_log(*, user_id, event_id, change_type, **kwargs):
         logged.append({"user_id": user_id, "event_id": event_id, "change_type": change_type, **kwargs})
 
+    service.repository.list_events = AsyncEmptyList()  # type: ignore[method-assign]
     service.repository.create_event = fake_create_event  # type: ignore[method-assign]
     service.google_calendar_service.sync_event = fake_sync_event  # type: ignore[method-assign]
     service.repository.write_change_log = fake_write_change_log  # type: ignore[method-assign]
@@ -245,6 +254,7 @@ def test_update_event_writes_change_log() -> None:
         logged.append({"change_type": change_type, "old": kwargs.get("old_value_json"), "new": kwargs.get("new_value_json")})
 
     service.repository.get_event = fake_get_event  # type: ignore[method-assign]
+    service.repository.list_events = AsyncEmptyList()  # type: ignore[method-assign]
     service.repository.update_event = fake_update_event  # type: ignore[method-assign]
     service.google_calendar_service.sync_event = fake_sync_event  # type: ignore[method-assign]
     service.task_service.sync_task_schedule_state = fake_sync_task  # type: ignore[method-assign]

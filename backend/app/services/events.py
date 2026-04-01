@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
 
@@ -44,7 +44,8 @@ class EventService:
         """Build a JSON-serializable dict snapshot from an event ORM object or namespace."""
         fields = [
             "id", "user_id", "title", "description", "start_time", "end_time",
-            "location_name", "location_coords", "event_type", "source", "is_fixed",
+            "location_name", "location_address", "location_coords", "location_lat", "location_lng",
+            "event_type", "source", "is_fixed",
             "buffer_before", "buffer_after", "travel_mode", "travel_duration_minutes",
             "departure_time", "status", "linked_task_id", "external_event_id",
             "external_calendar_id", "external_etag", "sync_status", "last_synced_at",
@@ -57,17 +58,118 @@ class EventService:
             snapshot[field] = val
         return snapshot
 
+    async def detect_conflicts(
+        self,
+        *,
+        user_id: str,
+        start_time: datetime,
+        end_time: datetime,
+        buffer_before: int = 0,
+        buffer_after: int = 0,
+        exclude_event_id: int | None = None,
+    ) -> list[EventRead]:
+        """Detect event conflicts, accounting for buffer windows on both sides."""
+        all_events = await self.repository.list_events(user_id=user_id)
+        new_effective_start = start_time - timedelta(minutes=buffer_before)
+        new_effective_end = end_time + timedelta(minutes=buffer_after)
+
+        conflicts: list[EventRead] = []
+        for event in all_events:
+            if exclude_event_id is not None and event.id == exclude_event_id:
+                continue
+            if event.start_time is None or event.end_time is None:
+                continue
+
+            existing_effective_start = event.start_time - timedelta(minutes=(event.buffer_before or 0))
+            existing_effective_end = event.end_time + timedelta(minutes=(event.buffer_after or 0))
+
+            if new_effective_start < existing_effective_end and new_effective_end > existing_effective_start:
+                conflicts.append(EventRead.model_validate(event))
+
+        return conflicts
+
+    async def find_alternative_slots(
+        self,
+        *,
+        user_id: str,
+        duration_minutes: int,
+        preferred_date: date | None = None,
+        buffer_before: int = 0,
+        buffer_after: int = 0,
+        max_results: int = 3,
+    ) -> list[dict[str, str]]:
+        """Find alternative free slots that can accommodate an event and its buffers."""
+        from app.services.suggestions import SuggestionService
+
+        suggestion_service = SuggestionService()
+        profile = await self.profile_repository.get_profile(user_id)
+        events = await self.repository.list_events(user_id=user_id)
+
+        if preferred_date is not None:
+            target_dates = [preferred_date]
+        else:
+            today = datetime.now().date()
+            target_dates = [today + timedelta(days=offset) for offset in range(0, 3)]
+
+        total_needed = duration_minutes + buffer_before + buffer_after
+        alternatives: list[dict[str, str]] = []
+        for target_date in target_dates:
+            gaps = suggestion_service._compute_gaps_for_date(
+                events=events,
+                profile=profile,
+                target_date=target_date,
+            )
+            for gap_start, gap_end in gaps:
+                gap_minutes = int((gap_end - gap_start).total_seconds() // 60)
+                if gap_minutes < total_needed:
+                    continue
+
+                slot_start = gap_start + timedelta(minutes=buffer_before)
+                slot_end = slot_start + timedelta(minutes=duration_minutes)
+                alternatives.append(
+                    {
+                        "start_time": slot_start.isoformat(),
+                        "end_time": slot_end.isoformat(),
+                    }
+                )
+                if len(alternatives) >= max_results:
+                    return alternatives
+
+        return alternatives
+
     async def create_event(self, user_id: str, payload: EventCreate) -> EventRead:
         data = await self._enrich_event_payload(user_id=user_id, payload=payload.model_dump())
+        conflict_events: list[EventRead] = []
+        if data.get("start_time") is not None and data.get("end_time") is not None:
+            start_dt = data["start_time"] if isinstance(data["start_time"], datetime) else datetime.fromisoformat(str(data["start_time"]))
+            end_dt = data["end_time"] if isinstance(data["end_time"], datetime) else datetime.fromisoformat(str(data["end_time"]))
+            conflict_events = await self.detect_conflicts(
+                user_id=user_id,
+                start_time=start_dt,
+                end_time=end_dt,
+                buffer_before=data.get("buffer_before") or 0,
+                buffer_after=data.get("buffer_after") or 0,
+            )
         event = await self.repository.create_event({"user_id": user_id, **data})
         synced_event = await self.google_calendar_service.sync_event(user_id=user_id, event_id=event.id)
         if synced_event.linked_task_id is not None:
             await self.task_service.sync_task_schedule_state(user_id=user_id, task_id=synced_event.linked_task_id)
+        log_snapshot = self._event_snapshot(synced_event)
+        if conflict_events:
+            log_snapshot["conflicts"] = [
+                {
+                    "id": item.id,
+                    "title": item.title,
+                    "start_time": item.start_time.isoformat() if item.start_time else None,
+                    "end_time": item.end_time.isoformat() if item.end_time else None,
+                }
+                for item in conflict_events
+            ]
         await self.repository.write_change_log(
             user_id=user_id,
             event_id=synced_event.id,
             change_type="created",
-            new_value_json=self._event_snapshot(synced_event),
+            new_value_json=log_snapshot,
             trigger_source="user",
         )
         return synced_event
@@ -110,6 +212,18 @@ class EventService:
         }
         merged.update(payload.model_dump(exclude_none=True))
         merged = await self._enrich_event_payload(user_id=user_id, payload=merged)
+        conflict_events: list[EventRead] = []
+        if merged.get("start_time") is not None and merged.get("end_time") is not None:
+            start_dt = merged["start_time"] if isinstance(merged["start_time"], datetime) else datetime.fromisoformat(str(merged["start_time"]))
+            end_dt = merged["end_time"] if isinstance(merged["end_time"], datetime) else datetime.fromisoformat(str(merged["end_time"]))
+            conflict_events = await self.detect_conflicts(
+                user_id=user_id,
+                start_time=start_dt,
+                end_time=end_dt,
+                buffer_before=merged.get("buffer_before") or 0,
+                buffer_after=merged.get("buffer_after") or 0,
+                exclude_event_id=event_id,
+            )
 
         event = await self.repository.update_event(
             event_id,
@@ -127,12 +241,23 @@ class EventService:
                 previous_status=previous_status,
                 task_read=task_read,
             )
+        new_snapshot = self._event_snapshot(synced_event)
+        if conflict_events:
+            new_snapshot["conflicts"] = [
+                {
+                    "id": item.id,
+                    "title": item.title,
+                    "start_time": item.start_time.isoformat() if item.start_time else None,
+                    "end_time": item.end_time.isoformat() if item.end_time else None,
+                }
+                for item in conflict_events
+            ]
         await self.repository.write_change_log(
             user_id=user_id,
             event_id=synced_event.id,
             change_type="updated",
             old_value_json=old_snapshot,
-            new_value_json=self._event_snapshot(synced_event),
+            new_value_json=new_snapshot,
             trigger_source="user",
         )
         return synced_event
@@ -176,6 +301,11 @@ class EventService:
                 geocoded = await self.context_service.geocode(location_name)
                 destination = geocoded.location
                 enriched["location_coords"] = geocoded.location
+                enriched["location_address"] = geocoded.formatted_address
+                if geocoded.location and "," in geocoded.location:
+                    lng, lat = geocoded.location.split(",", 1)
+                    enriched["location_lat"] = float(lat)
+                    enriched["location_lng"] = float(lng)
             except Exception:
                 destination = location_name
         if not origin or not destination:

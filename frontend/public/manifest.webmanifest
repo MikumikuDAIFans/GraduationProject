@@ -1,0 +1,21 @@
+{
+  "name": "MA-IPAAS",
+  "short_name": "MA-IPAAS",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f9fafb",
+  "theme_color": "#4f46e5",
+  "description": "Intelligent personal affairs assistant with scheduling, reminders, and AI planning.",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
