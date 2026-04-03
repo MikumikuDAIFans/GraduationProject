@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { defineAsyncComponent, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref } from "vue";
+import { useI18n } from "vue-i18n";
 const CalendarPanel = defineAsyncComponent(() => import("@/components/CalendarPanel.vue"));
 const AssistantPanel = defineAsyncComponent(() => import("@/components/AssistantPanel.vue"));
 const ContextPanel = defineAsyncComponent(() => import("@/components/ContextPanel.vue"));
+const ErrorBoundary = defineAsyncComponent(() => import("@/components/ErrorBoundary.vue"));
 const GoogleCalendarPanel = defineAsyncComponent(() => import("@/components/GoogleCalendarPanel.vue"));
 const InsightsPanel = defineAsyncComponent(() => import("@/components/InsightsPanel.vue"));
 const ProfilePanel = defineAsyncComponent(() => import("@/components/ProfilePanel.vue"));
@@ -11,33 +13,34 @@ const ToastNotification = defineAsyncComponent(() => import("@/components/ToastN
 import { useWorkspaceStore } from "@/stores/workspace";
 
 const workspace = useWorkspaceStore();
+const { t, locale } = useI18n();
 const profileOpen = ref(false);
 
 type MobileTab = "summary" | "calendar" | "insights" | "assistant";
 const mobileTab = ref<MobileTab>("summary");
 
-const mobileTabs = [
+const mobileTabs = computed<Array<{ key: MobileTab; label: string; icon: string }>>(() => [
   {
     key: "summary",
-    label: "Overview",
+    label: t("common.overview"),
     icon: "M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 0 0 2.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 0 0-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75 2.25 2.25 0 0 0-.1-.664m-5.8 0A2.251 2.251 0 0 1 13.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25ZM6.75 12h.008v.008H6.75V12Zm0 3h.008v.008H6.75V15Zm0 3h.008v.008H6.75V18Z",
   },
   {
     key: "calendar",
-    label: "Calendar",
+    label: t("common.calendar"),
     icon: "M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 7.5v11.25m-18 0A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75m-18 0v-7.5A2.25 2.25 0 0 1 5.25 9h13.5A2.25 2.25 0 0 1 21 11.25v7.5m-9-6h.008v.008H12v-.008ZM12 15h.008v.008H12V15Zm0 2.25h.008v.008H12v-.008ZM9.75 15h.008v.008H9.75V15Zm0 2.25h.008v.008H9.75v-.008ZM7.5 15h.008v.008H7.5V15Zm0 2.25h.008v.008H7.5v-.008Zm6.75-4.5h.008v.008h-.008v-.008Zm0 2.25h.008v.008h-.008V15Zm0 2.25h.008v.008h-.008v-.008Zm2.25-4.5h.008v.008H16.5v-.008Zm0 2.25h.008v.008H16.5V15Z",
   },
   {
     key: "insights",
-    label: "Tasks",
+    label: t("common.tasks"),
     icon: "M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z",
   },
   {
     key: "assistant",
-    label: "AI",
+    label: t("common.assistant"),
     icon: "M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 0 1 .865-.501 48.172 48.172 0 0 0 3.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0 0 12 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018Z",
   },
-] as const;
+]);
 
 function handleFocusTask(taskId: number) {
   workspace.focusTask(taskId);
@@ -58,6 +61,11 @@ async function sendAndFocusAssistant(message: string) {
   await workspace.sendAssistantMessage(message);
 }
 
+function toggleLocale() {
+  const next = locale.value === "zh-CN" ? "en-US" : "zh-CN";
+  workspace.setLocale(next);
+}
+
 onMounted(() => {
   if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "default") {
     void Notification.requestPermission();
@@ -73,8 +81,9 @@ onBeforeUnmount(() => { workspace.disconnectNotifications(); });
 </script>
 
 <template>
-  <div class="min-h-screen bg-surface-2 font-body text-ink">
-    <ToastNotification :items="workspace.toasts" @dismiss="workspace.dismissToast" />
+  <ErrorBoundary>
+    <div class="min-h-screen bg-surface-2 font-body text-ink">
+      <ToastNotification :items="workspace.toasts" @dismiss="workspace.dismissToast" />
 
     <!-- Google Auth overlay -->
     <div
@@ -87,8 +96,8 @@ onBeforeUnmount(() => { workspace.disconnectNotifications(); });
             <path stroke-linecap="round" stroke-linejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 7.5v11.25" />
           </svg>
         </div>
-        <h2 class="text-base font-bold text-ink">Completing authorization…</h2>
-        <p class="mt-1.5 text-sm text-ink-3">Connecting your Google Calendar</p>
+        <h2 class="text-base font-bold text-ink">{{ t("app.authorizationTitle") }}</h2>
+        <p class="mt-1.5 text-sm text-ink-3">{{ t("app.authorizationDesc") }}</p>
       </div>
     </div>
 
@@ -103,15 +112,15 @@ onBeforeUnmount(() => { workspace.disconnectNotifications(); });
               <path fill-rule="evenodd" d="M5.75 2a.75.75 0 0 1 .75.75V4h7V2.75a.75.75 0 0 1 1.5 0V4h.25A2.75 2.75 0 0 1 18 6.75v8.5A2.75 2.75 0 0 1 15.25 18H4.75A2.75 2.75 0 0 1 2 15.25v-8.5A2.75 2.75 0 0 1 4.75 4H5V2.75A.75.75 0 0 1 5.75 2Z" clip-rule="evenodd"/>
             </svg>
           </div>
-          <span class="text-sm font-bold text-ink">Daily Workspace</span>
+          <span class="text-sm font-bold text-ink">{{ t("app.workspaceTitle") }}</span>
         </div>
 
         <div class="flex items-center gap-2">
           <span class="rounded-lg bg-surface-3 px-2.5 py-1 text-xs font-medium text-ink-2">
-            <span class="font-semibold text-ink">{{ workspace.events.length }}</span> events
+            <span class="font-semibold text-ink">{{ workspace.events.length }}</span> {{ t("common.calendar") }}
           </span>
           <span class="rounded-lg bg-surface-3 px-2.5 py-1 text-xs font-medium text-ink-2">
-            <span class="font-semibold text-ink">{{ workspace.tasks.length }}</span> tasks
+            <span class="font-semibold text-ink">{{ workspace.tasks.length }}</span> {{ t("common.tasks") }}
           </span>
           <span
             class="rounded-lg px-2.5 py-1 text-xs font-medium"
@@ -119,8 +128,15 @@ onBeforeUnmount(() => { workspace.disconnectNotifications(); });
               ? 'bg-warn-light text-warn font-semibold'
               : 'bg-surface-3 text-ink-2'"
           >
-            {{ workspace.assistantInboxUnreadTotal }} follow-ups
+            {{ workspace.assistantInboxUnreadTotal }} {{ t("app.followups") }}
           </span>
+          <button
+            type="button"
+            class="rounded-lg border border-border bg-white px-3 py-1.5 text-xs font-medium text-ink-2 transition hover:bg-surface-3"
+            @click="toggleLocale"
+          >
+            {{ workspace.locale === "zh-CN" ? "EN" : "中" }}
+          </button>
           <div class="mx-1 h-4 w-px bg-border" />
           <button
             type="button"
@@ -130,7 +146,7 @@ onBeforeUnmount(() => { workspace.disconnectNotifications(); });
             <svg class="h-3.5 w-3.5 text-ink-3" fill="currentColor" viewBox="0 0 20 20">
               <path d="M10 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM3.465 14.493a1.23 1.23 0 0 0 .41 1.412A9.957 9.957 0 0 0 10 18c2.31 0 4.438-.784 6.131-2.095a1.23 1.23 0 0 0 .41-1.412 9.96 9.96 0 0 0-6.54-6.18 1.23 1.23 0 0 0-.81-.004 9.96 9.96 0 0 0-6.727 6.184Z"/>
             </svg>
-            {{ workspace.profile?.display_name || "Profile" }}
+            {{ workspace.profile?.display_name || t("app.profileFallback") }}
           </button>
         </div>
       </header>
@@ -158,6 +174,7 @@ onBeforeUnmount(() => { workspace.disconnectNotifications(); });
             />
             <SummaryPanel
               :summary="workspace.assistantSummary"
+              :loading="workspace.loading"
               @send="sendAndFocusAssistant"
               @focus-task="handleFocusTask"
               @focus-event="handleFocusEvent"
@@ -174,13 +191,14 @@ onBeforeUnmount(() => { workspace.disconnectNotifications(); });
               @send-assistant="sendAndFocusAssistant"
               @delete-event="workspace.deleteEvent"
             />
-            <ContextPanel :weather-now="workspace.weatherNow" :travel-estimate="workspace.travelEstimate" />
+            <ContextPanel :weather-now="workspace.weatherNow" :travel-estimate="workspace.travelEstimate" :loading="workspace.loading" />
             <InsightsPanel
               :reminders="workspace.reminders"
               :today-suggestions="workspace.todaySuggestions"
               :next-suggestions="workspace.nextSuggestions"
               :tasks="workspace.tasks"
               :focused-task-id="workspace.focusedTaskId"
+              :loading="workspace.loading"
               @send="sendAndFocusAssistant"
               @delete-task="workspace.deleteTask"
             />
@@ -195,9 +213,18 @@ onBeforeUnmount(() => { workspace.disconnectNotifications(); });
             :messages="workspace.messages"
             :sending="workspace.sending"
             :last-assistant-actions="workspace.lastAssistantActions"
+            :assistant-sessions="workspace.assistantSessions"
+            :active-session-id="workspace.sessionId"
+            :creating-session="workspace.creatingAssistantSession"
+            :archiving-session="workspace.archivingAssistantSession"
+            :clearing-session="workspace.clearingAssistantSession"
             @send="workspace.sendAssistantMessage"
             @update-inbox="workspace.updateInboxItem"
             @focus-task="handleFocusTask"
+            @create-session="workspace.createAssistantSession"
+            @switch-session="workspace.switchAssistantSession"
+            @archive-session="workspace.archiveCurrentAssistantSession"
+            @clear-session="workspace.clearCurrentAssistantSession"
           />
         </div>
 
@@ -215,13 +242,20 @@ onBeforeUnmount(() => { workspace.disconnectNotifications(); });
               <path fill-rule="evenodd" d="M5.75 2a.75.75 0 0 1 .75.75V4h7V2.75a.75.75 0 0 1 1.5 0V4h.25A2.75 2.75 0 0 1 18 6.75v8.5A2.75 2.75 0 0 1 15.25 18H4.75A2.75 2.75 0 0 1 2 15.25v-8.5A2.75 2.75 0 0 1 4.75 4H5V2.75A.75.75 0 0 1 5.75 2Z" clip-rule="evenodd"/>
             </svg>
           </div>
-          <span class="text-sm font-bold text-ink">Daily Workspace</span>
+          <span class="text-sm font-bold text-ink">{{ t("app.workspaceTitle") }}</span>
         </div>
         <div class="flex items-center gap-2">
           <span
             v-if="workspace.assistantInboxUnreadTotal > 0"
             class="rounded-full bg-warn px-1.5 py-0.5 text-[10px] font-bold text-white"
           >{{ workspace.assistantInboxUnreadTotal }}</span>
+          <button
+            type="button"
+            class="rounded-lg border border-border bg-white px-2 py-1 text-[10px] font-semibold text-ink-2 transition hover:bg-surface-3"
+            @click="toggleLocale"
+          >
+            {{ workspace.locale === "zh-CN" ? "EN" : "中" }}
+          </button>
           <button
             type="button"
             class="flex h-7 w-7 items-center justify-center rounded-lg border border-border bg-white text-ink-3 transition hover:bg-surface-3"
@@ -254,12 +288,13 @@ onBeforeUnmount(() => { workspace.disconnectNotifications(); });
           />
           <SummaryPanel
             :summary="workspace.assistantSummary"
+            :loading="workspace.loading"
             @send="sendAndFocusAssistant"
             @focus-task="handleFocusTask"
             @focus-event="handleFocusEvent"
             @focus-assistant="handleFocusAssistant"
           />
-          <ContextPanel :weather-now="workspace.weatherNow" :travel-estimate="workspace.travelEstimate" />
+          <ContextPanel :weather-now="workspace.weatherNow" :travel-estimate="workspace.travelEstimate" :loading="workspace.loading" />
         </div>
 
         <div v-else-if="mobileTab === 'calendar'" class="p-4">
@@ -283,6 +318,7 @@ onBeforeUnmount(() => { workspace.disconnectNotifications(); });
             :next-suggestions="workspace.nextSuggestions"
             :tasks="workspace.tasks"
             :focused-task-id="workspace.focusedTaskId"
+            :loading="workspace.loading"
             @send="sendAndFocusAssistant"
             @delete-task="workspace.deleteTask"
           />
@@ -296,9 +332,18 @@ onBeforeUnmount(() => { workspace.disconnectNotifications(); });
             :messages="workspace.messages"
             :sending="workspace.sending"
             :last-assistant-actions="workspace.lastAssistantActions"
+            :assistant-sessions="workspace.assistantSessions"
+            :active-session-id="workspace.sessionId"
+            :creating-session="workspace.creatingAssistantSession"
+            :archiving-session="workspace.archivingAssistantSession"
+            :clearing-session="workspace.clearingAssistantSession"
             @send="workspace.sendAssistantMessage"
             @update-inbox="workspace.updateInboxItem"
             @focus-task="handleFocusTask"
+            @create-session="workspace.createAssistantSession"
+            @switch-session="workspace.switchAssistantSession"
+            @archive-session="workspace.archiveCurrentAssistantSession"
+            @clear-session="workspace.clearCurrentAssistantSession"
           />
         </div>
       </div>
@@ -329,5 +374,6 @@ onBeforeUnmount(() => { workspace.disconnectNotifications(); });
       </nav>
 
     </div>
-  </div>
+    </div>
+  </ErrorBoundary>
 </template>

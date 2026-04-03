@@ -6,6 +6,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, Path, Query, status
 
+from app.api.live_updates import broadcast_workspace_update
 from app.api.deps import EventService, get_current_user_id, get_event_service
 from app.api.schemas import EventCreate, EventRead, EventUpdate, OperationResult
 
@@ -28,7 +29,9 @@ async def create_event(
     user_id: str = Depends(get_current_user_id),
     service: EventService = Depends(get_event_service),
 ) -> EventRead:
-    return await service.create_event(user_id=user_id, payload=payload)
+    event = await service.create_event(user_id=user_id, payload=payload)
+    await broadcast_workspace_update(user_id)
+    return event
 
 
 @router.get("/{event_id}", response_model=EventRead)
@@ -47,7 +50,9 @@ async def update_event(
     user_id: str = Depends(get_current_user_id),
     service: EventService = Depends(get_event_service),
 ) -> EventRead:
-    return await service.update_event(user_id=user_id, event_id=event_id, payload=payload)
+    event = await service.update_event(user_id=user_id, event_id=event_id, payload=payload)
+    await broadcast_workspace_update(user_id)
+    return event
 
 
 @router.delete("/{event_id}", response_model=OperationResult)
@@ -57,4 +62,5 @@ async def delete_event(
     service: EventService = Depends(get_event_service),
 ) -> OperationResult:
     await service.delete_event(user_id=user_id, event_id=event_id)
+    await broadcast_workspace_update(user_id)
     return OperationResult(message="event deleted", id=event_id)

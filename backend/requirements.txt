@@ -11,12 +11,14 @@ redis==5.2.1
 pytest==8.3.5
 httpx==0.28.1
 websockets==15.0.1
+loguru==0.7.3
 google-api-python-client==2.169.0
 google-auth==2.40.1
 google-auth-oauthlib==1.2.2
 aiohttp==3.12.13
 requests>=2.31.0
-gTTS>=2.5.4
-openai-whisper>=20231117
-torch>=2.0.0
-torchaudio>=2.0.0
+# Voice I/O dependencies (optional - uncomment when needed)
+# gTTS>=2.5.4
+# openai-whisper>=20231117
+# torch>=2.0.0
+# torchaudio>=2.0.0

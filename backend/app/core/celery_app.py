@@ -43,5 +43,9 @@ celery_app.conf.update(
             "task": "app.jobs.inbox.generate_proactive_inbox_items",
             "schedule": 600.0,
         },
+        "cleanup-old-reminders": {
+            "task": "app.jobs.reminders.cleanup_old_reminders",
+            "schedule": 3600.0,
+        },
     },
 )

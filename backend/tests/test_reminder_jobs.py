@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from app.jobs.reminders import (
     _build_departure_reminder_payload,
     _build_event_start_reminder_payload,
+    cleanup_old_reminders,
     scan_conflict_warnings,
     scan_departure_reminders,
     scan_idle_slot_risks,
@@ -71,3 +72,7 @@ def test_scan_idle_slot_risks_is_callable() -> None:
 
 def test_scan_conflict_warnings_is_callable() -> None:
     assert callable(scan_conflict_warnings)
+
+
+def test_cleanup_old_reminders_is_callable() -> None:
+    assert callable(cleanup_old_reminders)

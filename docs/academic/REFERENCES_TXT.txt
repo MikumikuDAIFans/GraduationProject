@@ -1,0 +1,134 @@
+Generative Agents: Interactive Simulacra of Human Behavior (2023)
+MetaGPT: Meta Programming for A Multi-Agent Collaborative Framework (2023)
+ChatDev: Communicative Agents for Software Development (2023)
+ReAct: Synergizing Reasoning and Acting in Language Models (2023)
+HuggingGPT: Solving AI Tasks with ChatGPT and its Friends in Hugging Face (2023)
+ScheduleMe: Multi-Agent Calendar Assistant (2025, arXiv)
+Optimizing LLM-based trip planning (2025, Google Research Blog/Paper)
+Voyager: An Open-Ended Embodied Agent with Large Language Models (2023)
+LLM-Planner: A Survey of Embodied Planning with Large Language Models (2024)
+Microservices: From Design to Deployment (Book/Ebook)
+Django + Vue.js: The Ultimate Python Full Stack Stack (Technical Article/Project)
+Container-based deployment strategies for cross-platform web applications (2021)
+LangChain: Building applications with LLMs through composability (2023)
+TaskMatrix.AI: Completing Tasks by Connecting Foundation Models with Millions of APIs (2023)
+AutoGen: Enabling Next-Gen LLM Applications (2023)
+
+
+
+这份参考文献列表是为你精心挑选的，涵盖了**多Agent协同理论**、**智能调度/规划算法**、以及**系统架构与工程实现**三个核心维度。
+
+这些文献不仅能填充你的开题报告，更能直接指导你的毕设开发。建议在参考文献部分按照以下分类进行整理。
+
+### 第一部分：多Agent协同与大模型基础 (核心理论)
+
+*这部分文献用于在开题报告中论证“为什么选择多Agent架构”，证明你对前沿技术有深入调研。*
+
+1. **Generative Agents: Interactive Simulacra of Human Behavior** (2023)
+* **作者**: Joon Sung Park, et al. (Stanford / Google)
+* **推荐理由**: **必读神作**。斯坦福的小镇模拟实验，详细阐述了Agent如何拥有“记忆”、“反思”和“规划”能力。你的“个人事务助理”需要具备记忆用户偏好和反思日程冲突的能力，这篇论文是理论基石。
+* **可用点**: 引用其“Memory Stream”和“Reflection”机制来设计你的数据库结构。
+
+
+2. **MetaGPT: Meta Programming for A Multi-Agent Collaborative Framework** (2023)
+* **作者**: Sirui Hong, et al.
+* **推荐理由**: 介绍了如何通过标准化流程（SOP）让多个Agent（如产品经理、架构师、工程师）协同工作。
+* **可用点**: 借鉴其“角色定义”和“消息广播”机制，设计你的“主控Agent”和“调度Agent”之间的交互协议。
+
+
+3. **AutoGen: Enabling Next-Gen LLM Applications** (2023)
+* **作者**: Qingyun Wu, et al. (Microsoft)
+* **推荐理由**: 微软推出的多Agent框架，重点解决了Agent之间的“对话流”控制。
+* **可用点**: 参考其“User Proxy Agent”的设计，允许用户在Agent执行过程中介入（例如：Agent排好日程后，用户说“不行，这也太早了”）。
+
+
+4. **ChatDev: Communicative Agents for Software Development** (2023)
+* **作者**: Chen Qian, et al. (Tsinghua)
+* **推荐理由**: 展示了通过“聊天链”模式让Agent分工合作。
+* **可用点**: 你的系统里，“意图识别”到“路径规划”再到“最终排程”其实就是一个类似的流水线（Chain）。
+
+
+5. **ReAct: Synergizing Reasoning and Acting in Language Models** (2023)
+* **作者**: Shunyu Yao, et al. (Princeton / Google)
+* **推荐理由**: **核心算法**。提出了“推理-行动”循环（Reasoning + Acting）。
+* **可用点**: 这是LangChain中Agent运行的基础逻辑。你在论文中必须提到使用了ReAct模式来让Agent“先思考（查地图），再行动（写日程）”。
+
+
+6. **HuggingGPT: Solving AI Tasks with ChatGPT and its Friends in Hugging Face** (2023)
+* **作者**: Yongliang Shen, et al. (Microsoft)
+* **推荐理由**: 讲述了大模型作为“控制器”调度外部工具（Tools）的方法。
+* **可用点**: 论证你的系统为何需要“连接外部API（地图、天气）”，以及LLM在其中充当的“大脑”角色。
+
+
+
+### 第二部分：智能调度与个人助理应用 (对口应用)
+
+*这部分文献与你的题目直接相关，用于撰写“国内外研究现状”。*
+
+7. **ScheduleMe: Multi-Agent Calendar Assistant** (2025, arXiv) [最新]
+* **作者**: University of Southern California Team
+* **推荐理由**: **完美对标**。这是一篇非常新的论文，专门讲多Agent如何管理Google Calendar。
+* **可用点**: 它的架构图可以直接参考，用来对比你的系统有哪些改进（比如增加了交通路况的实时考量）。
+
+
+8. **Optimizing LLM-based trip planning** (2025, Google Research Blog/Paper)
+* **来源**: Google Research
+* **推荐理由**: 探讨了如何解决旅行规划中的“硬约束”（必须赶上飞机）和“软约束”（想吃好吃的）。
+* **可用点**: 引用其关于“约束满足问题（Constraint Satisfaction Problems, CSP）”的讨论，提升你毕设的算法深度。
+
+
+9. **Voyager: An Open-Ended Embodied Agent with Large Language Models** (2023)
+* **作者**: Guanzhi Wang, et al. (NVIDIA)
+* **推荐理由**: 虽然是讲Minecraft游戏的，但它提出的“自动课程学习”和“技能库”非常适合解释你的系统如何“越来越懂用户”。
+* **可用点**: 借鉴其“Skill Library”概念，设计你的用户偏好学习模块。
+
+
+10. **LLM-Planner: A Survey of Embodied Planning with Large Language Models** (2024)
+* **作者**: Timoitu, et al.
+* **推荐理由**: 一篇综述文章，总结了LLM做规划的各种流派。
+* **可用点**: 在开题报告的“文献综述”部分，用它来概括当前LLM在规划领域的地位。
+
+
+
+### 第三部分：系统架构与工程实现 (技术栈支撑)
+
+*这部分用于支撑你的“技术路线”和“可行性分析”，证明你的架构设计是科学的。*
+
+11. **Microservices: From Design to Deployment** (Book/Ebook)
+* **作者**: Chris Richardson / NGINX
+* **推荐理由**: 经典的微服务架构书籍。
+* **可用点**: 用来论证为什么你要把后端做成Docker容器化，以及API Gateway（前后端分离接口）的设计必要性。
+
+
+12. **Django + Vue.js: The Ultimate Python Full Stack Stack** (Technical Article/Project)
+* **来源**: 多个技术社区的最佳实践总结 (如 RealPython 或 DigitalOcean 教程)
+* **推荐理由**: 虽然不是纯学术论文，但在工程类毕设中，引用高质量的技术白皮书或官方文档是允许的。
+* **可用点**: 引用关于RESTful API设计模式的章节，说明前后端分离的通信规范。
+
+
+13. **Container-based deployment strategies for cross-platform web applications** (2021)
+* **来源**: ResearchGate / IEEE Conference
+* **推荐理由**: 讨论了Docker在跨平台部署中的优势。
+* **可用点**: 支撑你“一次编写，到处运行（Windows/Linux/Android）”的技术选型理由。
+
+
+14. **LangChain: Building applications with LLMs through composability** (2023)
+* **来源**: LangChain Official Documentation / Whitepaper
+* **推荐理由**: 既然用了LangChain，必须引用。
+* **可用点**: 解释你的“Agent Executor”和“Tool”是如何定义的。
+
+
+15. **TaskMatrix.AI: Completing Tasks by Connecting Foundation Models with Millions of APIs** (2023)
+* **作者**: Microsoft Research
+* **推荐理由**: 这是一个宏大的愿景，讲LLM连接万物API。
+* **可用点**: 将你的“高德地图API集成”升华一下，描述为“通过通用接口协议扩展Agent的感知边界”。
+
+
+
+### 💡 提示：如何写进开题报告？
+
+* **在“研究意义”中**：引用 [1] 和 [3]，说明单体Agent的局限性，引出多Agent协同的必要性。
+* **在“国内外现状”中**：引用 [7] 和 [8]，说明目前虽然有日程助手，但缺乏全场景（交通+工作+生活）的整合，这正是你的创新点。
+* **在“方案设计”中**：引用 [5] (ReAct) 作为核心算法，引用 [11] 和 [13] 作为架构支撑。
+
+希望这份列表能帮你的开题报告顺利过关！

@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator
 
 import httpx
+from loguru import logger
 
 from app.core.config import get_settings
+from app.core.error_handler import GeminiAPIError
 
 
 class GeminiClient:
     """Minimal async Gemini REST client."""
+
+    _consecutive_failures = 0
+    _circuit_open_until: datetime | None = None
 
     def __init__(self) -> None:
         self.settings = get_settings()
@@ -20,6 +26,16 @@ class GeminiClient:
     @property
     def enabled(self) -> bool:
         return self.settings.llm_provider == "gemini" and bool(self.settings.gemini_api_key)
+
+    @classmethod
+    def health_status(cls, *, enabled: bool, provider: str) -> dict[str, Any]:
+        return {
+            "enabled": enabled,
+            "provider": provider,
+            "circuit_open": cls._is_circuit_open(),
+            "circuit_open_until": cls._circuit_open_until.isoformat() if cls._circuit_open_until else None,
+            "consecutive_failures": cls._consecutive_failures,
+        }
 
     async def generate_plan(
         self,
@@ -135,32 +151,87 @@ class GeminiClient:
             f"{self.settings.gemini_model}:generateContent"
         )
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                url,
-                params={"key": self.settings.gemini_api_key},
-                json={
-                    "contents": [
-                        {
-                            "parts": [
-                                {"text": prompt},
-                            ]
-                        }
-                    ]
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
+        data = await self._post_with_retry(
+            url=url,
+            payload={
+                "contents": [
+                    {
+                        "parts": [
+                            {"text": prompt},
+                        ]
+                    }
+                ]
+            },
+        )
 
         candidates = data.get("candidates") or []
         if not candidates:
-            raise RuntimeError("Gemini returned no candidates.")
+            raise GeminiAPIError("Gemini returned no candidates.")
 
         parts = candidates[0].get("content", {}).get("parts", [])
         text = "".join(part.get("text", "") for part in parts if part.get("text"))
         if not text.strip():
-            raise RuntimeError("Gemini returned an empty reply.")
+            raise GeminiAPIError("Gemini returned an empty reply.")
         return text.strip()
+
+    async def _post_with_retry(self, *, url: str, payload: dict[str, Any]) -> dict[str, Any]:
+        last_error: Exception | None = None
+        timeout = httpx.Timeout(self.settings.gemini_timeout_seconds)
+        if self._is_circuit_open():
+            raise GeminiAPIError(
+                "AI 服务正在短暂恢复中，请稍后再试。",
+                details={"circuit_open_until": self._circuit_open_until.isoformat() if self._circuit_open_until else None},
+            )
+        for attempt in range(1, self.settings.gemini_max_retries + 1):
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.post(
+                        url,
+                        params={"key": self.settings.gemini_api_key},
+                        json=payload,
+                    )
+                    response.raise_for_status()
+                    self._record_success()
+                    return response.json()
+            except (httpx.TimeoutException, httpx.HTTPError, json.JSONDecodeError) as exc:
+                last_error = exc
+                self._record_failure()
+                if attempt >= self.settings.gemini_max_retries:
+                    break
+                logger.bind(component="gemini").warning(
+                    "Gemini request failed on attempt {attempt}/{max_retries}: {error}",
+                    attempt=attempt,
+                    max_retries=self.settings.gemini_max_retries,
+                    error=str(exc),
+                )
+                await asyncio.sleep(self.settings.gemini_retry_delay_seconds * attempt)
+
+        raise GeminiAPIError(
+            f"AI 服务暂时不可用，已重试 {self.settings.gemini_max_retries} 次。",
+            details={"last_error": str(last_error) if last_error else "unknown"},
+        )
+
+    @classmethod
+    def _record_success(cls) -> None:
+        cls._consecutive_failures = 0
+        cls._circuit_open_until = None
+
+    def _record_failure(self) -> None:
+        self.__class__._consecutive_failures += 1
+        if self.__class__._consecutive_failures >= self.settings.gemini_max_retries:
+            self.__class__._circuit_open_until = datetime.now(timezone.utc) + timedelta(
+                seconds=self.settings.gemini_circuit_breaker_seconds,
+            )
+
+    @classmethod
+    def _is_circuit_open(cls) -> bool:
+        if cls._circuit_open_until is None:
+            return False
+        if datetime.now(timezone.utc) >= cls._circuit_open_until:
+            cls._circuit_open_until = None
+            cls._consecutive_failures = 0
+            return False
+        return True
 
     def _build_plan_prompt(
         self,
@@ -210,12 +281,14 @@ Use the same language as the user for the "reply" field (Chinese if user writes 
 - Allowed action types: "create_event", "create_task"
 - Only emit actions when user intent is EXPLICIT and COMPLETE (clear title + time for events, clear content for tasks)
 - If time is ambiguous or missing: do NOT create anything. Propose a clarifying question instead.
+- If information is partially missing, ask exactly one concise clarification question.
 - Do not create duplicate items already visible in the events/tasks list.
 - When creating an event: provide ISO 8601 datetimes (YYYY-MM-DDTHH:MM:SS) or null.
 - When creating a task: provide content + optional deadline (ISO 8601 date) + optional priority (1-5).
 
 ## REPLY STYLE (for "reply" field)
 - Be concise and action-oriented (2–5 sentences max).
+- Prefer clean Markdown bullets over raw JSON fragments in the reply field.
 - If planning time blocks: always include specific time slots in HH:MM–HH:MM format.
 - If suggesting a schedule: list each item as a bullet with time + activity.
 - If the user asks "how to plan X": give a concrete step-by-step with durations.

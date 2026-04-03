@@ -1,5 +1,7 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import type { GoogleCalendarStatus, GoogleCalendarSyncResult } from "@/stores/workspace";
+import { formatDateTime } from "@/utils/locale";
 
 defineProps<{
   status: GoogleCalendarStatus | null;
@@ -10,12 +12,13 @@ defineProps<{
 }>();
 
 defineEmits<{ connect: []; sync: []; dismissFeedback: [] }>();
+const { t, locale } = useI18n();
 
 function statusBadge(s: string | undefined) {
-  if (s === "synced")     return { cls: "bg-positive-light text-positive",   label: "Synced" };
-  if (s === "connected")  return { cls: "bg-accent-light text-accent",       label: "Connected" };
-  if (s === "error")      return { cls: "bg-danger-light text-danger",       label: "Error" };
-  return                         { cls: "bg-surface-3 text-ink-3",           label: "Disconnected" };
+  if (s === "synced") return { cls: "bg-positive-light text-positive", label: t("googleCalendar.synced") };
+  if (s === "connected") return { cls: "bg-accent-light text-accent", label: t("googleCalendar.connected") };
+  if (s === "error") return { cls: "bg-danger-light text-danger", label: t("common.error") };
+  return { cls: "bg-surface-3 text-ink-3", label: t("googleCalendar.disconnected") };
 }
 </script>
 
@@ -29,12 +32,12 @@ function statusBadge(s: string | undefined) {
         <line x1="3" y1="10" x2="21" y2="10"/>
       </svg>
       <div class="min-w-0">
-        <p class="text-xs font-semibold text-ink-2">Google Calendar</p>
+        <p class="text-xs font-semibold text-ink-2">{{ t("googleCalendar.title") }}</p>
         <div class="mt-0.5 flex items-center gap-2">
           <span class="rounded-md px-1.5 py-0.5 text-[10px] font-bold" :class="statusBadge(status?.status).cls">
             {{ statusBadge(status?.status).label }}
           </span>
-          <span v-if="status?.last_sync_at" class="truncate text-[11px] text-ink-3">{{ status.last_sync_at }}</span>
+          <span v-if="status?.last_sync_at" class="truncate text-[11px] text-ink-3">{{ formatDateTime(status.last_sync_at, locale) }}</span>
         </div>
       </div>
     </div>
@@ -52,13 +55,13 @@ function statusBadge(s: string | undefined) {
         class="rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-medium text-ink-2 transition hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-50"
         :disabled="startingAuth"
         @click="$emit('connect')"
-      >{{ startingAuth ? "Redirecting…" : status?.connected ? "Reconnect" : "Connect" }}</button>
+      >{{ startingAuth ? t("googleCalendar.redirecting") : status?.connected ? t("googleCalendar.reconnect") : t("googleCalendar.connect") }}</button>
       <button
         type="button"
         class="rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
         :disabled="syncing || !status?.connected"
         @click="$emit('sync')"
-      >{{ syncing ? "Syncing…" : "Sync" }}</button>
+      >{{ syncing ? t("common.syncing") : t("googleCalendar.sync") }}</button>
     </div>
 
     <!-- Feedback -->

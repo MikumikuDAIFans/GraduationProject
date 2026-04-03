@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     api_v1_prefix: str = "/api"
     project_name: str = "Personal Affairs Assistant"
     project_version: str = "0.1.0"
+    log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+    slow_request_threshold_ms: int = Field(default=1200, alias="SLOW_REQUEST_THRESHOLD_MS")
 
     sqlite_db_path: str = Field(default="./data/app.db", alias="SQLITE_DB_PATH")
     redis_url: str = Field(default="redis://127.0.0.1:6379/0", alias="REDIS_URL")
@@ -33,6 +35,10 @@ class Settings(BaseSettings):
     llm_provider: str = Field(default="gemini", alias="LLM_PROVIDER")
     gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY")
     gemini_model: str = Field(default="models/gemini-2.5-flash", alias="GEMINI_MODEL")
+    gemini_timeout_seconds: float = Field(default=15.0, alias="GEMINI_TIMEOUT_SECONDS")
+    gemini_max_retries: int = Field(default=3, alias="GEMINI_MAX_RETRIES")
+    gemini_retry_delay_seconds: float = Field(default=1.0, alias="GEMINI_RETRY_DELAY_SECONDS")
+    gemini_circuit_breaker_seconds: int = Field(default=60, alias="GEMINI_CIRCUIT_BREAKER_SECONDS")
 
     map_provider: str = Field(default="amap", alias="MAP_PROVIDER")
     map_api_key: str | None = Field(default=None, alias="MAP_API_KEY")

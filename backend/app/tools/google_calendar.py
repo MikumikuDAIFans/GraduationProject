@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 from datetime import UTC, datetime
@@ -42,7 +43,7 @@ class GoogleCalendarClient:
             raise GoogleCalendarError("google oauth completed without credentials")
         return self._credentials_to_dict(flow.credentials)
 
-    def list_events(
+    async def list_events(
         self,
         *,
         tokens_json: dict[str, Any],
@@ -51,22 +52,26 @@ class GoogleCalendarClient:
         time_max: datetime,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         service, refreshed_tokens = self._build_service(tokens_json)
-        response = (
-            service.events()
-            .list(
-                calendarId=calendar_id,
-                timeMin=self._rfc3339(time_min),
-                timeMax=self._rfc3339(time_max),
-                maxResults=250,
-                singleEvents=True,
-                showDeleted=False,
-                orderBy="startTime",
+
+        def _execute_list():
+            return (
+                service.events()
+                .list(
+                    calendarId=calendar_id,
+                    timeMin=self._rfc3339(time_min),
+                    timeMax=self._rfc3339(time_max),
+                    maxResults=250,
+                    singleEvents=True,
+                    showDeleted=False,
+                    orderBy="startTime",
+                )
+                .execute()
             )
-            .execute()
-        )
+
+        response = await asyncio.to_thread(_execute_list)
         return response.get("items", []), refreshed_tokens
 
-    def create_event(
+    async def create_event(
         self,
         *,
         tokens_json: dict[str, Any],
@@ -74,10 +79,14 @@ class GoogleCalendarClient:
         payload: dict[str, Any],
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         service, refreshed_tokens = self._build_service(tokens_json)
-        created = service.events().insert(calendarId=calendar_id, body=payload).execute()
+
+        def _execute_create():
+            return service.events().insert(calendarId=calendar_id, body=payload).execute()
+
+        created = await asyncio.to_thread(_execute_create)
         return created, refreshed_tokens
 
-    def update_event(
+    async def update_event(
         self,
         *,
         tokens_json: dict[str, Any],
@@ -86,14 +95,18 @@ class GoogleCalendarClient:
         payload: dict[str, Any],
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         service, refreshed_tokens = self._build_service(tokens_json)
-        updated = (
-            service.events()
-            .update(calendarId=calendar_id, eventId=event_id, body=payload)
-            .execute()
-        )
+
+        def _execute_update():
+            return (
+                service.events()
+                .update(calendarId=calendar_id, eventId=event_id, body=payload)
+                .execute()
+            )
+
+        updated = await asyncio.to_thread(_execute_update)
         return updated, refreshed_tokens
 
-    def delete_event(
+    async def delete_event(
         self,
         *,
         tokens_json: dict[str, Any],
@@ -101,8 +114,12 @@ class GoogleCalendarClient:
         event_id: str,
     ) -> dict[str, Any]:
         service, refreshed_tokens = self._build_service(tokens_json)
-        service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
-        return refreshed_tokens
+
+        def _execute_delete():
+            service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+            return refreshed_tokens
+
+        return await asyncio.to_thread(_execute_delete)
 
     def build_event_payload(self, *, event) -> dict[str, Any]:
         if event.start_time is None or event.end_time is None:

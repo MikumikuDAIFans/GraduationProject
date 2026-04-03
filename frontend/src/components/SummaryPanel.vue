@@ -1,7 +1,10 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
+import LoadingSkeleton from "@/components/LoadingSkeleton.vue";
 import type { AssistantSummary, AssistantSummaryCard } from "@/stores/workspace";
 
-defineProps<{ summary: AssistantSummary | null }>();
+defineProps<{ summary: AssistantSummary | null; loading?: boolean }>();
+const { t } = useI18n();
 const emit = defineEmits<{
   send: [message: string];
   focusTask: [taskId: number];
@@ -39,17 +42,18 @@ function handleCardClick(card: AssistantSummaryCard) {
   <div class="rounded-xl border border-border bg-white p-4 shadow-card">
     <div class="mb-3 flex items-center justify-between">
       <div class="flex items-center gap-2">
-        <p class="text-xs font-bold text-ink-2">Assistant Digest</p>
+        <p class="text-xs font-bold text-ink-2">{{ t("summary.title") }}</p>
         <span v-if="(summary?.unread_followups ?? 0) > 0"
           class="rounded-full bg-warn px-1.5 py-0.5 text-[10px] font-bold text-white">
           {{ summary?.unread_followups }}
         </span>
       </div>
-      <span class="text-xs text-ink-3">{{ summary?.cards?.length ?? 0 }} items</span>
+      <span class="text-xs text-ink-3">{{ t("summary.items", { count: summary?.cards?.length ?? 0 }) }}</span>
     </div>
 
     <!-- Horizontal scrolling cards -->
-    <div v-if="summary?.cards?.length" class="scrollbar-hide -mx-1 flex gap-3 overflow-x-auto px-1 pb-1">
+    <LoadingSkeleton v-if="loading" :lines="4" class-name="mt-4" />
+    <div v-else-if="summary?.cards?.length" class="scrollbar-hide -mx-1 flex gap-3 overflow-x-auto px-1 pb-1">
       <div
         v-for="card in summary.cards"
         :key="card.id"
@@ -80,6 +84,6 @@ function handleCardClick(card: AssistantSummaryCard) {
       </div>
     </div>
 
-    <p v-else class="text-sm text-ink-3">No digest yet — send the assistant a message to get started.</p>
+    <p v-else class="text-sm text-ink-3">{{ t("summary.empty") }}</p>
   </div>
 </template>

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date, datetime, timedelta
 import re
 from typing import Any, AsyncIterator
 
 from fastapi import HTTPException, status
+from loguru import logger
 from pydantic import ValidationError
 
 from app.api.schemas import (
@@ -19,10 +21,14 @@ from app.api.schemas import (
     AssistantMessageCreate,
     AssistantMessageRead,
     AssistantResponse,
+    AssistantSessionCreate,
+    AssistantSessionListRead,
     AssistantSessionRead,
     EventCreate,
+    EventRead,
     TaskCreate,
 )
+from app.core.error_handler import AssistantError
 from app.db.session import get_sessionmaker
 from app.repositories.assistant import AssistantRepository
 from app.repositories.events import EventRepository
@@ -31,6 +37,7 @@ from app.repositories.reminders import ReminderRepository
 from app.repositories.tasks import TaskRepository
 from app.services.context import ContextService
 from app.services.events import EventService
+from app.services.assistant_response_formatter import AssistantResponseFormatter
 from app.services.suggestions import SuggestionService
 from app.services.tasks import TaskService
 from app.tools.gemini import GeminiClient
@@ -84,164 +91,208 @@ class AssistantService:
         self.task_repository = TaskRepository(session_factory)
         self.context_service = ContextService()
         self.event_service = EventService()
+        self.formatter = AssistantResponseFormatter()
         self.suggestion_service = SuggestionService()
         self.task_service = TaskService()
         self.gemini = GeminiClient()
 
     async def send_message(self, user_id: str, payload: AssistantMessageCreate) -> AssistantResponse:
-        if payload.session_id is None:
-            current = await self.get_current_session(user_id=user_id)
-            session = await self.repository.get_session(current.session.id, user_id=user_id)
-            if session is None:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="assistant session not found")
-        else:
-            session = await self.repository.get_session(payload.session_id, user_id=user_id)
-            if session is None:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="assistant session not found")
+        if not payload.message or not payload.message.strip():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="assistant message cannot be empty")
+        session = await self._resolve_session(user_id=user_id, session_id=payload.session_id)
 
-        await self.repository.create_message(
-            session_id=session.id,
-            role="user",
-            content=payload.message,
-        )
+        try:
+            await self.repository.create_message(
+                session_id=session.id,
+                role="user",
+                content=payload.message,
+            )
 
-        history = await self.repository.list_messages(session.id)
-        events = await self.event_repository.list_events(user_id=user_id)
-        profile = await self.profile_repository.get_profile(user_id)
-        tasks = await self.task_service.list_tasks(user_id=user_id)
-        external_context = await self._build_external_context(profile=profile)
-        session_context = dict(session.context_json or {})
+            history = await self.repository.list_messages(session.id)
+            events = await self.event_repository.list_events(user_id=user_id)
+            profile = await self.profile_repository.get_profile(user_id)
+            tasks = await self.task_service.list_tasks(user_id=user_id)
+            external_context = await self._build_external_context(profile=profile)
+            session_context = dict(session.context_json or {})
 
-        pending_decision = await self._maybe_handle_pending_action_decision(
-            user_id=user_id,
-            session_id=session.id,
-            session_context=session_context,
-            user_message=payload.message,
-            profile=profile,
-        )
-        if pending_decision is not None:
+            pending_decision = await self._maybe_handle_pending_action_decision(
+                user_id=user_id,
+                session_id=session.id,
+                session_context=session_context,
+                user_message=payload.message,
+                profile=profile,
+            )
+            if pending_decision is not None:
+                pending_reply = self._format_reply_text(pending_decision.reply, user_message=payload.message)
+                await self.repository.create_message(
+                    session_id=session.id,
+                    role="assistant",
+                    content=pending_reply,
+                    tool_calls_json=[action.model_dump() for action in pending_decision.actions] or None,
+                )
+                return AssistantResponse(
+                    session_id=session.id,
+                    reply=pending_reply,
+                    actions=pending_decision.actions,
+                )
+
+            plan = await self._build_plan(
+                user_id=user_id,
+                user_message=payload.message,
+                history=history,
+                events=events,
+                tasks=tasks,
+                profile=profile,
+                external_context=external_context,
+            )
+            requested_actions = plan.get("actions", [])
+            actions = await self._execute_actions(
+                user_id=user_id,
+                actions=requested_actions,
+                user_message=payload.message,
+                existing_events=events,
+                profile=profile,
+            )
+            reply = self._format_reply_text(
+                self._compose_reply(
+                    user_message=payload.message,
+                    base_reply=plan.get("reply"),
+                    actions=actions,
+                    requested_actions=requested_actions,
+                    fallback_message=payload.message,
+                    event_count=len(events),
+                    task_count=len(tasks),
+                    external_context=external_context,
+                ),
+                user_message=payload.message,
+            )
+
+            await self._persist_pending_action(
+                user_id=user_id,
+                session_id=session.id,
+                existing_context=session_context,
+                actions=actions,
+            )
+
             await self.repository.create_message(
                 session_id=session.id,
                 role="assistant",
-                content=pending_decision.reply,
-                tool_calls_json=[action.model_dump() for action in pending_decision.actions] or None,
+                content=reply,
+                tool_calls_json=[action.model_dump() for action in actions] or None,
             )
-            return pending_decision
 
-        plan = await self._build_plan(
-            user_id=user_id,
-            user_message=payload.message,
-            history=history,
-            events=events,
-            tasks=tasks,
-            profile=profile,
-            external_context=external_context,
-        )
-        requested_actions = plan.get("actions", [])
-        actions = await self._execute_actions(
-            user_id=user_id,
-            actions=requested_actions,
-            user_message=payload.message,
-            existing_events=events,
-            profile=profile,
-        )
-        reply = self._compose_reply(
-            user_message=payload.message,
-            base_reply=plan.get("reply"),
-            actions=actions,
-            requested_actions=requested_actions,
-            fallback_message=payload.message,
-            event_count=len(events),
-            task_count=len(tasks),
-            external_context=external_context,
-        )
-
-        await self._persist_pending_action(
-            user_id=user_id,
-            session_id=session.id,
-            existing_context=session_context,
-            actions=actions,
-        )
-
-        await self.repository.create_message(
-            session_id=session.id,
-            role="assistant",
-            content=reply,
-            tool_calls_json=[action.model_dump() for action in actions] or None,
-        )
-
-        return AssistantResponse(session_id=session.id, reply=reply, actions=actions)
+            await self._maybe_autorename_session(
+                user_id=user_id,
+                session_id=session.id,
+                session_title=session.title,
+                user_message=payload.message,
+            )
+            return AssistantResponse(session_id=session.id, reply=reply, actions=actions)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.bind(component="assistant").exception("Assistant send_message failed: {error}", error=str(exc))
+            raise AssistantError("AI 助手暂时不可用，请稍后再试。", details={"reason": str(exc)}) from exc
 
     async def send_message_stream(
         self,
         user_id: str,
         payload: AssistantMessageCreate,
     ) -> AsyncIterator[dict[str, Any]]:
-        if payload.session_id is None:
-            current = await self.get_current_session(user_id=user_id)
-            session = await self.repository.get_session(current.session.id, user_id=user_id)
-            if session is None:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="assistant session not found")
-        else:
-            session = await self.repository.get_session(payload.session_id, user_id=user_id)
-            if session is None:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="assistant session not found")
+        if not payload.message or not payload.message.strip():
+            yield {"type": "error", "text": "assistant message cannot be empty"}
+            return
+        session = await self._resolve_session(user_id=user_id, session_id=payload.session_id)
 
-        await self.repository.create_message(
-            session_id=session.id,
-            role="user",
-            content=payload.message,
-        )
-
-        history = await self.repository.list_messages(session.id)
-        events = await self.event_repository.list_events(user_id=user_id)
-        profile = await self.profile_repository.get_profile(user_id)
-        tasks = await self.task_service.list_tasks(user_id=user_id)
-        external_context = await self._build_external_context(profile=profile)
-        session_context = dict(session.context_json or {})
-
-        pending_decision = await self._maybe_handle_pending_action_decision(
-            user_id=user_id,
-            session_id=session.id,
-            session_context=session_context,
-            user_message=payload.message,
-            profile=profile,
-        )
-        if pending_decision is not None:
+        try:
             await self.repository.create_message(
                 session_id=session.id,
-                role="assistant",
-                content=pending_decision.reply,
-                tool_calls_json=[action.model_dump() for action in pending_decision.actions] or None,
+                role="user",
+                content=payload.message,
             )
-            for chunk in self._chunk_text(pending_decision.reply):
-                yield {"type": "token", "text": chunk}
-            yield {"type": "actions", "actions": [action.model_dump() for action in pending_decision.actions]}
-            yield {"type": "done", "session_id": session.id, "full_reply": pending_decision.reply}
-            return
 
-        full_reply = ""
-        used_streaming = False
-        if self.gemini.enabled:
-            try:
-                async for chunk in self.gemini.generate_plan_stream(
-                    user_message=payload.message,
-                    history=[{"role": message.role, "content": message.content} for message in history[-6:]],
-                    events=[EventRead.model_validate(event).model_dump(mode="json") for event in events[:8]],
-                    tasks=[task.model_dump(mode="json") if hasattr(task, "model_dump") else {} for task in tasks[:8]],
-                    profile=profile.__dict__ if profile else None,
-                    external_context=external_context,
-                ):
-                    used_streaming = True
-                    full_reply += chunk
+            history = await self.repository.list_messages(session.id)
+            events = await self.event_repository.list_events(user_id=user_id)
+            profile = await self.profile_repository.get_profile(user_id)
+            tasks = await self.task_service.list_tasks(user_id=user_id)
+            external_context = await self._build_external_context(profile=profile)
+            session_context = dict(session.context_json or {})
+
+            pending_decision = await self._maybe_handle_pending_action_decision(
+                user_id=user_id,
+                session_id=session.id,
+                session_context=session_context,
+                user_message=payload.message,
+                profile=profile,
+            )
+            if pending_decision is not None:
+                pending_reply = self._format_reply_text(pending_decision.reply, user_message=payload.message)
+                await self.repository.create_message(
+                    session_id=session.id,
+                    role="assistant",
+                    content=pending_reply,
+                    tool_calls_json=[action.model_dump() for action in pending_decision.actions] or None,
+                )
+                for chunk in self._chunk_text(pending_reply):
                     yield {"type": "token", "text": chunk}
-            except Exception:
-                full_reply = ""
-                used_streaming = False
+                yield {"type": "actions", "actions": [action.model_dump() for action in pending_decision.actions]}
+                yield {"type": "done", "session_id": session.id, "full_reply": pending_reply}
+                return
 
-        if used_streaming and full_reply.strip():
-            try:
-                plan = self.gemini._parse_json_payload(full_reply)
+            full_reply = ""
+            used_streaming = False
+            if self.gemini.enabled:
+                try:
+                    async for chunk in self.gemini.generate_plan_stream(
+                        user_message=payload.message,
+                        history=[{"role": message.role, "content": message.content} for message in history[-6:]],
+                        events=[EventRead.model_validate(event).model_dump(mode="json") for event in events[:8]],
+                        tasks=[task.model_dump(mode="json") if hasattr(task, "model_dump") else {} for task in tasks[:8]],
+                        profile=profile.__dict__ if profile else None,
+                        external_context=external_context,
+                    ):
+                        used_streaming = True
+                        full_reply += chunk
+                        yield {"type": "token", "text": chunk}
+                except Exception as exc:
+                    logger.bind(component="assistant.stream").warning("Gemini stream failed: {error}", error=str(exc))
+                    full_reply = ""
+                    used_streaming = False
+
+            if used_streaming and full_reply.strip():
+                try:
+                    plan = self.gemini._parse_json_payload(full_reply)
+                    requested_actions = plan.get("actions", [])
+                    actions = await self._execute_actions(
+                        user_id=user_id,
+                        actions=requested_actions,
+                        user_message=payload.message,
+                        existing_events=events,
+                        profile=profile,
+                    )
+                    reply_text = self._compose_reply(
+                        user_message=payload.message,
+                        base_reply=plan.get("reply"),
+                        actions=actions,
+                        requested_actions=requested_actions,
+                        fallback_message=payload.message,
+                        event_count=len(events),
+                        task_count=len(tasks),
+                        external_context=external_context,
+                    )
+                except Exception:
+                    reply_text = full_reply
+                    actions = []
+            else:
+                plan = await self._build_plan(
+                    user_id=user_id,
+                    user_message=payload.message,
+                    history=history,
+                    events=events,
+                    tasks=tasks,
+                    profile=profile,
+                    external_context=external_context,
+                )
                 requested_actions = plan.get("actions", [])
                 actions = await self._execute_actions(
                     user_id=user_id,
@@ -260,56 +311,89 @@ class AssistantService:
                     task_count=len(tasks),
                     external_context=external_context,
                 )
-            except Exception:
-                reply_text = full_reply
-                actions = []
-        else:
-            plan = await self._build_plan(
+
+            reply_text = self._format_reply_text(reply_text, user_message=payload.message)
+            if not used_streaming or not full_reply.strip():
+                for chunk in self._chunk_text(reply_text):
+                    yield {"type": "token", "text": chunk}
+
+            await self._persist_pending_action(
                 user_id=user_id,
-                user_message=payload.message,
-                history=history,
-                events=events,
-                tasks=tasks,
-                profile=profile,
-                external_context=external_context,
-            )
-            requested_actions = plan.get("actions", [])
-            actions = await self._execute_actions(
-                user_id=user_id,
-                actions=requested_actions,
-                user_message=payload.message,
-                existing_events=events,
-                profile=profile,
-            )
-            reply_text = self._compose_reply(
-                user_message=payload.message,
-                base_reply=plan.get("reply"),
+                session_id=session.id,
+                existing_context=session_context,
                 actions=actions,
-                requested_actions=requested_actions,
-                fallback_message=payload.message,
-                event_count=len(events),
-                task_count=len(tasks),
-                external_context=external_context,
             )
-            for chunk in self._chunk_text(reply_text):
-                yield {"type": "token", "text": chunk}
 
-        await self._persist_pending_action(
+            await self.repository.create_message(
+                session_id=session.id,
+                role="assistant",
+                content=reply_text,
+                tool_calls_json=[action.model_dump() for action in actions] or None,
+            )
+
+            await self._maybe_autorename_session(
+                user_id=user_id,
+                session_id=session.id,
+                session_title=session.title,
+                user_message=payload.message,
+            )
+
+            yield {"type": "actions", "actions": [action.model_dump() for action in actions]}
+            yield {"type": "done", "session_id": session.id, "full_reply": reply_text}
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.bind(component="assistant.stream").exception("Assistant send_message_stream failed: {error}", error=str(exc))
+            yield {"type": "error", "text": "AI 助手暂时不可用，请稍后再试。"}
+
+    async def create_session(self, user_id: str, payload: AssistantSessionCreate) -> AssistantSessionRead:
+        session = await self.repository.create_session(
             user_id=user_id,
-            session_id=session.id,
-            existing_context=session_context,
-            actions=actions,
+            session_type="chat",
+            title=payload.title,
+            context_json={"status": "assistant-active"},
         )
+        return await self.get_session(user_id=user_id, session_id=session.id)
 
-        await self.repository.create_message(
-            session_id=session.id,
-            role="assistant",
-            content=reply_text,
-            tool_calls_json=[action.model_dump() for action in actions] or None,
-        )
+    async def list_sessions(self, user_id: str, limit: int = 20) -> AssistantSessionListRead:
+        sessions = await self.repository.list_active_sessions(user_id=user_id, limit=limit)
+        items = [await self.get_session(user_id=user_id, session_id=session.id) for session in sessions]
+        return AssistantSessionListRead(items=items, total=len(items))
 
-        yield {"type": "actions", "actions": [action.model_dump() for action in actions]}
-        yield {"type": "done", "session_id": session.id, "full_reply": reply_text}
+    async def archive_session(self, user_id: str, session_id: int) -> dict[str, bool]:
+        return {"success": await self.repository.archive_session(session_id, user_id=user_id)}
+
+    async def clear_session_messages(self, user_id: str, session_id: int) -> dict[str, bool]:
+        return {"success": await self.repository.clear_session_messages(session_id, user_id=user_id)}
+
+    async def _resolve_session(self, *, user_id: str, session_id: int | None):
+        if session_id is None:
+            current = await self.get_current_session(user_id=user_id)
+            session = await self.repository.get_session(current.session.id, user_id=user_id)
+        else:
+            session = await self.repository.get_session(session_id, user_id=user_id)
+        if session is None or getattr(session, "is_archived", False):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="assistant session not found")
+        return session
+
+    def _format_reply_text(self, reply: str, *, user_message: str) -> str:
+        return self.formatter.format_reply(reply, prefers_chinese=self._prefers_chinese(user_message))
+
+    async def _maybe_autorename_session(
+        self,
+        *,
+        user_id: str,
+        session_id: int,
+        session_title: str,
+        user_message: str,
+    ) -> None:
+        if session_title != "New chat" and not session_title.startswith("新对话 "):
+            return
+        title = self._extract_event_title(user_message) or self._extract_task_content(user_message) or user_message.strip()
+        title = re.sub(r"\s+", " ", title).strip()[:32]
+        if not title:
+            return
+        await self.repository.rename_session(session_id, user_id=user_id, title=title)
 
     async def get_session(self, user_id: str, session_id: int) -> AssistantSessionRead:
         session = await self.repository.get_session(session_id, user_id=user_id)
@@ -322,6 +406,8 @@ class AssistantService:
             id=session.id,
             user_id=session.user_id,
             session_type=session.session_type,
+            title=getattr(session, "title", "New chat"),
+            is_archived=getattr(session, "is_archived", False),
             context_json=session.context_json,
             created_at=session.created_at,
             updated_at=session.updated_at,
@@ -839,7 +925,8 @@ class AssistantService:
                 },
                 external_context=external_context,
             )
-        except Exception:
+        except Exception as exc:
+            logger.bind(component="assistant.plan").warning("Gemini plan generation failed: {error}", error=str(exc))
             plan = {"reply": "", "actions": []}
 
         if fallback_plan.get("actions") and not plan.get("actions"):
@@ -1279,6 +1366,14 @@ class AssistantService:
                     "reply": self._build_task_preflight_reply(payload=payload, user_message=user_message),
                     "actions": [{"type": "create_task", "payload": payload}],
                 }
+            return {
+                "reply": self.formatter.build_clarification_reply(
+                    intent="create_task",
+                    missing_fields=["content"],
+                    prefers_chinese=self._prefers_chinese(user_message),
+                ),
+                "actions": [],
+            }
 
         event_payload = self._build_rule_based_event_payload(user_message)
         if event_payload.get("title") and event_payload.get("start_time") and event_payload.get("end_time"):
@@ -1298,13 +1393,19 @@ class AssistantService:
             }
 
         if intent == "create_event":
-            if self._prefers_chinese(user_message):
-                return {
-                    "reply": "我识别到你是在安排一个日程，但开始时间或结束时间还不够明确。你可以直接说“明天下午三点到四点在图书馆开组会”。",
-                    "actions": [],
-                }
+            missing_fields = []
+            if not event_payload.get("title") or event_payload.get("title") == "New event":
+                missing_fields.append("title")
+            if not event_payload.get("start_time"):
+                missing_fields.append("start_time")
+            if not event_payload.get("end_time"):
+                missing_fields.append("end_time")
             return {
-                "reply": "I can tell you want to create an event, but the time is still too ambiguous. Please include a clearer range such as tomorrow 3:00-4:00.",
+                "reply": self.formatter.build_clarification_reply(
+                    intent="create_event",
+                    missing_fields=missing_fields or ["start_time", "end_time"],
+                    prefers_chinese=self._prefers_chinese(user_message),
+                ),
                 "actions": [],
             }
 
@@ -2359,26 +2460,38 @@ class AssistantService:
         return bool(re.search(r"[\u4e00-\u9fff]", text))
 
     async def _build_external_context(self, *, profile) -> dict[str, Any]:
+        async def _fetch_weather():
+            if profile.home_location_coords:
+                try:
+                    weather = await self.context_service.weather_now(location=profile.home_location_coords)
+                    return {"temp": weather.temp, "text": weather.text, "humidity": weather.humidity}
+                except Exception:
+                    pass
+            return None
+
+        async def _fetch_commute():
+            origin = profile.home_location_coords or profile.home_location_name
+            destination = profile.work_location_coords or profile.work_location_name
+            if origin and destination:
+                try:
+                    travel = await self.context_service.estimate_travel(
+                        origin=origin,
+                        destination=destination,
+                        mode=profile.transport_preference or "driving",
+                    )
+                    return {
+                        "duration_minutes": travel.duration_minutes,
+                        "distance_km": travel.distance_km,
+                    }
+                except Exception:
+                    pass
+            return None
+
+        weather_result, commute_result = await asyncio.gather(_fetch_weather(), _fetch_commute())
+
         context: dict[str, Any] = {}
-        if profile.home_location_coords:
-            try:
-                weather = await self.context_service.weather_now(location=profile.home_location_coords)
-                context["weather_now"] = {"temp": weather.temp, "text": weather.text, "humidity": weather.humidity}
-            except Exception:
-                pass
-        origin = profile.home_location_coords or profile.home_location_name
-        destination = profile.work_location_coords or profile.work_location_name
-        if origin and destination:
-            try:
-                travel = await self.context_service.estimate_travel(
-                    origin=origin,
-                    destination=destination,
-                    mode=profile.transport_preference or "driving",
-                )
-                context["default_commute"] = {
-                    "duration_minutes": travel.duration_minutes,
-                    "distance_km": travel.distance_km,
-                }
-            except Exception:
-                pass
+        if weather_result is not None:
+            context["weather_now"] = weather_result
+        if commute_result is not None:
+            context["default_commute"] = commute_result
         return context

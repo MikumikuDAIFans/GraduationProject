@@ -5,11 +5,18 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from app.core.celery_app import celery_app
 from app.db.session import get_sessionmaker
 from app.models import Event, Reminder, Task
+
+
+RECENT_EVENT_LOOKBACK_HOURS = 24
+EVENT_REMINDER_WINDOW_MINUTES = 30
+DEPARTURE_REMINDER_WINDOW_HOURS = 2
+REMINDER_COOLDOWN_MINUTES = 15
+REMINDER_RETENTION_DAYS = 7
 
 
 @celery_app.task(name="app.jobs.reminders.scan_upcoming_reminders")
@@ -20,7 +27,8 @@ def scan_upcoming_reminders() -> dict[str, int]:
 
 async def _scan_upcoming_reminders() -> dict[str, int]:
     now = datetime.now(timezone.utc)
-    window_end = now + timedelta(minutes=30)
+    window_end = now + timedelta(minutes=EVENT_REMINDER_WINDOW_MINUTES)
+    recent_cutoff = now - timedelta(hours=RECENT_EVENT_LOOKBACK_HOURS)
     session_factory = get_sessionmaker()
 
     async with session_factory() as session:
@@ -30,11 +38,13 @@ async def _scan_upcoming_reminders() -> dict[str, int]:
                     Event.start_time.is_not(None),
                     Event.start_time >= now,
                     Event.start_time <= window_end,
+                    Event.created_at >= recent_cutoff,
                 )
             )
         ).all()
 
         generated_count = 0
+        skipped_count = 0
         for event in upcoming_events:
             existing = await session.scalar(
                 select(Reminder).where(
@@ -42,9 +52,11 @@ async def _scan_upcoming_reminders() -> dict[str, int]:
                     Reminder.target_type == "event",
                     Reminder.target_id == event.id,
                     Reminder.remind_type == "event_start",
+                    Reminder.remind_at >= now - timedelta(minutes=REMINDER_COOLDOWN_MINUTES),
                 )
             )
             if existing is not None:
+                skipped_count += 1
                 continue
 
             payload = _build_event_start_reminder_payload(event=event, now=now)
@@ -69,6 +81,7 @@ async def _scan_upcoming_reminders() -> dict[str, int]:
 
     return {
         "generated_count": generated_count,
+        "skipped_count": skipped_count,
         "pending_count": int(pending or 0),
     }
 
@@ -81,7 +94,8 @@ def scan_departure_reminders() -> dict[str, int]:
 
 async def _scan_departure_reminders() -> dict[str, int]:
     now = datetime.now(timezone.utc)
-    window_end = now + timedelta(hours=2)
+    window_end = now + timedelta(hours=DEPARTURE_REMINDER_WINDOW_HOURS)
+    recent_cutoff = now - timedelta(hours=RECENT_EVENT_LOOKBACK_HOURS)
     session_factory = get_sessionmaker()
 
     async with session_factory() as session:
@@ -91,11 +105,13 @@ async def _scan_departure_reminders() -> dict[str, int]:
                     Event.departure_time.is_not(None),
                     Event.departure_time >= now,
                     Event.departure_time <= window_end,
+                    Event.created_at >= recent_cutoff,
                 )
             )
         ).all()
 
         generated_count = 0
+        skipped_count = 0
         for event in upcoming_events:
             existing = await session.scalar(
                 select(Reminder).where(
@@ -103,9 +119,11 @@ async def _scan_departure_reminders() -> dict[str, int]:
                     Reminder.target_type == "event",
                     Reminder.target_id == event.id,
                     Reminder.remind_type == "departure",
+                    Reminder.remind_at >= now - timedelta(minutes=REMINDER_COOLDOWN_MINUTES),
                 )
             )
             if existing is not None:
+                skipped_count += 1
                 continue
 
             session.add(Reminder(user_id=event.user_id, **_build_departure_reminder_payload(event=event, now=now)))
@@ -114,7 +132,7 @@ async def _scan_departure_reminders() -> dict[str, int]:
         if generated_count:
             await session.commit()
 
-    return {"generated_count": generated_count}
+    return {"generated_count": generated_count, "skipped_count": skipped_count}
 
 
 @celery_app.task(name="app.jobs.reminders.scan_idle_slot_risks")
@@ -239,6 +257,29 @@ async def _scan_conflict_warnings() -> dict[str, int]:
             await session.commit()
 
     return {"generated_count": generated_count}
+
+
+@celery_app.task(name="app.jobs.reminders.cleanup_old_reminders")
+def cleanup_old_reminders() -> dict[str, int]:
+    """Remove stale reminders so the UI is not flooded by history."""
+    return asyncio.run(_cleanup_old_reminders())
+
+
+async def _cleanup_old_reminders() -> dict[str, int]:
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=REMINDER_RETENTION_DAYS)
+    session_factory = get_sessionmaker()
+
+    async with session_factory() as session:
+        result = await session.execute(
+            delete(Reminder).where(
+                Reminder.remind_at < cutoff,
+                Reminder.status.in_(["read", "completed", "cancelled", "pending"]),
+            )
+        )
+        await session.commit()
+
+    return {"deleted_count": int(result.rowcount or 0)}
 
 
 def _build_event_start_reminder_payload(*, event: Event, now: datetime) -> dict[str, object]:

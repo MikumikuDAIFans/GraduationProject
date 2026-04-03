@@ -4,7 +4,9 @@ import dayGridPlugin from "@fullcalendar/daygrid";
 import timeGridPlugin from "@fullcalendar/timegrid";
 import interactionPlugin from "@fullcalendar/interaction";
 import { computed, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import type { CalendarEvent, TaskItem } from "@/stores/workspace";
+import { formatDateTime, formatTime } from "@/utils/locale";
 
 const props = defineProps<{
   events: CalendarEvent[];
@@ -20,6 +22,7 @@ const emit = defineEmits<{
   "send-assistant": [message: string];
   "delete-event": [eventId: number];
 }>();
+const { t, locale } = useI18n();
 
 const focusedCardRef = ref<HTMLElement | null>(null);
 
@@ -66,13 +69,18 @@ function isEventFocused(e: CalendarEvent) {
 }
 function askAssistantAboutTask(e: CalendarEvent) {
   const task = linkedTask(e);
-  if (task) emit("send-assistant", `现在进展如何，接下来怎么安排任务"${task.content}"`);
+  if (!task) return;
+  if (locale.value === "zh-CN") {
+    emit("send-assistant", `现在进展如何，接下来怎么安排任务"${task.content}"`);
+    return;
+  }
+  emit("send-assistant", `How is "${task.content}" going, and what should I schedule next?`);
 }
 function syncBadge(status?: string | null) {
-  if (status === "synced")   return { label: "Synced",   cls: "bg-positive-light text-positive" };
-  if (status === "sync_error") return { label: "Error",  cls: "bg-danger-light text-danger" };
-  if (status === "imported") return { label: "Imported", cls: "bg-sky-50 text-sky-600" };
-  return                            { label: "Local",    cls: "bg-surface-3 text-ink-3" };
+  if (status === "synced") return { label: t("calendarPanel.synced"), cls: "bg-positive-light text-positive" };
+  if (status === "sync_error") return { label: t("calendarPanel.error"), cls: "bg-danger-light text-danger" };
+  if (status === "imported") return { label: t("calendarPanel.imported"), cls: "bg-sky-50 text-sky-600" };
+  return { label: t("calendarPanel.local"), cls: "bg-surface-3 text-ink-3" };
 }
 </script>
 
@@ -83,12 +91,12 @@ function syncBadge(status?: string | null) {
     <div class="flex items-center justify-between border-b border-border px-4 py-3">
       <div>
         <p class="text-[10px] font-bold uppercase tracking-widest text-ink-3">Calendar</p>
-        <h2 class="mt-0.5 text-sm font-bold text-ink">Workspace Timeline</h2>
+        <h2 class="mt-0.5 text-sm font-bold text-ink">{{ t("calendarPanel.subtitle") }}</h2>
       </div>
       <span
         class="rounded-md px-2 py-1 text-[11px] font-medium"
         :class="loading ? 'bg-warn-light text-warn' : 'bg-surface-3 text-ink-3'"
-      >{{ loading ? "Syncing…" : `${events.length} events` }}</span>
+      >{{ loading ? t("calendarPanel.syncing") : t("calendarPanel.eventsCount", { count: events.length }) }}</span>
     </div>
 
     <!-- FullCalendar -->
@@ -110,15 +118,15 @@ function syncBadge(status?: string | null) {
 
     <!-- Legend -->
     <div class="flex flex-wrap gap-2 border-b border-border px-4 py-2.5">
-      <span class="rounded-md bg-accent-light px-2 py-0.5 text-[11px] font-medium text-accent">● Local</span>
+      <span class="rounded-md bg-accent-light px-2 py-0.5 text-[11px] font-medium text-accent">● {{ t("calendarPanel.local") }}</span>
       <span class="rounded-md bg-sky-50 px-2 py-0.5 text-[11px] font-medium text-sky-600">☁ Google</span>
-      <span class="rounded-md bg-positive-light px-2 py-0.5 text-[11px] font-medium text-positive">✓ Synced</span>
-      <span class="rounded-md bg-danger-light px-2 py-0.5 text-[11px] font-medium text-danger">⚠ Error</span>
+      <span class="rounded-md bg-positive-light px-2 py-0.5 text-[11px] font-medium text-positive">✓ {{ t("calendarPanel.synced") }}</span>
+      <span class="rounded-md bg-danger-light px-2 py-0.5 text-[11px] font-medium text-danger">⚠ {{ t("calendarPanel.error") }}</span>
     </div>
 
     <!-- Event list -->
     <div v-if="highlightedEvents.length" class="px-4 py-3">
-      <p class="mb-2.5 text-[10px] font-bold uppercase tracking-widest text-ink-3">Recent Events</p>
+      <p class="mb-2.5 text-[10px] font-bold uppercase tracking-widest text-ink-3">{{ t("calendarPanel.recentEvents") }}</p>
       <div class="space-y-2">
         <div
           v-for="event in highlightedEvents"
@@ -137,9 +145,9 @@ function syncBadge(status?: string | null) {
                 {{ syncBadge(event.sync_status).label }}
               </span>
               <span v-if="event.event_type === 'focus_block'"
-                class="rounded-md bg-purple-50 px-1.5 py-0.5 text-[10px] font-semibold text-purple-600">Focus</span>
+                class="rounded-md bg-purple-50 px-1.5 py-0.5 text-[10px] font-semibold text-purple-600">{{ t("calendarPanel.focus") }}</span>
             </div>
-            <p class="mt-0.5 text-xs text-ink-3">{{ event.start_time || "Unscheduled" }}</p>
+            <p class="mt-0.5 text-xs text-ink-3">{{ event.start_time ? formatDateTime(event.start_time, locale) : t("calendarPanel.unscheduled") }}</p>
             <p v-if="linkedTask(event)" class="mt-0.5 text-xs text-ink-3">
               {{ linkedTask(event)?.content }} · {{ linkedTask(event)?.completed_minutes }}/{{ linkedTask(event)?.scheduled_minutes }} min
             </p>
@@ -148,19 +156,19 @@ function syncBadge(status?: string | null) {
           <!-- Actions -->
           <div class="flex shrink-0 flex-wrap gap-1.5">
             <template v-if="canResolveFocusBlock(event)">
-              <button type="button"
+                <button type="button"
                 class="rounded-lg bg-positive px-2.5 py-1.5 text-[11px] font-semibold text-white transition hover:bg-positive-hover"
-                @click="emit('update-status', event.id, 'completed')">Done</button>
+                @click="emit('update-status', event.id, 'completed')">{{ t("common.done") }}</button>
               <button type="button"
                 class="rounded-lg border border-danger/20 bg-danger-light px-2.5 py-1.5 text-[11px] font-semibold text-danger transition hover:bg-red-100"
-                @click="emit('update-status', event.id, 'canceled')">Cancel</button>
+                @click="emit('update-status', event.id, 'canceled')">{{ t("common.cancel") }}</button>
               <button v-if="linkedTask(event)" type="button"
                 class="rounded-lg border border-border bg-white px-2.5 py-1.5 text-[11px] font-semibold text-ink-2 transition hover:bg-surface-3"
-                @click="askAssistantAboutTask(event)">Ask AI</button>
+                @click="askAssistantAboutTask(event)">{{ t("calendarPanel.askAi") }}</button>
             </template>
             <button v-if="event.source !== 'google_imported'" type="button"
               class="rounded-lg border border-danger/20 bg-danger-light px-2.5 py-1.5 text-[11px] font-semibold text-danger transition hover:bg-red-100"
-              @click="emit('delete-event', event.id)">Del</button>
+              @click="emit('delete-event', event.id)">{{ t("common.delete") }}</button>
           </div>
         </div>
       </div>
@@ -168,14 +176,14 @@ function syncBadge(status?: string | null) {
 
     <!-- Departure guides -->
     <div v-if="departureGuides.length" class="border-t border-border px-4 py-3">
-      <p class="mb-2.5 text-[10px] font-bold uppercase tracking-widest text-ink-3">Departure Guides</p>
+      <p class="mb-2.5 text-[10px] font-bold uppercase tracking-widest text-ink-3">{{ t("calendarPanel.departureGuides") }}</p>
       <div class="grid gap-2 sm:grid-cols-2">
         <div v-for="event in departureGuides" :key="`dep-${event.id}`"
           class="rounded-lg border border-warn/20 bg-warn-light p-3">
           <p class="text-sm font-medium text-ink">{{ event.title }}</p>
-          <p class="mt-0.5 text-xs text-ink-3">{{ event.location_name || "Unknown" }}</p>
+          <p class="mt-0.5 text-xs text-ink-3">{{ event.location_name || t("calendarPanel.unknownLocation") }}</p>
           <p class="mt-1.5 text-xs font-semibold text-warn">
-            Leave {{ event.departure_time }} · {{ event.travel_duration_minutes }} min · {{ event.travel_mode || "route" }}
+            {{ t("calendarPanel.leaveAt", { time: formatTime(event.departure_time, locale) }) }} · {{ event.travel_duration_minutes }} min · {{ event.travel_mode || t("calendarPanel.route") }}
           </p>
         </div>
       </div>

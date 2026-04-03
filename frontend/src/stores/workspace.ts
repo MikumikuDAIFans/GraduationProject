@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { api } from "@/api/client";
 import { defaultInputAdapter } from "@/inputAdapters/textInput";
 import { defaultOutputAdapter } from "@/outputAdapters/textOutput";
+import { i18n, getSavedLocale, persistLocale, type SupportedLocale } from "@/i18n";
 import { MobileNotificationService } from "@/plugins/capacitor";
 import { sendPlatformNotification } from "@/platform/notifications";
 
@@ -109,6 +110,18 @@ export interface AssistantMessage {
   created_at?: string;
 }
 
+export interface AssistantSession {
+  id: number;
+  user_id: string;
+  session_type?: string | null;
+  title: string;
+  is_archived?: boolean;
+  context_json?: Record<string, unknown> | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  messages: AssistantMessage[];
+}
+
 export interface ToastItem {
   id: string;
   message: string;
@@ -205,6 +218,34 @@ export interface GoogleCalendarSyncResult {
   details: string[];
 }
 
+export interface AIHealth {
+  enabled: boolean;
+  provider: string;
+  circuit_open: boolean;
+  circuit_open_until?: string | null;
+  consecutive_failures: number;
+}
+
+export interface PerformancePath {
+  path: string;
+  count: number;
+}
+
+export interface PerformanceMetrics {
+  uptime_seconds: number;
+  request_count: number;
+  last_request_ms: number;
+  avg_request_ms: number;
+  p95_request_ms: number;
+  hottest_paths: PerformancePath[];
+}
+
+export interface FrontendPerformanceMetrics {
+  first_paint_ms?: number | null;
+  first_contentful_paint_ms?: number | null;
+  largest_contentful_paint_ms?: number | null;
+}
+
 export const useWorkspaceStore = defineStore("workspace", {
   state: () => ({
     loading: false,
@@ -224,6 +265,11 @@ export const useWorkspaceStore = defineStore("workspace", {
     assistantInbox: [] as AssistantInboxItem[],
     assistantInboxUnreadTotal: 0,
     assistantSummary: null as AssistantSummary | null,
+    assistantSessions: [] as AssistantSession[],
+    loadingAssistantSessions: false,
+    creatingAssistantSession: false,
+    archivingAssistantSession: false,
+    clearingAssistantSession: false,
     weatherLocation: "116.397,39.908",
     weatherNow: null as WeatherNow | null,
     travelOrigin: "Tiananmen, Beijing",
@@ -233,99 +279,252 @@ export const useWorkspaceStore = defineStore("workspace", {
     googleCalendarStatus: null as GoogleCalendarStatus | null,
     googleCalendarSyncResult: null as GoogleCalendarSyncResult | null,
     googleCalendarFeedback: null as string | null,
+    aiHealth: null as AIHealth | null,
+    performanceMetrics: null as PerformanceMetrics | null,
+    frontendPerformance: null as FrontendPerformanceMetrics | null,
+    loadingPerformance: false,
     socket: null as WebSocket | null,
     toasts: [] as ToastItem[],
     seenReminderIds: [] as number[],
+    initializedReminderSnapshot: false,
     focusedTaskId: null as number | null,
     focusedEventId: null as number | null,
+    locale: getSavedLocale() as SupportedLocale,
+    // 新增：缓存状态管理
+    _cacheTimestamps: {} as Record<string, number>,
+    _cacheDurations: {
+      events: 30000,        // 30秒
+      tasks: 30000,         // 30秒
+      reminders: 15000,     // 15秒
+      suggestions: 60000,   // 60秒
+      weather: 300000,      // 5分钟
+      travel: 300000,       // 5分钟
+      profile: 60000,       // 1分钟
+      performance: 30000,   // 30秒
+      aiHealth: 30000,      // 30秒
+      googleCalendar: 60000,// 1分钟
+    },
+    // 新增：请求防抖
+    _pendingRequests: {} as Record<string, Promise<any>>,
   }),
   actions: {
+    // 新增：缓存检查方法
+    isCacheValid(key: string): boolean {
+      const timestamp = this._cacheTimestamps[key];
+      if (!timestamp) return false;
+      const duration = this._cacheDurations[key as keyof typeof this._cacheDurations] || 30000;
+      return Date.now() - timestamp < duration;
+    },
+
+    invalidateCache(key: string) {
+      delete this._cacheTimestamps[key];
+    },
+
+    invalidateAllCache() {
+      this._cacheTimestamps = {};
+    },
+
+    // 新增：带缓存的请求方法
+    async cachedFetch<T>(key: string, fetchFn: () => Promise<T>): Promise<T | undefined> {
+      // 如果缓存有效，跳过请求
+      if (this.isCacheValid(key)) {
+        return undefined; // 返回undefined表示使用了缓存
+      }
+
+      // 防止重复请求
+      if (this._pendingRequests[key]) {
+        return this._pendingRequests[key];
+      }
+
+      try {
+        this._pendingRequests[key] = fetchFn();
+        const result = await this._pendingRequests[key];
+        this._cacheTimestamps[key] = Date.now();
+        return result;
+      } finally {
+        delete this._pendingRequests[key];
+      }
+    },
+
     async hydrate() {
       this.loading = true;
       try {
+        this.setLocale(this.locale);
         await this.fetchProfile();
-        await Promise.all([
-          this.fetchEvents(),
-          this.fetchTasks(),
-          this.fetchReminders(),
-          this.fetchSuggestions(),
+        
+        // 使用智能缓存，只获取过期或不存在的数据
+        const fetchTasks = [];
+        
+        if (!this.isCacheValid('events')) fetchTasks.push(this.fetchEvents());
+        if (!this.isCacheValid('tasks')) fetchTasks.push(this.fetchTasks());
+        if (!this.isCacheValid('reminders')) fetchTasks.push(this.fetchReminders());
+        if (!this.isCacheValid('suggestions')) fetchTasks.push(this.fetchSuggestions());
+        if (!this.isCacheValid('googleCalendar')) fetchTasks.push(this.fetchGoogleCalendarStatus());
+        
+        // 总是获取最新的会话和摘要（用户交互相关）
+        fetchTasks.push(
+          this.fetchAssistantSessions(),
           this.fetchCurrentAssistantSession(),
-          this.fetchAssistantSummary(),
-          this.fetchWeatherNow(),
-          this.fetchTravelEstimate(),
-          this.fetchGoogleCalendarStatus(),
-        ]);
+          this.fetchAssistantSummary()
+        );
+        
+        // 非关键数据，延迟加载
+        setTimeout(async () => {
+          await Promise.allSettled([
+            !this.isCacheValid('weather') ? this.fetchWeatherNow() : Promise.resolve(),
+            !this.isCacheValid('travel') ? this.fetchTravelEstimate() : Promise.resolve(),
+            !this.isCacheValid('performance') ? this.fetchPerformanceSnapshot() : Promise.resolve(),
+          ]);
+        }, 1000);
+        
+        // 等待关键数据加载完成
+        await Promise.allSettled(fetchTasks);
+        
+        this.captureFrontendPerformance();
         await MobileNotificationService.registerPushNotifications();
         this.connectNotifications();
+      } catch (error) {
+        console.error("Hydration failed:", error);
+        this.pushToast(
+          this.locale === "zh-CN" ? "加载失败，请刷新页面" : "Failed to load",
+          "danger"
+        );
       } finally {
         this.loading = false;
       }
     },
-    async fetchEvents() {
-      const response = await api.get<CalendarEvent[]>("/events");
-      this.events = response.data;
+    async fetchEvents(force = false) {
+      if (!force && this.isCacheValid('events')) return;
+      try {
+        const response = await api.get<CalendarEvent[]>("/events");
+        this.events = response.data;
+        this._cacheTimestamps['events'] = Date.now();
+      } catch (error) {
+        console.error("Failed to fetch events:", error);
+      }
     },
-    async fetchReminders() {
-      const response = await api.get<Reminder[]>("/reminders");
-      this.reminders = response.data;
+    async fetchReminders(force = false) {
+      if (!force && this.isCacheValid('reminders')) return;
+      try {
+        const response = await api.get<Reminder[]>("/reminders");
+        this.reminders = response.data;
+        this._cacheTimestamps['reminders'] = Date.now();
+      } catch (error) {
+        console.error("Failed to fetch reminders:", error);
+      }
     },
-    async fetchTasks() {
-      const response = await api.get<TaskItem[]>("/tasks");
-      this.tasks = response.data;
+    async fetchTasks(force = false) {
+      if (!force && this.isCacheValid('tasks')) return;
+      try {
+        const response = await api.get<TaskItem[]>("/tasks");
+        this.tasks = response.data;
+        this._cacheTimestamps['tasks'] = Date.now();
+      } catch (error) {
+        console.error("Failed to fetch tasks:", error);
+      }
     },
-    async fetchSuggestions() {
-      const [today, next] = await Promise.all([
-        api.get<{ items: Suggestion[] }>("/suggestions/today"),
-        api.get<{ items: Suggestion[] }>("/suggestions/next"),
-      ]);
-      this.todaySuggestions = today.data.items;
-      this.nextSuggestions = next.data.items;
+    async fetchSuggestions(force = false) {
+      if (!force && this.isCacheValid('suggestions')) return;
+      try {
+        const [today, next] = await Promise.all([
+          api.get<{ items: Suggestion[] }>("/suggestions/today"),
+          api.get<{ items: Suggestion[] }>("/suggestions/next"),
+        ]);
+        this.todaySuggestions = today.data.items;
+        this.nextSuggestions = next.data.items;
+        this._cacheTimestamps['suggestions'] = Date.now();
+      } catch (error) {
+        console.error("Failed to fetch suggestions:", error);
+      }
     },
     async fetchAssistantInbox() {
-      const response = await api.get<AssistantInbox>("/assistant/inbox");
-      this.assistantInbox = response.data.items;
-      this.assistantInboxUnreadTotal = response.data.unread_total;
+      try {
+        const response = await api.get<AssistantInbox>("/assistant/inbox");
+        this.assistantInbox = response.data.items;
+        this.assistantInboxUnreadTotal = response.data.unread_total;
+      } catch (error) {
+        console.error("Failed to fetch assistant inbox:", error);
+      }
+    },
+    async fetchAssistantSessions() {
+      this.loadingAssistantSessions = true;
+      try {
+        const response = await api.get<{ items: AssistantSession[]; total: number }>("/assistant/sessions");
+        this.assistantSessions = response.data.items;
+      } finally {
+        this.loadingAssistantSessions = false;
+      }
     },
     async fetchCurrentAssistantSession() {
-      const response = await api.get<{
-        session: { id: number; messages: AssistantMessage[] };
-        inbox: AssistantInbox;
-      }>("/assistant/current");
-      this.sessionId = response.data.session.id;
-      this.messages = response.data.session.messages;
-      this.assistantInbox = response.data.inbox.items;
-      this.assistantInboxUnreadTotal = response.data.inbox.unread_total;
+      try {
+        const response = await api.get<{
+          session: AssistantSession;
+          inbox: AssistantInbox;
+        }>("/assistant/current");
+        this.sessionId = response.data.session.id;
+        this.messages = response.data.session.messages;
+        this.assistantInbox = response.data.inbox.items;
+        this.assistantInboxUnreadTotal = response.data.inbox.unread_total;
+        const existing = this.assistantSessions.find((item) => item.id === response.data.session.id);
+        if (!existing) {
+          this.assistantSessions = [response.data.session, ...this.assistantSessions];
+        }
+      } catch (error) {
+        console.error("Failed to fetch current assistant session:", error);
+      }
     },
     async fetchAssistantSummary() {
-      const response = await api.get<AssistantSummary>("/assistant/summary");
-      this.assistantSummary = response.data;
-    },
-    async fetchWeatherNow() {
-      const response = await api.get<WeatherNow>("/context/weather/now", {
-        params: { location: this.weatherLocation },
-      });
-      this.weatherNow = response.data;
-    },
-    async fetchTravelEstimate() {
-      const response = await api.get<TravelEstimate>("/context/travel", {
-        params: {
-          origin: this.travelOrigin,
-          destination: this.travelDestination,
-        },
-      });
-      this.travelEstimate = response.data;
-    },
-    async fetchProfile() {
-      const response = await api.get<UserProfile>("/profile");
-      this.profile = response.data;
-      if (response.data.home_location_name) {
-        this.travelOrigin = response.data.home_location_coords ?? response.data.home_location_name;
+      try {
+        const response = await api.get<AssistantSummary>("/assistant/summary");
+        this.assistantSummary = response.data;
+      } catch (error) {
+        console.error("Failed to fetch assistant summary:", error);
       }
-      if (response.data.home_location_coords) {
-        this.weatherLocation = response.data.home_location_coords;
+    },
+    async fetchWeatherNow(force = false) {
+      if (!force && this.isCacheValid('weather')) return;
+      try {
+        const response = await api.get<WeatherNow>("/context/weather/now", {
+          params: { location: this.weatherLocation },
+        });
+        this.weatherNow = response.data;
+        this._cacheTimestamps['weather'] = Date.now();
+      } catch (error) {
+        console.error("Failed to fetch weather:", error);
       }
-      if (response.data.work_location_name) {
-        this.travelDestination = response.data.work_location_coords ?? response.data.work_location_name;
+    },
+    async fetchTravelEstimate(force = false) {
+      if (!force && this.isCacheValid('travel')) return;
+      try {
+        const response = await api.get<TravelEstimate>("/context/travel", {
+          params: {
+            origin: this.travelOrigin,
+            destination: this.travelDestination,
+          },
+        });
+        this.travelEstimate = response.data;
+        this._cacheTimestamps['travel'] = Date.now();
+      } catch (error) {
+        console.error("Failed to fetch travel estimate:", error);
+      }
+    },
+    async fetchProfile(force = false) {
+      if (!force && this.isCacheValid('profile')) return;
+      try {
+        const response = await api.get<UserProfile>("/profile");
+        this.profile = response.data;
+        if (response.data.home_location_name) {
+          this.travelOrigin = response.data.home_location_coords ?? response.data.home_location_name;
+        }
+        if (response.data.home_location_coords) {
+          this.weatherLocation = response.data.home_location_coords;
+        }
+        if (response.data.work_location_name) {
+          this.travelDestination = response.data.work_location_coords ?? response.data.work_location_name;
+        }
+        this._cacheTimestamps['profile'] = Date.now();
+      } catch (error) {
+        console.error("Failed to fetch profile:", error);
       }
     },
     async saveProfile(payload: Partial<UserProfile>) {
@@ -342,14 +541,87 @@ export const useWorkspaceStore = defineStore("workspace", {
         if (response.data.work_location_name) {
           this.travelDestination = response.data.work_location_coords ?? response.data.work_location_name;
         }
-        await Promise.all([this.fetchWeatherNow(), this.fetchTravelEstimate()]);
+        
+        // 只使受影响的缓存失效
+        this.invalidateCache('weather');
+        this.invalidateCache('travel');
+        this.invalidateCache('profile');
+        
+        // 异步获取更新后的数据
+        Promise.allSettled([
+          this.fetchWeatherNow(true),
+          this.fetchTravelEstimate(true),
+        ]);
+        
+        this.pushToast(
+          this.locale === "zh-CN" ? "资料已保存" : "Profile saved",
+          "success"
+        );
+      } catch (error) {
+        console.error("Failed to save profile:", error);
+        this.pushToast(
+          this.locale === "zh-CN" ? "保存失败，请重试" : "Failed to save profile",
+          "danger"
+        );
       } finally {
         this.savingProfile = false;
       }
     },
     async fetchGoogleCalendarStatus() {
-      const response = await api.get<GoogleCalendarStatus>("/google-calendar/status");
-      this.googleCalendarStatus = response.data;
+      try {
+        const response = await api.get<GoogleCalendarStatus>("/google-calendar/status");
+        this.googleCalendarStatus = response.data;
+      } catch (error) {
+        console.error("Failed to fetch Google Calendar status:", error);
+      }
+    },
+    async fetchPerformanceSnapshot() {
+      this.loadingPerformance = true;
+      try {
+        const [perf, ai] = await Promise.all([
+          api.get<PerformanceMetrics>("/health/performance"),
+          api.get<AIHealth>("/health/ai"),
+        ]);
+        this.performanceMetrics = perf.data;
+        this.aiHealth = ai.data;
+      } catch (error) {
+        console.error("Failed to fetch performance snapshot:", error);
+        // Silently degrade - performance metrics are non-critical
+      } finally {
+        this.loadingPerformance = false;
+      }
+    },
+    captureFrontendPerformance() {
+      if (typeof window === "undefined" || typeof performance === "undefined") {
+        return;
+      }
+
+      const next: FrontendPerformanceMetrics = {};
+      for (const entry of performance.getEntriesByType("paint")) {
+        if (entry.name === "first-paint") {
+          next.first_paint_ms = Math.round(entry.startTime);
+        }
+        if (entry.name === "first-contentful-paint") {
+          next.first_contentful_paint_ms = Math.round(entry.startTime);
+        }
+      }
+
+      if ("PerformanceObserver" in window) {
+        try {
+          const observer = new PerformanceObserver((list) => {
+            for (const entry of list.getEntries()) {
+              next.largest_contentful_paint_ms = Math.round(entry.startTime);
+              this.frontendPerformance = { ...next };
+            }
+          });
+          observer.observe({ type: "largest-contentful-paint", buffered: true });
+          window.setTimeout(() => observer.disconnect(), 5000);
+        } catch {
+          // Ignore unsupported performance entry types.
+        }
+      }
+
+      this.frontendPerformance = next;
     },
     async startGoogleCalendarAuth() {
       this.startingGoogleCalendarAuth = true;
@@ -376,21 +648,21 @@ export const useWorkspaceStore = defineStore("workspace", {
         const error = params.get("error");
 
         if (error) {
-          this.googleCalendarFeedback = `Google Calendar authorization failed: ${error}`;
+          this.googleCalendarFeedback = i18n.global.t("googleCalendar.authFailed", { error });
           return;
         }
         if (!code) {
-          this.googleCalendarFeedback = "Google Calendar callback did not include an authorization code.";
+          this.googleCalendarFeedback = i18n.global.t("googleCalendar.callbackMissingCode");
           return;
         }
 
         await api.get("/google-calendar/auth/callback", {
           params: { code, state },
         });
-        this.googleCalendarFeedback = "Google Calendar connected. You can sync local events now.";
+        this.googleCalendarFeedback = i18n.global.t("googleCalendar.connectedFeedback");
         await this.fetchGoogleCalendarStatus();
       } catch (error) {
-        this.googleCalendarFeedback = this.extractApiError(error, "Google Calendar callback failed.");
+        this.googleCalendarFeedback = this.extractApiError(error, i18n.global.t("googleCalendar.callbackFailed"));
       } finally {
         window.history.replaceState({}, "", "/");
         this.processingGoogleCalendarCallback = false;
@@ -402,22 +674,31 @@ export const useWorkspaceStore = defineStore("workspace", {
       try {
         const response = await api.post<GoogleCalendarSyncResult>("/google-calendar/sync");
         this.googleCalendarSyncResult = response.data;
-        this.googleCalendarFeedback = [
-          `Pushed ${response.data.pushed} local event(s)`,
-          `imported ${response.data.imported}`,
-          `updated ${response.data.updated}`,
-          `skipped ${response.data.skipped}`,
-        ].join(", ");
-        await Promise.all([
-          this.fetchGoogleCalendarStatus(),
-          this.fetchEvents(),
-          this.fetchTasks(),
-          this.fetchSuggestions(),
+        this.googleCalendarFeedback = i18n.global.t("googleCalendar.syncFeedback", {
+          pushed: response.data.pushed,
+          imported: response.data.imported,
+          updated: response.data.updated,
+          skipped: response.data.skipped,
+        });
+        
+        // 同步后使相关缓存失效
+        this.invalidateCache('events');
+        this.invalidateCache('tasks');
+        this.invalidateCache('suggestions');
+        this.invalidateCache('reminders');
+        this.invalidateCache('googleCalendar');
+        
+        // 异步获取更新后的数据
+        Promise.allSettled([
+          this.fetchGoogleCalendarStatus(true),
+          this.fetchEvents(true),
+          this.fetchTasks(true),
+          this.fetchSuggestions(true),
           this.fetchAssistantInbox(),
-          this.fetchReminders(),
+          this.fetchReminders(true),
         ]);
       } catch (error) {
-        this.googleCalendarFeedback = this.extractApiError(error, "Google Calendar sync failed.");
+        this.googleCalendarFeedback = this.extractApiError(error, i18n.global.t("googleCalendar.syncFailed"));
       } finally {
         this.syncingGoogleCalendar = false;
       }
@@ -426,11 +707,77 @@ export const useWorkspaceStore = defineStore("workspace", {
       this.googleCalendarFeedback = null;
     },
     async fetchSession(sessionId: number) {
-      const response = await api.get<{ id: number; messages: AssistantMessage[] }>(
-        `/assistant/sessions/${sessionId}`,
-      );
-      this.sessionId = response.data.id;
-      this.messages = response.data.messages;
+      try {
+        const response = await api.get<AssistantSession>(
+          `/assistant/sessions/${sessionId}`,
+        );
+        this.sessionId = response.data.id;
+        this.messages = response.data.messages;
+        this.assistantSessions = this.assistantSessions.map((item) =>
+          item.id === response.data.id ? response.data : item,
+        );
+      } catch (error) {
+        console.error("Failed to fetch session:", error);
+      }
+    },
+    async createAssistantSession(title?: string) {
+      this.creatingAssistantSession = true;
+      try {
+        const response = await api.post<AssistantSession>("/assistant/sessions", { title });
+        this.sessionId = response.data.id;
+        this.messages = response.data.messages;
+        this.assistantSessions = [response.data, ...this.assistantSessions.filter((item) => item.id !== response.data.id)];
+        this.lastAssistantActions = [];
+        this.pushToast(i18n.global.t("toast.sessionCreated"), "info");
+      } catch (error) {
+        this.pushToast(i18n.global.t("toast.sessionCreateFailed"), "danger");
+        throw error;
+      } finally {
+        this.creatingAssistantSession = false;
+      }
+    },
+    async switchAssistantSession(sessionId: number) {
+      try {
+        await this.fetchSession(sessionId);
+      } catch (error) {
+        this.pushToast(i18n.global.t("toast.sessionSwitchFailed"), "danger");
+        throw error;
+      }
+    },
+    async archiveCurrentAssistantSession() {
+      if (this.sessionId == null) {
+        return;
+      }
+      this.archivingAssistantSession = true;
+      try {
+        await api.post(`/assistant/sessions/${this.sessionId}/archive`);
+        this.assistantSessions = this.assistantSessions.filter((item) => item.id !== this.sessionId);
+        this.pushToast(i18n.global.t("toast.sessionArchived"), "info");
+        await Promise.all([this.fetchAssistantSessions(), this.fetchCurrentAssistantSession()]);
+      } catch (error) {
+        this.pushToast(i18n.global.t("toast.sessionArchiveFailed"), "danger");
+        throw error;
+      } finally {
+        this.archivingAssistantSession = false;
+      }
+    },
+    async clearCurrentAssistantSession() {
+      if (this.sessionId == null) {
+        return;
+      }
+      this.clearingAssistantSession = true;
+      try {
+        await api.delete(`/assistant/sessions/${this.sessionId}/messages`);
+        this.messages = [];
+        this.lastAssistantActions = [];
+        this.pushToast(i18n.global.t("toast.sessionCleared"), "info");
+        await this.fetchAssistantSessions();
+      } catch (error) {
+        this.pushToast(i18n.global.t("toast.sessionClearFailed"), "danger");
+        throw error;
+      } finally {
+        this.clearingAssistantSession = false;
+      }
     },
     buildWebSocketUrl(path: string) {
       const fallbackBase = "http://127.0.0.1:8000/api";
@@ -439,16 +786,33 @@ export const useWorkspaceStore = defineStore("workspace", {
       const wsProtocol = httpUrl.protocol === "https:" ? "wss:" : "ws:";
       return `${wsProtocol}//${httpUrl.host}${path}`;
     },
-    async refreshAssistantWorkspace() {
-      await Promise.all([
-        this.fetchEvents(),
-        this.fetchTasks(),
-        this.fetchReminders(),
-        this.fetchSuggestions(),
-        this.fetchAssistantInbox(),
-        this.fetchAssistantSummary(),
-        this.sessionId != null ? this.fetchSession(this.sessionId) : Promise.resolve(),
-      ]);
+    async refreshAssistantWorkspace(selective = true) {
+      // selective模式只更新变化的数据
+      if (selective) {
+        await Promise.allSettled([
+          this.fetchEvents(),
+          this.fetchTasks(),
+          this.fetchReminders(),
+          this.fetchSuggestions(),
+          this.fetchAssistantInbox(),
+          this.fetchAssistantSummary(),
+          this.sessionId != null ? this.fetchCurrentAssistantSession() : Promise.resolve(),
+        ]);
+      } else {
+        // 完整刷新模式
+        this.invalidateAllCache();
+        await Promise.allSettled([
+          this.fetchEvents(true),
+          this.fetchTasks(true),
+          this.fetchReminders(true),
+          this.fetchSuggestions(true),
+          this.fetchAssistantSessions(),
+          this.fetchAssistantInbox(),
+          this.fetchAssistantSummary(),
+          this.fetchPerformanceSnapshot(),
+          this.sessionId != null ? this.fetchSession(this.sessionId) : Promise.resolve(),
+        ]);
+      }
     },
     async sendAssistantMessageStream(message: string) {
       const parsedMessage = await defaultInputAdapter.parse(message);
@@ -553,6 +917,7 @@ export const useWorkspaceStore = defineStore("workspace", {
         this.messages = this.messages.filter((item) => item.id !== userMessageId && item.id !== assistantMsgId);
         this.lastAssistantActions = [];
         this.sending = false;
+        this.pushToast(this.extractApiError(error, i18n.global.t("toast.assistantFailed")), "danger");
         throw error;
       } finally {
         if (!completed) {
@@ -602,24 +967,54 @@ export const useWorkspaceStore = defineStore("workspace", {
         this.lastAssistantActions = response.data.actions;
 
         await this.refreshAssistantWorkspace();
+      } catch (error) {
+        this.pushToast(this.extractApiError(error, i18n.global.t("toast.assistantFailed")), "danger");
+        throw error;
       } finally {
         this.sending = false;
       }
     },
     async updateEventStatus(eventId: number, status: string) {
-      await api.put(`/events/${eventId}`, { status });
-      await Promise.all([
-        this.fetchEvents(),
-        this.fetchTasks(),
-        this.fetchReminders(),
-        this.fetchSuggestions(),
-        this.fetchCurrentAssistantSession(),
-        this.fetchAssistantSummary(),
-      ]);
+      try {
+        await api.put(`/events/${eventId}`, { status });
+        
+        // 乐观更新本地状态
+        const event = this.events.find(e => e.id === eventId);
+        if (event) event.status = status;
+        
+        // 使相关缓存失效
+        this.invalidateCache('events');
+        this.invalidateCache('tasks');
+        this.invalidateCache('reminders');
+        this.invalidateCache('suggestions');
+        
+        // 异步获取更新后的数据
+        Promise.allSettled([
+          this.fetchEvents(true),
+          this.fetchTasks(true),
+          this.fetchReminders(true),
+          this.fetchSuggestions(true),
+          this.fetchAssistantSummary(),
+        ]);
+        
+        this.pushToast(this.locale === "zh-CN" ? "状态已更新" : "Status updated", "success");
+      } catch (error) {
+        console.error("Failed to update event status:", error);
+        this.pushToast(
+          this.locale === "zh-CN" ? "更新状态失败，请重试" : "Failed to update status",
+          "danger"
+        );
+      }
     },
     async updateInboxItem(itemId: string, action: "read" | "archive") {
-      await api.post("/assistant/inbox/" + itemId, null, { params: { action } });
-      await this.fetchCurrentAssistantSession();
+      try {
+        await api.post("/assistant/inbox/" + itemId, null, { params: { action } });
+        await this.fetchCurrentAssistantSession();
+      } catch (error) {
+        console.error("Failed to update inbox item:", error);
+        // Show user-friendly error instead of crashing
+        this.pushToast(i18n.global.t("toast.inboxUpdateFailed"), "danger");
+      }
     },
     connectNotifications() {
       if (this.socket && this.socket.readyState <= WebSocket.OPEN) {
@@ -638,6 +1033,8 @@ export const useWorkspaceStore = defineStore("workspace", {
           next_suggestions: Suggestion[];
           assistant_inbox: AssistantInboxItem[];
           assistant_summary: AssistantSummary;
+          events?: CalendarEvent[];
+          tasks?: TaskItem[];
         };
         if (payload.type !== "workspace_snapshot") {
           return;
@@ -650,7 +1047,14 @@ export const useWorkspaceStore = defineStore("workspace", {
         this.assistantInbox = payload.assistant_inbox;
         this.assistantInboxUnreadTotal = payload.assistant_inbox.filter((item) => !item.read).length;
         this.assistantSummary = payload.assistant_summary;
+        this.events = payload.events ?? this.events;
+        this.tasks = payload.tasks ?? this.tasks;
         this.seenReminderIds = payload.reminders.map((item) => item.id);
+
+        if (!this.initializedReminderSnapshot) {
+          this.initializedReminderSnapshot = true;
+          return;
+        }
 
         for (const reminder of payload.reminders) {
           if (!previousIds.has(reminder.id) && reminder.status !== "read") {
@@ -698,7 +1102,7 @@ export const useWorkspaceStore = defineStore("workspace", {
     },
     extractApiError(error: unknown, fallback: string) {
       const maybeAxios = error as {
-        response?: { data?: { detail?: string } | string };
+        response?: { data?: { detail?: string; error?: { message?: string } } | string };
         message?: string;
       };
       const detail = maybeAxios.response?.data;
@@ -708,7 +1112,15 @@ export const useWorkspaceStore = defineStore("workspace", {
       if (detail && typeof detail === "object" && "detail" in detail && typeof detail.detail === "string") {
         return detail.detail;
       }
+      if (detail && typeof detail === "object" && "error" in detail && typeof detail.error?.message === "string") {
+        return detail.error.message;
+      }
       return maybeAxios.message || fallback;
+    },
+    setLocale(locale: SupportedLocale) {
+      this.locale = locale;
+      i18n.global.locale.value = locale;
+      persistLocale(locale);
     },
     focusTask(taskId: number | null) {
       this.focusedTaskId = taskId;
@@ -723,16 +1135,64 @@ export const useWorkspaceStore = defineStore("workspace", {
       this.focusedEventId = null;
     },
     async deleteTask(taskId: number) {
-      await api.delete(`/tasks/${taskId}`);
-      this.tasks = this.tasks.filter((t) => t.id !== taskId);
-      if (this.focusedTaskId === taskId) this.focusedTaskId = null;
-      await Promise.all([this.fetchSuggestions(), this.fetchAssistantSummary()]);
+      try {
+        await api.delete(`/tasks/${taskId}`);
+        this.tasks = this.tasks.filter((t) => t.id !== taskId);
+        if (this.focusedTaskId === taskId) this.focusedTaskId = null;
+        
+        // 使相关缓存失效
+        this.invalidateCache('tasks');
+        this.invalidateCache('suggestions');
+        
+        // 异步获取更新后的数据
+        Promise.allSettled([
+          this.fetchTasks(true),
+          this.fetchSuggestions(true),
+          this.fetchAssistantSummary(),
+        ]);
+        
+        this.pushToast(
+          this.locale === "zh-CN" ? "任务已删除" : "Task deleted",
+          "success"
+        );
+      } catch (error) {
+        console.error("Failed to delete task:", error);
+        this.pushToast(
+          this.locale === "zh-CN" ? "删除任务失败，请重试" : "Failed to delete task",
+          "danger"
+        );
+      }
     },
     async deleteEvent(eventId: number) {
-      await api.delete(`/events/${eventId}`);
-      this.events = this.events.filter((e) => e.id !== eventId);
-      if (this.focusedEventId === eventId) this.focusedEventId = null;
-      await Promise.all([this.fetchTasks(), this.fetchSuggestions(), this.fetchAssistantSummary()]);
+      try {
+        await api.delete(`/events/${eventId}`);
+        this.events = this.events.filter((e) => e.id !== eventId);
+        if (this.focusedEventId === eventId) this.focusedEventId = null;
+        
+        // 使相关缓存失效
+        this.invalidateCache('events');
+        this.invalidateCache('tasks');
+        this.invalidateCache('suggestions');
+        
+        // 异步获取更新后的数据
+        Promise.allSettled([
+          this.fetchEvents(true),
+          this.fetchTasks(true),
+          this.fetchSuggestions(true),
+          this.fetchAssistantSummary(),
+        ]);
+        
+        this.pushToast(
+          this.locale === "zh-CN" ? "事件已删除" : "Event deleted",
+          "success"
+        );
+      } catch (error) {
+        console.error("Failed to delete event:", error);
+        this.pushToast(
+          this.locale === "zh-CN" ? "删除事件失败，请重试" : "Failed to delete event",
+          "danger"
+        );
+      }
     },
   },
 });

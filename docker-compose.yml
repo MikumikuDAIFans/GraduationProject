@@ -11,10 +11,7 @@ services:
       retries: 10
 
   api:
-    build:
-      context: ./backend
-      args:
-        BASE_IMAGE: vcptoolbox-app
+    build: ./backend
     container_name: graduation-project-api
     working_dir: /app
     env_file:
@@ -32,13 +29,10 @@ services:
     entrypoint:
       - /bin/sh
       - -lc
-      - /opt/venv/bin/python scripts/wait_for_redis.py && /opt/venv/bin/alembic upgrade head && /opt/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+      - python scripts/wait_for_redis.py && alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000
 
   celery_worker:
-    build:
-      context: ./backend
-      args:
-        BASE_IMAGE: vcptoolbox-app
+    build: ./backend
     container_name: graduation-project-celery-worker
     working_dir: /app
     env_file:
@@ -54,13 +48,10 @@ services:
     entrypoint:
       - /bin/sh
       - -lc
-      - /opt/venv/bin/python scripts/wait_for_redis.py && /opt/venv/bin/celery -A app.core.celery_app.celery_app worker -l info
+      - python scripts/wait_for_redis.py && celery -A app.core.celery_app.celery_app worker -l info
 
   celery_beat:
-    build:
-      context: ./backend
-      args:
-        BASE_IMAGE: vcptoolbox-app
+    build: ./backend
     container_name: graduation-project-celery-beat
     working_dir: /app
     env_file:
@@ -76,4 +67,4 @@ services:
     entrypoint:
       - /bin/sh
       - -lc
-      - /opt/venv/bin/python scripts/wait_for_redis.py && /opt/venv/bin/celery -A app.core.celery_app.celery_app beat -l info
+      - python scripts/wait_for_redis.py && celery -A app.core.celery_app.celery_app beat -l info

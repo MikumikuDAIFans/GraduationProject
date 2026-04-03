@@ -18,6 +18,10 @@ def get_engine() -> AsyncEngine:
         get_database_url(),
         echo=False,
         pool_pre_ping=True,
+        pool_size=10,
+        max_overflow=20,
+        pool_timeout=30,
+        pool_recycle=3600,
     )
 
 

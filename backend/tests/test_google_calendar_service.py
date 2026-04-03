@@ -84,16 +84,16 @@ class FakeGoogleCalendarClient:
     def build_event_payload(self, *, event):
         return {"summary": event.title}
 
-    def create_event(self, *, tokens_json: dict, calendar_id: str, payload: dict):
+    async def create_event(self, *, tokens_json: dict, calendar_id: str, payload: dict):
         return {"id": "remote-local-1", "etag": "etag-created"}, {
             **tokens_json,
             "token": "updated-access-token",
         }
 
-    def update_event(self, *, tokens_json: dict, calendar_id: str, event_id: str, payload: dict):
+    async def update_event(self, *, tokens_json: dict, calendar_id: str, event_id: str, payload: dict):
         return {"id": event_id, "etag": "etag-updated"}, tokens_json
 
-    def list_events(self, *, tokens_json: dict, calendar_id: str, time_min: datetime, time_max: datetime):
+    async def list_events(self, *, tokens_json: dict, calendar_id: str, time_min: datetime, time_max: datetime):
         return [
             {"id": "remote-local-1", "etag": "etag-created"},
             {
@@ -107,7 +107,7 @@ class FakeGoogleCalendarClient:
             },
         ], tokens_json
 
-    def delete_event(self, *, tokens_json: dict, calendar_id: str, event_id: str):
+    async def delete_event(self, *, tokens_json: dict, calendar_id: str, event_id: str):
         return tokens_json
 
     def parse_remote_event(self, payload: dict):

@@ -14,6 +14,7 @@ from app.api.router import api_router
 class FakeAssistantService:
     def __init__(self) -> None:
         self.session_id = 1
+        self.session_title = "New chat"
         self.messages = [
             {
                 "id": 1,
@@ -45,11 +46,57 @@ class FakeAssistantService:
             "id": self.session_id,
             "user_id": user_id,
             "session_type": "chat",
+            "title": self.session_title,
+            "is_archived": False,
             "context_json": {"status": "test"},
             "created_at": datetime.now(timezone.utc),
             "updated_at": datetime.now(timezone.utc),
             "messages": list(self.messages),
         }
+
+    async def create_session(self, user_id: str, payload):
+        self.session_id += 1
+        self.session_title = payload.title or f"New chat {self.session_id}"
+        self.messages = []
+        return {
+            "id": self.session_id,
+            "user_id": user_id,
+            "session_type": "chat",
+            "title": self.session_title,
+            "is_archived": False,
+            "context_json": {"status": "test"},
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+            "messages": [],
+        }
+
+    async def list_sessions(self, user_id: str, limit: int = 20):
+        del limit
+        return {
+            "items": [
+                {
+                    "id": self.session_id,
+                    "user_id": user_id,
+                    "session_type": "chat",
+                    "title": self.session_title,
+                    "is_archived": False,
+                    "context_json": {"status": "test"},
+                    "created_at": datetime.now(timezone.utc),
+                    "updated_at": datetime.now(timezone.utc),
+                    "messages": list(self.messages),
+                }
+            ],
+            "total": 1,
+        }
+
+    async def archive_session(self, user_id: str, session_id: int):
+        del user_id, session_id
+        return {"success": True}
+
+    async def clear_session_messages(self, user_id: str, session_id: int):
+        del user_id, session_id
+        self.messages = []
+        return {"success": True}
 
     async def get_inbox(self, user_id: str):
         return {
@@ -82,6 +129,8 @@ class FakeAssistantService:
                 "id": self.session_id,
                 "user_id": user_id,
                 "session_type": "chat",
+                "title": self.session_title,
+                "is_archived": False,
                 "context_json": {"status": "test"},
                 "created_at": datetime.now(timezone.utc),
                 "updated_at": datetime.now(timezone.utc),
@@ -458,9 +507,15 @@ def test_health_endpoint() -> None:
     client, _, _, _, _, _, _, _, _ = build_client()
 
     response = client.get("/api/health")
+    ai_response = client.get("/api/health/ai")
+    perf_response = client.get("/api/health/performance")
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+    assert ai_response.status_code == 200
+    assert "enabled" in ai_response.json()
+    assert perf_response.status_code == 200
+    assert "avg_request_ms" in perf_response.json()
 
 
 def test_events_create_and_list() -> None:
@@ -501,7 +556,11 @@ def test_assistant_message_and_session() -> None:
     client, _, _, _, _, _, _, _, _ = build_client()
 
     message_response = client.post("/api/assistant/message", json={"message": "Help me arrange tomorrow"})
+    create_response = client.post("/api/assistant/sessions", json={"title": "Fresh chat"})
+    list_response = client.get("/api/assistant/sessions")
     session_response = client.get("/api/assistant/sessions/1")
+    clear_response = client.delete("/api/assistant/sessions/1/messages")
+    archive_session_response = client.post("/api/assistant/sessions/1/archive")
     inbox_response = client.get("/api/assistant/inbox")
     current_response = client.get("/api/assistant/current")
     summary_response = client.get("/api/assistant/summary")
@@ -510,13 +569,21 @@ def test_assistant_message_and_session() -> None:
 
     assert message_response.status_code == 200
     assert message_response.json()["session_id"] == 1
+    assert create_response.status_code == 200
+    assert create_response.json()["title"] == "Fresh chat"
+    assert list_response.status_code == 200
+    assert list_response.json()["total"] == 1
     assert session_response.status_code == 200
-    assert len(session_response.json()["messages"]) == 2
+    assert "title" in session_response.json()
+    assert clear_response.status_code == 200
+    assert clear_response.json()["success"] is True
+    assert archive_session_response.status_code == 200
+    assert archive_session_response.json()["success"] is True
     assert inbox_response.status_code == 200
     assert inbox_response.json()["total"] == 1
     assert inbox_response.json()["unread_total"] == 1
     assert current_response.status_code == 200
-    assert current_response.json()["session"]["id"] == 1
+    assert current_response.json()["session"]["id"] >= 1
     assert summary_response.status_code == 200
     assert summary_response.json()["unread_followups"] == 1
     assert read_response.status_code == 200

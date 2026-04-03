@@ -5,12 +5,15 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, File, Form, Path, Query, UploadFile
 from fastapi.responses import StreamingResponse
 
+from app.api.live_updates import broadcast_workspace_update
 from app.api.deps import AssistantService, get_assistant_service, get_current_user_id
 from app.api.schemas import (
     AssistantCurrentSessionRead,
     AssistantInboxRead,
     AssistantMessageCreate,
     AssistantResponse,
+    AssistantSessionCreate,
+    AssistantSessionListRead,
     AssistantSessionRead,
     AssistantSummaryRead,
     SpeechSynthesisRequest,
@@ -30,7 +33,29 @@ async def send_message(
     user_id: str = Depends(get_current_user_id),
     service: AssistantService = Depends(get_assistant_service),
 ) -> AssistantResponse:
-    return await service.send_message(user_id=user_id, payload=payload)
+    response = await service.send_message(user_id=user_id, payload=payload)
+    await broadcast_workspace_update(user_id)
+    return response
+
+
+@router.post("/sessions", response_model=AssistantSessionRead)
+async def create_session(
+    payload: AssistantSessionCreate,
+    user_id: str = Depends(get_current_user_id),
+    service: AssistantService = Depends(get_assistant_service),
+) -> AssistantSessionRead:
+    session = await service.create_session(user_id=user_id, payload=payload)
+    await broadcast_workspace_update(user_id)
+    return session
+
+
+@router.get("/sessions", response_model=AssistantSessionListRead)
+async def list_sessions(
+    limit: int = Query(default=20, ge=1, le=100),
+    user_id: str = Depends(get_current_user_id),
+    service: AssistantService = Depends(get_assistant_service),
+) -> AssistantSessionListRead:
+    return await service.list_sessions(user_id=user_id, limit=limit)
 
 
 @router.post("/voice", response_model=VoiceAssistantResponse)
@@ -79,6 +104,28 @@ async def get_session(
     return await service.get_session(user_id=user_id, session_id=session_id)
 
 
+@router.post("/sessions/{session_id}/archive")
+async def archive_session(
+    session_id: int = Path(..., ge=1),
+    user_id: str = Depends(get_current_user_id),
+    service: AssistantService = Depends(get_assistant_service),
+) -> dict[str, bool]:
+    result = await service.archive_session(user_id=user_id, session_id=session_id)
+    await broadcast_workspace_update(user_id)
+    return result
+
+
+@router.delete("/sessions/{session_id}/messages")
+async def clear_session_messages(
+    session_id: int = Path(..., ge=1),
+    user_id: str = Depends(get_current_user_id),
+    service: AssistantService = Depends(get_assistant_service),
+) -> dict[str, bool]:
+    result = await service.clear_session_messages(user_id=user_id, session_id=session_id)
+    await broadcast_workspace_update(user_id)
+    return result
+
+
 @router.get("/inbox", response_model=AssistantInboxRead)
 async def get_inbox(
     user_id: str = Depends(get_current_user_id),
@@ -110,4 +157,6 @@ async def update_inbox_item(
     user_id: str = Depends(get_current_user_id),
     service: AssistantService = Depends(get_assistant_service),
 ) -> AssistantInboxRead:
-    return await service.mark_inbox_item(user_id=user_id, item_id=item_id, action=action)
+    result = await service.mark_inbox_item(user_id=user_id, item_id=item_id, action=action)
+    await broadcast_workspace_update(user_id)
+    return result

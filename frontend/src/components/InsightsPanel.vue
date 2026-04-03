@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
+import LoadingSkeleton from "@/components/LoadingSkeleton.vue";
 import type { Reminder, Suggestion, TaskItem } from "@/stores/workspace";
+import { formatDateTime } from "@/utils/locale";
 
 const props = defineProps<{
   reminders: Reminder[];
@@ -8,8 +11,10 @@ const props = defineProps<{
   nextSuggestions: Suggestion[];
   tasks: TaskItem[];
   focusedTaskId?: number | null;
+  loading?: boolean;
 }>();
 const emit = defineEmits<{ send: [message: string]; deleteTask: [taskId: number] }>();
+const { t, locale } = useI18n();
 
 type Tab = "tasks" | "reminders" | "suggestions";
 const activeTab = ref<Tab>("tasks");
@@ -25,45 +30,50 @@ watch(() => props.focusedTaskId, (id) => {
 const taskMap = computed(() => new Map(props.tasks.map(t => [t.id, t])));
 const allSuggestions = computed(() => [...props.todaySuggestions, ...props.nextSuggestions]);
 
-const tabs = [
-  { key: "tasks",       label: "Tasks",       count: () => props.tasks.length },
-  { key: "reminders",   label: "Reminders",   count: () => props.reminders.length },
-  { key: "suggestions", label: "Suggestions", count: () => allSuggestions.value.length },
-] as const;
+const tabs = computed<Array<{ key: Tab; label: string; count: () => number }>>(() => [
+  { key: "tasks", label: t("insights.tasks"), count: () => props.tasks.length },
+  { key: "reminders", label: t("insights.reminders"), count: () => props.reminders.length },
+  { key: "suggestions", label: t("insights.suggestions"), count: () => allSuggestions.value.length },
+]);
 
 function isTaskFocused(t: TaskItem) { return props.focusedTaskId != null && t.id === props.focusedTaskId; }
 
 function taskStatus(status?: string | null) {
-  if (status === "done")        return { cls: "bg-positive-light text-positive", label: "Done" };
-  if (status === "in_progress") return { cls: "bg-accent-light text-accent",    label: "In progress" };
-  if (status === "scheduled")   return { cls: "bg-sky-50 text-sky-600",         label: "Scheduled" };
-  return                               { cls: "bg-surface-3 text-ink-3",        label: status || "Pending" };
+  if (status === "done") return { cls: "bg-positive-light text-positive", label: t("common.done") };
+  if (status === "in_progress") return { cls: "bg-accent-light text-accent", label: t("insights.inProgress") };
+  if (status === "scheduled") return { cls: "bg-sky-50 text-sky-600", label: t("insights.scheduled") };
+  return { cls: "bg-surface-3 text-ink-3", label: status || t("insights.pending") };
 }
 
 function suggestionStyle(type: string) {
-  if (type === "departure_plan")  return { cls: "border-warn/20 bg-warn-light",      label: "Departure" };
-  if (type === "weather_watch")   return { cls: "border-sky-200 bg-sky-50",          label: "Weather" };
-  if (type === "weather_alert")   return { cls: "border-danger/20 bg-danger-light",  label: "Weather alert" };
+  if (type === "departure_plan") return { cls: "border-warn/20 bg-warn-light", label: t("insights.reminderDeparture") };
+  if (type === "weather_watch") return { cls: "border-sky-200 bg-sky-50", label: "Weather" };
+  if (type === "weather_alert") return { cls: "border-danger/20 bg-danger-light", label: "Weather alert" };
   if (type === "location_based_break") return { cls: "border-emerald-200 bg-emerald-50", label: "Nearby break" };
-  if (type === "task_split_slot") return { cls: "border-danger/20 bg-danger-light",  label: "Split slot" };
-  if (type === "task_replan_slot")return { cls: "border-orange-200 bg-orange-50",    label: "Replan" };
-  if (type === "task_resume_slot")return { cls: "border-accent/20 bg-accent-light",  label: "Resume" };
-  return                                 { cls: "border-border bg-white",            label: "Slot" };
+  if (type === "task_split_slot") return { cls: "border-danger/20 bg-danger-light", label: t("insights.splitSlot") };
+  if (type === "task_replan_slot") return { cls: "border-orange-200 bg-orange-50", label: t("insights.replan") };
+  if (type === "task_resume_slot") return { cls: "border-accent/20 bg-accent-light", label: t("insights.resume") };
+  return { cls: "border-border bg-white", label: "Slot" };
 }
 
 function reminderStyle(type: string) {
-  if (type === "departure")     return { cls: "border-warn/20 bg-warn-light",     label: "Departure" };
-  if (type === "event_start")   return { cls: "border-accent/20 bg-accent-light", label: "Event start" };
-  if (type === "task_progress") return { cls: "border-positive/20 bg-positive-light", label: "Progress" };
-  if (type === "task_replan")   return { cls: "border-danger/20 bg-danger-light", label: "Replan" };
-  return                               { cls: "border-border bg-white",           label: type };
+  if (type === "departure") return { cls: "border-warn/20 bg-warn-light", label: t("insights.reminderDeparture") };
+  if (type === "event_start") return { cls: "border-accent/20 bg-accent-light", label: t("insights.reminderEventStart") };
+  if (type === "task_progress") return { cls: "border-positive/20 bg-positive-light", label: t("insights.reminderProgress") };
+  if (type === "task_replan") return { cls: "border-danger/20 bg-danger-light", label: t("insights.reminderReplan") };
+  return { cls: "border-border bg-white", label: type };
 }
 
 function slotMessage(s: Suggestion) {
   const task = s.related_task_id != null ? taskMap.value.get(s.related_task_id) : null;
+  if (locale.value === "zh-CN") {
+    return task
+      ? `帮我安排"${task.content}"，时间段 ${s.start_time} 到 ${s.end_time}`
+      : `安排任务时间段 ${s.start_time} 到 ${s.end_time}`;
+  }
   return task
-    ? `帮我安排"${task.content}"，时间段 ${s.start_time} 到 ${s.end_time}`
-    : `安排任务时间段 ${s.start_time} 到 ${s.end_time}`;
+    ? `Help me schedule "${task.content}" from ${s.start_time} to ${s.end_time}`
+    : `Schedule a task in the slot from ${s.start_time} to ${s.end_time}`;
 }
 </script>
 
@@ -71,7 +81,7 @@ function slotMessage(s: Suggestion) {
   <div class="rounded-xl border border-border bg-white shadow-card">
     <!-- Header + tabs -->
     <div class="border-b border-border px-4 pt-4 pb-0">
-      <h2 class="mb-3 text-sm font-bold text-ink">Insights</h2>
+      <h2 class="mb-3 text-sm font-bold text-ink">{{ t("insights.title") }}</h2>
       <div class="flex gap-0">
         <button
           v-for="tab in tabs"
@@ -93,9 +103,10 @@ function slotMessage(s: Suggestion) {
     </div>
 
     <div class="p-4">
+      <LoadingSkeleton v-if="loading" :lines="5" />
 
       <!-- TASKS -->
-      <div v-if="activeTab === 'tasks'">
+      <div v-else-if="activeTab === 'tasks'">
         <div v-if="tasks.length" class="space-y-2">
           <div
             v-for="task in tasks"
@@ -116,8 +127,8 @@ function slotMessage(s: Suggestion) {
                 </div>
                 <div class="mt-1 flex flex-wrap gap-3 text-xs text-ink-3">
                   <span v-if="task.scheduled_minutes">{{ task.scheduled_minutes }} min scheduled</span>
-                  <span v-if="task.completed_minutes">{{ task.completed_minutes }} min done</span>
-                  <span v-if="task.remaining_minutes != null" class="font-medium text-ink-2">{{ task.remaining_minutes }} min left</span>
+                  <span v-if="task.completed_minutes">{{ t("calendarPanel.minutesDone", { count: task.completed_minutes }) }}</span>
+                  <span v-if="task.remaining_minutes != null" class="font-medium text-ink-2">{{ t("calendarPanel.minutesLeft", { count: task.remaining_minutes }) }}</span>
                 </div>
                 <!-- Progress bar -->
                 <div v-if="task.scheduled_minutes && task.scheduled_minutes > 0" class="mt-2">
@@ -134,19 +145,19 @@ function slotMessage(s: Suggestion) {
                   type="button"
                   class="rounded-lg border border-border bg-white px-2.5 py-1.5 text-[11px] font-semibold text-ink-2 transition hover:bg-surface-3"
                   @click="emit('send', `继续安排任务 ${task.content}`)"
-                >Plan</button>
+                >{{ t("insights.plan") }}</button>
                 <button
                   type="button"
                   class="rounded-lg border border-danger/20 bg-danger-light px-2.5 py-1.5 text-[11px] font-semibold text-danger transition hover:bg-red-100"
                   @click="emit('deleteTask', task.id)"
-                >Del</button>
+                >{{ t("common.delete") }}</button>
               </div>
             </div>
           </div>
         </div>
         <div v-else class="rounded-lg border border-dashed border-border py-8 text-center">
-          <p class="text-sm text-ink-3">No tracked tasks yet.</p>
-          <p class="mt-1 text-xs text-ink-3">Ask the assistant to create a task.</p>
+          <p class="text-sm text-ink-3">{{ t("insights.noTasks") }}</p>
+          <p class="mt-1 text-xs text-ink-3">{{ t("insights.noTasksHint") }}</p>
         </div>
       </div>
 
@@ -163,11 +174,11 @@ function slotMessage(s: Suggestion) {
               {{ reminderStyle(reminder.remind_type).label }}
             </p>
             <p class="mt-1 text-sm font-medium text-ink">{{ reminder.message || reminder.remind_type }}</p>
-            <p class="mt-0.5 text-xs text-ink-3">{{ reminder.remind_at }}</p>
+            <p class="mt-0.5 text-xs text-ink-3">{{ formatDateTime(reminder.remind_at, locale) }}</p>
           </div>
         </div>
         <div v-else class="rounded-lg border border-dashed border-border py-8 text-center">
-          <p class="text-sm text-ink-3">No reminders scheduled.</p>
+          <p class="text-sm text-ink-3">{{ t("insights.noReminders") }}</p>
         </div>
       </div>
 
@@ -185,11 +196,11 @@ function slotMessage(s: Suggestion) {
                 <p class="text-[10px] font-bold uppercase tracking-widest text-ink-3">
                   {{ suggestionStyle(suggestion.type).label }}
                   <span v-if="suggestion.segment_index && suggestion.segment_total" class="text-danger">
-                    · Seg {{ suggestion.segment_index }}/{{ suggestion.segment_total }}
+                    · {{ t("insights.segment", { index: suggestion.segment_index, total: suggestion.segment_total }) }}
                   </span>
                 </p>
                 <p class="mt-1 text-sm font-medium text-ink">{{ suggestion.title }}</p>
-                <p class="mt-0.5 text-xs text-ink-3">{{ suggestion.start_time }} → {{ suggestion.end_time }}</p>
+                <p class="mt-0.5 text-xs text-ink-3">{{ formatDateTime(suggestion.start_time, locale) }} → {{ formatDateTime(suggestion.end_time, locale) }}</p>
                 <p v-if="suggestion.description" class="mt-1 text-xs text-ink-3">{{ suggestion.description }}</p>
               </div>
               <button
@@ -197,12 +208,12 @@ function slotMessage(s: Suggestion) {
                 type="button"
                 class="shrink-0 rounded-lg border border-positive/20 bg-positive-light px-2.5 py-1.5 text-[11px] font-semibold text-positive transition hover:bg-emerald-100"
                 @click="emit('send', slotMessage(suggestion))"
-              >Use slot →</button>
+              >{{ t("insights.useSlot") }}</button>
             </div>
           </div>
         </div>
         <div v-else class="rounded-lg border border-dashed border-border py-8 text-center">
-          <p class="text-sm text-ink-3">No suggestions yet.</p>
+          <p class="text-sm text-ink-3">{{ t("insights.noSuggestions") }}</p>
         </div>
       </div>
 

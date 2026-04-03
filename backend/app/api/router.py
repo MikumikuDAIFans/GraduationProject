@@ -6,6 +6,7 @@ from fastapi import APIRouter
 
 from app.api.routes.assistant import router as assistant_router
 from app.api.routes.context import router as context_router
+from app.api.routes.debug import router as debug_router
 from app.api.routes.events import router as events_router
 from app.api.routes.google_calendar import router as google_calendar_router
 from app.api.routes.health import router as health_router
@@ -18,6 +19,7 @@ api_router = APIRouter()
 api_router.include_router(health_router)
 api_router.include_router(assistant_router)
 api_router.include_router(context_router)
+api_router.include_router(debug_router)
 api_router.include_router(events_router)
 api_router.include_router(google_calendar_router)
 api_router.include_router(profile_router)

@@ -2,8 +2,8 @@
 .env
 .env.*
 !.env.example
-plan_doc/APIkey和对应文档链接.txt
-plan_doc/client_secret_*.json
+docs/development/API_KEY_REFERENCES.txt
+client_secret*.json
 *.pem
 *.key
 *.p12

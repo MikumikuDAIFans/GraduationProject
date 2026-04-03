@@ -156,7 +156,7 @@ class GoogleCalendarService:
             else:
                 updated += 1
 
-        remote_events, tokens_json = self.client.list_events(
+        remote_events, tokens_json = await self.client.list_events(
             tokens_json=tokens_json,
             calendar_id=self.settings.google_calendar_id,
             time_min=range_start,
@@ -283,7 +283,7 @@ class GoogleCalendarService:
             return
 
         try:
-            tokens_json = self.client.delete_event(
+            tokens_json = await self.client.delete_event(
                 tokens_json=profile.google_calendar_tokens_json,
                 calendar_id=self.settings.google_calendar_id,
                 event_id=external_event_id,
@@ -307,7 +307,7 @@ class GoogleCalendarService:
     async def _upsert_remote_event(self, *, tokens_json: dict[str, Any], event) -> tuple[dict[str, Any], dict[str, Any], str]:
         payload = self.client.build_event_payload(event=event)
         if event.external_event_id:
-            remote_event, refreshed_tokens = self.client.update_event(
+            remote_event, refreshed_tokens = await self.client.update_event(
                 tokens_json=tokens_json,
                 calendar_id=self.settings.google_calendar_id,
                 event_id=event.external_event_id,
@@ -315,7 +315,7 @@ class GoogleCalendarService:
             )
             return remote_event, refreshed_tokens, "updated"
 
-        remote_event, refreshed_tokens = self.client.create_event(
+        remote_event, refreshed_tokens = await self.client.create_event(
             tokens_json=tokens_json,
             calendar_id=self.settings.google_calendar_id,
             payload=payload,

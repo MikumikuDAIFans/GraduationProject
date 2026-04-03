@@ -25,6 +25,28 @@ class HealthRead(ReadModel):
     database_ready: bool
 
 
+class HealthAIRead(ReadModel):
+    enabled: bool
+    provider: str
+    circuit_open: bool
+    circuit_open_until: datetime | None = None
+    consecutive_failures: int = 0
+
+
+class PerformancePathRead(ReadModel):
+    path: str
+    count: int
+
+
+class PerformanceMetricsRead(ReadModel):
+    uptime_seconds: int
+    request_count: int
+    last_request_ms: float
+    avg_request_ms: float
+    p95_request_ms: float
+    hottest_paths: list[PerformancePathRead] = Field(default_factory=list)
+
+
 class OperationResult(ReadModel):
     status: str = "ok"
     message: str
@@ -165,6 +187,10 @@ class AssistantMessageCreate(APIBaseModel):
     message: str
 
 
+class AssistantSessionCreate(APIBaseModel):
+    title: str | None = None
+
+
 class AssistantAction(ReadModel):
     type: str
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -221,10 +247,17 @@ class AssistantSessionRead(ReadModel):
     id: int
     user_id: str
     session_type: str | None = None
+    title: str
+    is_archived: bool = False
     context_json: dict[str, Any] | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
     messages: list[AssistantMessageRead] = Field(default_factory=list)
+
+
+class AssistantSessionListRead(ReadModel):
+    items: list[AssistantSessionRead] = Field(default_factory=list)
+    total: int = 0
 
 
 class AssistantCurrentSessionRead(ReadModel):
@@ -295,14 +328,14 @@ class TravelEstimateRead(ReadModel):
 class WeatherNowRead(ReadModel):
     location: str
     obs_time: str | None = None
-    temp: str | None = None
-    feels_like: str | None = None
+    temp: float | int | str | None = None
+    feels_like: float | int | str | None = None
     text: str | None = None
     wind_dir: str | None = None
     wind_scale: str | None = None
-    humidity: str | None = None
-    precip: str | None = None
-    vis: str | None = None
+    humidity: float | int | str | None = None
+    precip: float | int | str | None = None
+    vis: float | int | str | None = None
 
 
 class UserProfileRead(ReadModel):

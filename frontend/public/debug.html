@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Personal Affairs Assistant - Debug Console</title>
+  <style>
+    :root {
+      --bg-primary: #0f172a;
+      --bg-secondary: #1e293b;
+      --bg-tertiary: #334155;
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --accent: #3b82f6;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --error: #ef4444;
+      --border: #475569;
+    }
+    
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.6;
+    }
+    
+    .header {
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+      padding: 1rem 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    
+    .header h1 {
+      font-size: 1.25rem;
+      font-weight: 600;
+    }
+    
+    .header .status {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      animation: pulse 2s infinite;
+    }
+    
+    .status-dot.connected { background: var(--success); }
+    .status-dot.disconnected { background: var(--error); }
+    
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    
+    .tabs {
+      display: flex;
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+      padding: 0 2rem;
+    }
+    
+    .tab {
+      padding: 0.75rem 1.5rem;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: all 0.2s;
+      color: var(--text-secondary);
+    }
+    
+    .tab:hover { color: var(--text-primary); }
+    .tab.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+    
+    .main {
+      display: flex;
+      height: calc(100vh - 120px);
+    }
+    
+    .sidebar {
+      width: 280px;
+      background: var(--bg-secondary);
+      border-right: 1px solid var(--border);
+      padding: 1rem;
+      overflow-y: auto;
+    }
+    
+    .sidebar h3 {
+      font-size: 0.875rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-secondary);
+      margin-bottom: 0.75rem;
+    }
+    
+    .metric-card {
+      background: var(--bg-tertiary);
+      border-radius: 0.5rem;
+      padding: 0.75rem;
+      margin-bottom: 0.75rem;
+    }
+    
+    .metric-card .label {
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      margin-bottom: 0.25rem;
+    }
+    
+    .metric-card .value {
+      font-size: 1.5rem;
+      font-weight: 700;
+      font-family: 'Consolas', 'Monaco', monospace;
+    }
+    
+    .metric-card .value.success { color: var(--success); }
+    .metric-card .value.warning { color: var(--warning); }
+    .metric-card .value.error { color: var(--error); }
+    
+    .content {
+      flex: 1;
+      padding: 1rem 2rem;
+      overflow-y: auto;
+    }
+    
+    .panel { display: none; }
+    .panel.active { display: block; }
+    
+    .log-entry {
+      padding: 0.5rem 0;
+      border-bottom: 1px solid var(--border);
+      font-family: 'Consolas', 'Monaco', monospace;
+      font-size: 0.875rem;
+    }
+    
+    .log-entry .timestamp {
+      color: var(--text-secondary);
+      margin-right: 0.5rem;
+    }
+    
+    .log-entry .level {
+      display: inline-block;
+      padding: 0.125rem 0.5rem;
+      border-radius: 0.25rem;
+      font-size: 0.75rem;
+      font-weight: 600;
+      margin-right: 0.5rem;
+    }
+    
+    .log-entry .level.info { background: #1e40af; color: white; }
+    .log-entry .level.warn { background: #b45309; color: white; }
+    .log-entry .level.error { background: #dc2626; color: white; }
+    .log-entry .level.debug { background: #475569; color: white; }
+    
+    .btn {
+      padding: 0.5rem 1rem;
+      border: none;
+      border-radius: 0.375rem;
+      cursor: pointer;
+      font-weight: 500;
+      transition: all 0.2s;
+    }
+    
+    .btn-primary {
+      background: var(--accent);
+      color: white;
+    }
+    
+    .btn-primary:hover { background: #2563eb; }
+    
+    .btn-danger {
+      background: var(--error);
+      color: white;
+    }
+    
+    .btn-danger:hover { background: #dc2626; }
+    
+    .btn-secondary {
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+    }
+    
+    .btn-secondary:hover { background: #475569; }
+    
+    .request-item {
+      background: var(--bg-tertiary);
+      border-radius: 0.5rem;
+      padding: 1rem;
+      margin-bottom: 0.75rem;
+      border-left: 3px solid var(--accent);
+    }
+    
+    .request-item.slow { border-left-color: var(--warning); }
+    .request-item.failed { border-left-color: var(--error); }
+    
+    .request-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.5rem;
+    }
+    
+    .request-method {
+      font-weight: 600;
+      font-size: 0.875rem;
+    }
+    
+    .request-duration {
+      font-family: monospace;
+      font-size: 0.875rem;
+    }
+    
+    .request-path {
+      color: var(--text-secondary);
+      font-size: 0.875rem;
+    }
+    
+    .toolbar {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+    }
+    
+    .empty-state {
+      text-align: center;
+      padding: 3rem;
+      color: var(--text-secondary);
+    }
+    
+    .empty-state svg {
+      width: 64px;
+      height: 64px;
+      margin: 0 auto 1rem;
+      opacity: 0.5;
+    }
+    
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    
+    th, td {
+      padding: 0.75rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    
+    th {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-secondary);
+    }
+    
+    .badge {
+      display: inline-block;
+      padding: 0.125rem 0.5rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    
+    .badge-green { background: #064e3b; color: #6ee7b7; }
+    .badge-yellow { background: #78350f; color: #fcd34d; }
+    .badge-red { background: #7f1d1d; color: #fca5a5; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>🔧 Debug Console</h1>
+    <div class="status">
+      <div class="status-dot disconnected" id="statusDot"></div>
+      <span id="statusText">Disconnected</span>
+    </div>
+  </div>
+  
+  <div class="tabs">
+    <div class="tab active" data-tab="logs">Logs</div>
+    <div class="tab" data-tab="requests">Requests</div>
+    <div class="tab" data-tab="performance">Performance</div>
+    <div class="tab" data-tab="system">System</div>
+  </div>
+  
+  <div class="main">
+    <div class="sidebar">
+      <h3>Quick Stats</h3>
+      <div class="metric-card">
+        <div class="label">Total Requests</div>
+        <div class="value" id="totalRequests">0</div>
+      </div>
+      <div class="metric-card">
+        <div class="label">Avg Response Time</div>
+        <div class="value" id="avgResponseTime">-</div>
+      </div>
+      <div class="metric-card">
+        <div class="label">Error Rate</div>
+        <div class="value" id="errorRate">-</div>
+      </div>
+      <div class="metric-card">
+        <div class="label">Active Connections</div>
+        <div class="value" id="activeConnections">-</div>
+      </div>
+      
+      <h3 style="margin-top: 1.5rem;">Actions</h3>
+      <button class="btn btn-primary" style="width: 100%; margin-bottom: 0.5rem;" onclick="refreshMetrics()">Refresh Metrics</button>
+      <button class="btn btn-secondary" style="width: 100%; margin-bottom: 0.5rem;" onclick="clearLogs()">Clear Logs</button>
+      <button id="toggleStreamBtn" class="btn btn-danger" style="width: 100%;">Toggle Log Stream</button>
+    </div>
+    
+    <div class="content">
+      <div class="panel active" id="logsPanel">
+        <div class="toolbar">
+          <input type="text" id="logFilter" placeholder="Filter logs..." style="flex: 1; padding: 0.5rem; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 0.375rem; color: var(--text-primary);" oninput="filterLogs()">
+          <select id="logLevelFilter" onchange="filterLogs()" style="padding: 0.5rem; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 0.375rem; color: var(--text-primary);">
+            <option value="all">All Levels</option>
+            <option value="info">Info</option>
+            <option value="warn">Warning</option>
+            <option value="error">Error</option>
+            <option value="debug">Debug</option>
+          </select>
+        </div>
+        <div id="logContainer">
+          <div class="empty-state">
+            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+            <p>No logs yet. Click "Toggle Log Stream" to start streaming.</p>
+          </div>
+        </div>
+      </div>
+      
+      <div class="panel" id="requestsPanel">
+        <div class="toolbar">
+          <input type="text" id="requestFilter" placeholder="Filter requests..." style="flex: 1; padding: 0.5rem; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 0.375rem; color: var(--text-primary);" oninput="filterRequests()">
+          <select id="requestSort" onchange="sortRequests()" style="padding: 0.5rem; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 0.375rem; color: var(--text-primary);">
+            <option value="time">Sort by Time</option>
+            <option value="duration">Sort by Duration</option>
+            <option value="status">Sort by Status</option>
+          </select>
+        </div>
+        <div id="requestContainer">
+          <div class="empty-state">
+            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+            <p>No requests recorded. Make some API calls to see them here.</p>
+          </div>
+        </div>
+      </div>
+      
+      <div class="panel" id="performancePanel">
+        <h2 style="margin-bottom: 1rem;">Database Connection Pool</h2>
+        <table id="dbPoolTable">
+          <thead>
+            <tr>
+              <th>Metric</th>
+              <th>Value</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>Loading...</td><td></td><td></td></tr>
+          </tbody>
+        </table>
+        
+        <h2 style="margin: 2rem 0 1rem;">Cache Statistics</h2>
+        <table id="cacheStatsTable">
+          <thead>
+            <tr>
+              <th>Metric</th>
+              <th>Value</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>Loading...</td><td></td><td></td></tr>
+          </tbody>
+        </table>
+      </div>
+      
+      <div class="panel" id="systemPanel">
+        <h2 style="margin-bottom: 1rem;">System Information</h2>
+        <table id="systemInfoTable">
+          <thead>
+            <tr>
+              <th>Component</th>
+              <th>Details</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>Loading...</td><td></td><td></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = 'http://127.0.0.1:8000/api';
+    let logStream = null;
+    let logs = [];
+    let requests = [];
+    let metricsInterval = null;
+    
+    // Auto-refresh metrics every 5 seconds
+    function startAutoRefresh() {
+      if (metricsInterval) clearInterval(metricsInterval);
+      metricsInterval = setInterval(refreshMetrics, 5000);
+    }
+    
+    // Initialize on page load
+    window.addEventListener('DOMContentLoaded', () => {
+      // Tab switching
+      document.querySelectorAll('.tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+          document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+          document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+          tab.classList.add('active');
+          document.getElementById(tab.dataset.tab + 'Panel').classList.add('active');
+        });
+      });
+      
+      refreshMetrics();
+      startAutoRefresh();
+      startLogStream(); // Auto-start log streaming
+      
+      // Toggle log stream button handler
+      document.getElementById('toggleStreamBtn').addEventListener('click', () => {
+        if (logStream) {
+          logStream.close();
+          logStream = null;
+          document.getElementById('statusDot').className = 'status-dot disconnected';
+          document.getElementById('statusText').textContent = 'Disconnected';
+          document.getElementById('toggleStreamBtn').textContent = 'Toggle Log Stream';
+        } else {
+          startLogStream();
+          document.getElementById('toggleStreamBtn').textContent = 'Stop Log Stream';
+        }
+      });
+    });
+    
+    // Fetch metrics
+    async function refreshMetrics() {
+      try {
+        const [dbPool, cacheStats, requestsData] = await Promise.all([
+          fetch(`${API_BASE}/debug/db-pool`).then(r => r.json()).catch(() => null),
+          fetch(`${API_BASE}/debug/cache-stats`).then(r => r.json()).catch(() => null),
+          fetch(`${API_BASE}/debug/requests`).then(r => r.json()).catch(() => ({ requests: [] }))
+        ]);
+        
+        updateDbPoolTable(dbPool);
+        updateCacheStatsTable(cacheStats);
+        updateSystemInfo({ dbPool, cacheStats });
+        
+        // Update requests array and render
+        if (requestsData && requestsData.requests) {
+          requests = requestsData.requests;
+          renderRequests();
+        }
+        updateQuickStats();
+      } catch (err) {
+        console.error('Failed to fetch metrics:', err);
+      }
+    }
+    
+    function updateDbPoolTable(data) {
+      const tbody = document.querySelector('#dbPoolTable tbody');
+      if (!data) {
+        tbody.innerHTML = '<tr><td colspan="3">Unable to fetch data</td></tr>';
+        return;
+      }
+      
+      tbody.innerHTML = `
+        <tr><td>Pool Size</td><td>${data.pool_size || '-'}</td><td><span class="badge badge-green">OK</span></td></tr>
+        <tr><td>Active Connections</td><td>${data.active_connections || 0}</td><td>${getStatusBadge(data.active_connections, data.pool_size)}</td></tr>
+        <tr><td>Idle Connections</td><td>${data.idle_connections || 0}</td><td><span class="badge badge-green">OK</span></td></tr>
+        <tr><td>Overflow</td><td>${data.overflow || 0}</td><td>${data.overflow > 0 ? '<span class="badge badge-yellow">High</span>' : '<span class="badge badge-green">OK</span>'}</td></tr>
+      `;
+    }
+    
+    function updateCacheStatsTable(data) {
+      const tbody = document.querySelector('#cacheStatsTable tbody');
+      if (!data) {
+        tbody.innerHTML = '<tr><td colspan="3">Cache not available</td></tr>';
+        return;
+      }
+      
+      tbody.innerHTML = `
+        <tr><td>Hit Rate</td><td>${data.hit_rate || '0%'}</td><td>${getHitRateBadge(data.hit_rate)}</td></tr>
+        <tr><td>Total Hits</td><td>${data.hits || 0}</td><td><span class="badge badge-green">OK</span></td></tr>
+        <tr><td>Total Misses</td><td>${data.misses || 0}</td><td><span class="badge badge-green">OK</span></td></tr>
+        <tr><td>Memory Usage</td><td>${data.memory || '-'}</td><td><span class="badge badge-green">OK</span></td></tr>
+      `;
+    }
+    
+    function updateSystemInfo(data) {
+      const tbody = document.querySelector('#systemInfoTable tbody');
+      tbody.innerHTML = `
+        <tr><td>Backend API</td><td>${API_BASE}</td><td><span class="badge badge-green">Running</span></td></tr>
+        <tr><td>Database</td><td>SQLite (Async)</td><td><span class="badge badge-green">Connected</span></td></tr>
+        <tr><td>Cache</td><td>Redis</td><td><span class="badge ${data.cacheStats ? 'badge-green' : 'badge-red'}">${data.cacheStats ? 'Connected' : 'Disconnected'}</span></td></tr>
+        <tr><td>Task Queue</td><td>Celery</td><td><span class="badge badge-green">Active</span></td></tr>
+      `;
+    }
+    
+    function getStatusBadge(active, max) {
+      if (!max) return '<span class="badge badge-green">OK</span>';
+      const ratio = active / max;
+      if (ratio > 0.8) return '<span class="badge badge-red">Critical</span>';
+      if (ratio > 0.6) return '<span class="badge badge-yellow">Warning</span>';
+      return '<span class="badge badge-green">OK</span>';
+    }
+    
+    function getHitRateBadge(rate) {
+      if (!rate) return '<span class="badge badge-red">Low</span>';
+      const num = parseFloat(rate);
+      if (num > 80) return '<span class="badge badge-green">Good</span>';
+      if (num > 50) return '<span class="badge badge-yellow">Fair</span>';
+      return '<span class="badge badge-red">Poor</span>';
+    }
+    
+    function updateQuickStats() {
+      document.getElementById('totalRequests').textContent = requests.length;
+      
+      if (requests.length > 0) {
+        const avg = requests.reduce((sum, r) => sum + (r.duration || 0), 0) / requests.length;
+        document.getElementById('avgResponseTime').textContent = `${avg.toFixed(0)}ms`;
+        
+        const errors = requests.filter(r => r.status >= 400).length;
+        const errorRate = ((errors / requests.length) * 100).toFixed(1);
+        const errorEl = document.getElementById('errorRate');
+        errorEl.textContent = `${errorRate}%`;
+        errorEl.className = `value ${parseFloat(errorRate) > 5 ? 'error' : parseFloat(errorRate) > 2 ? 'warning' : 'success'}`;
+      }
+    }
+    
+    // Log streaming
+    
+    function startLogStream() {
+      if (logStream) {
+        logStream.close();
+      }
+      
+      const eventSource = new EventSource(`${API_BASE}/debug/logs`);
+      logStream = eventSource;
+      
+      eventSource.onopen = () => {
+        document.getElementById('statusDot').className = 'status-dot connected';
+        document.getElementById('statusText').textContent = 'Connected';
+      };
+      
+      eventSource.onmessage = (event) => {
+        try {
+          const log = JSON.parse(event.data);
+          // Skip heartbeats and connection messages
+          if (log.type === 'heartbeat' || log.type === 'connected') {
+            return;
+          }
+          addLog(log);
+        } catch (err) {
+          console.error('Failed to parse log:', err);
+        }
+      };
+      
+      eventSource.onerror = (err) => {
+        // EventSource.readyState: 0=connecting, 1=open, 2=closed
+        if (eventSource.readyState === 2) {
+          // Manually closed
+          document.getElementById('statusDot').className = 'status-dot disconnected';
+          document.getElementById('statusText').textContent = 'Disconnected';
+        } else if (eventSource.readyState === 0) {
+          // Reconnecting (normal behavior)
+          document.getElementById('statusDot').className = 'status-dot disconnected';
+          document.getElementById('statusText').textContent = 'Connecting...';
+        }
+        // Don't call close() - let EventSource auto-reconnect
+      };
+    }
+    
+    function addLog(log) {
+      logs.unshift(log);
+      if (logs.length > 1000) logs.pop();
+      renderLogs();
+    }
+    
+    function renderLogs() {
+      const container = document.getElementById('logContainer');
+      const filter = document.getElementById('logFilter').value.toLowerCase();
+      const levelFilter = document.getElementById('logLevelFilter').value;
+      
+      const filtered = logs.filter(log => {
+        if (levelFilter !== 'all' && log.level?.toLowerCase() !== levelFilter) return false;
+        if (filter && !JSON.stringify(log).toLowerCase().includes(filter)) return false;
+        return true;
+      });
+      
+      if (filtered.length === 0) {
+        container.innerHTML = `
+          <div class="empty-state">
+            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+            <p>No logs match the current filter.</p>
+          </div>
+        `;
+        return;
+      }
+      
+      container.innerHTML = filtered.slice(0, 100).map(log => `
+        <div class="log-entry">
+          <span class="timestamp">${formatTimestamp(log.timestamp)}</span>
+          <span class="level ${log.level?.toLowerCase()}">${log.level || 'INFO'}</span>
+          <span>${escapeHtml(log.message || '')}</span>
+        </div>
+      `).join('');
+    }
+    
+    function filterLogs() {
+      renderLogs();
+    }
+    
+    function clearLogs() {
+      logs = [];
+      renderLogs();
+    }
+    
+    // Request tracking - batch update to avoid excessive re-rendering
+    function updateRequests(newRequests) {
+      requests = newRequests.slice(0, 500);
+      renderRequests();
+      updateQuickStats();
+    }
+    
+    function renderRequests() {
+      const container = document.getElementById('requestContainer');
+      const filter = document.getElementById('requestFilter').value.toLowerCase();
+      
+      const filtered = requests.filter(req => {
+        if (filter && !JSON.stringify(req).toLowerCase().includes(filter)) return false;
+        return true;
+      });
+      
+      if (filtered.length === 0) {
+        container.innerHTML = `
+          <div class="empty-state">
+            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+            <p>No requests match the current filter.</p>
+          </div>
+        `;
+        return;
+      }
+      
+      container.innerHTML = filtered.slice(0, 50).map(req => {
+        const isSlow = req.duration > 1000;
+        const isFailed = req.status >= 400;
+        const cls = isFailed ? 'failed' : isSlow ? 'slow' : '';
+        
+        return `
+          <div class="request-item ${cls}">
+            <div class="request-header">
+              <span class="request-method">${req.method || 'GET'}</span>
+              <span class="request-duration">${req.duration || '-'}ms</span>
+            </div>
+            <div class="request-path">${escapeHtml(req.path || '-')}</div>
+            <div style="margin-top: 0.5rem; font-size: 0.75rem; color: var(--text-secondary);">
+              Status: ${req.status || '-'} | Time: ${formatTimestamp(req.timestamp)}
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+    
+    function filterRequests() {
+      renderRequests();
+    }
+    
+    function sortRequests() {
+      const sortBy = document.getElementById('requestSort').value;
+      if (sortBy === 'duration') {
+        requests.sort((a, b) => (b.duration || 0) - (a.duration || 0));
+      } else if (sortBy === 'status') {
+        requests.sort((a, b) => (b.status || 0) - (a.status || 0));
+      } else {
+        requests.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+      }
+      renderRequests();
+    }
+    
+    // Utilities
+    function formatTimestamp(ts) {
+      if (!ts) return '-';
+      const d = new Date(ts);
+      return d.toLocaleTimeString('zh-CN', { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+    }
+    
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+  </script>
+</body>
+</html>

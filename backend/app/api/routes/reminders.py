@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Path
 
+from app.api.live_updates import broadcast_workspace_update
 from app.api.deps import ReminderService, get_current_user_id, get_reminder_service
 from app.api.schemas import OperationResult, ReminderRead
 
@@ -24,4 +25,6 @@ async def mark_reminder_read(
     user_id: str = Depends(get_current_user_id),
     service: ReminderService = Depends(get_reminder_service),
 ) -> ReminderRead:
-    return await service.mark_read(user_id=user_id, reminder_id=reminder_id)
+    reminder = await service.mark_read(user_id=user_id, reminder_id=reminder_id)
+    await broadcast_workspace_update(user_id)
+    return reminder

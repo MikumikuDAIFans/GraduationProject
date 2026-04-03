@@ -99,6 +99,17 @@ class Reminder(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "target_type",
+            "target_id",
+            "remind_type",
+            "remind_at",
+            name="uq_reminders_user_target_type_time",
+        ),
+    )
+
 
 class AssistantSession(Base, TimestampMixin):
     __tablename__ = "assistant_sessions"
@@ -106,6 +117,8 @@ class AssistantSession(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("user_profile.username", ondelete="CASCADE"), nullable=False, index=True)
     session_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False, default="New chat")
+    is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
     context_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
 
