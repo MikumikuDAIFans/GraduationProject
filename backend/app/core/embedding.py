@@ -3,11 +3,25 @@
 from __future__ import annotations
 
 import os
+from typing import Any
 
-from chromadb import Documents, EmbeddingFunction, Embeddings
-from google import genai
-from google.genai import types
 from loguru import logger
+
+try:
+    from google import genai
+except ImportError:  # pragma: no cover - optional dependency fallback
+    genai = None
+
+try:
+    from chromadb import Documents, EmbeddingFunction, Embeddings
+except ImportError:  # pragma: no cover - optional dependency fallback
+    Documents = list[str]
+    Embeddings = list[list[float]]
+
+    class EmbeddingFunction:  # type: ignore[override]
+        """Fallback base class when ChromaDB is unavailable."""
+
+        pass
 
 
 class GeminiEmbeddingFunction(EmbeddingFunction):
@@ -18,6 +32,10 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
     """
 
     def __init__(self, model_name: str = "text-embedding-004"):
+        if genai is None:
+            raise RuntimeError(
+                "Google GenAI SDK is not installed. Install `google-genai` to enable Gemini embeddings."
+            )
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise ValueError("GEMINI_API_KEY environment variable is required")

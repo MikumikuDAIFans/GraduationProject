@@ -518,6 +518,20 @@ def test_health_endpoint() -> None:
     assert "avg_request_ms" in perf_response.json()
 
 
+def test_debug_workflow_endpoints() -> None:
+    client, _, _, _, _, _, _, _, _ = build_client()
+
+    summary_response = client.get("/api/debug/workflow/summary")
+    diagram_response = client.get("/api/debug/workflow/diagram")
+
+    assert summary_response.status_code == 200
+    assert "workflow_enabled" in summary_response.json()
+    assert "nodes" in summary_response.json()
+    assert diagram_response.status_code == 200
+    assert diagram_response.json()["format"] == "mermaid"
+    assert "graph TD" in diagram_response.json()["diagram"]
+
+
 def test_events_create_and_list() -> None:
     client, _, _, _, _, _, _, _, _ = build_client()
 

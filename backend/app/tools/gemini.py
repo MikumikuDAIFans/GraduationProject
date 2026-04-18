@@ -83,6 +83,12 @@ class GeminiClient:
         )
         return await self._generate_text(prompt)
 
+    async def generate_text(self, prompt: str) -> str:
+        """Public text generation helper for workflow / ReAct callers."""
+        if not self.enabled:
+            raise RuntimeError("Gemini is not configured.")
+        return await self._generate_text(prompt)
+
     async def generate_plan_stream(
         self,
         *,

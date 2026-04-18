@@ -1,22 +1,21 @@
-"""LangGraph工作流节点实现"""
+"""Workflow node implementations for the V7 assistant flow."""
+
+from __future__ import annotations
 
 import asyncio
 import logging
 import re
-from typing import Optional
+from typing import Any
 
+from app.core.config import get_settings
 from app.workflow.state import WorkflowState
 
 logger = logging.getLogger(__name__)
 
 
 class WorkflowNodes:
-    """工作流节点实现
-    
-    每个节点接收当前状态，返回更新后的状态。
-    节点应该是纯函数（或异步纯函数），便于测试和调试。
-    """
-    
+    """Workflow nodes used by both LangGraph and sequential fallback execution."""
+
     def __init__(
         self,
         intent_parser=None,
@@ -28,7 +27,8 @@ class WorkflowNodes:
         maps_service=None,
         dialog_manager=None,
         response_formatter=None,
-    ):
+    ) -> None:
+        self.settings = get_settings()
         self.intent_parser = intent_parser
         self.event_service = event_service
         self.task_service = task_service
@@ -38,375 +38,491 @@ class WorkflowNodes:
         self.maps_service = maps_service
         self.dialog_manager = dialog_manager
         self.response_formatter = response_formatter
-    
+
+    @staticmethod
+    def _assistant_from_state(state: WorkflowState):
+        return state.get("assistant_service")
+
+    @staticmethod
+    def _get_runtime_service(state: WorkflowState, attr_name: str):
+        value = state.get(attr_name)
+        if value is not None:
+            return value
+        return None
+
     @staticmethod
     def _needs_weather(intent: str, user_message: str = "") -> bool:
-        """判断是否需要天气上下文"""
-        if intent in ("event_context_advice", "schedule_guidance"):
+        if intent in {"event_context_advice", "schedule_guidance"}:
             return True
-        if user_message and re.search(r"天气|气温|温度|冷|热|下雨|下雪|weather", user_message, re.I):
-            return True
-        return False
-    
+        return bool(re.search(r"天气|气温|温度|冷|热|下雨|下雪|weather", user_message, re.I))
+
     @staticmethod
     def _needs_traffic(intent: str, user_message: str = "") -> bool:
-        """判断是否需要交通上下文"""
-        if intent in ("schedule_guidance", "event_context_advice"):
+        if intent in {"event_context_advice", "schedule_guidance", "create_event"}:
             return True
-        if user_message and re.search(r"通勤|出发|多久到|多远|路程|路线|怎么去|traffic|commute", user_message, re.I):
+        return bool(re.search(r"通勤|出发|多久到|多远|路程|路线|怎么去|traffic|commute", user_message, re.I))
+
+    @staticmethod
+    def _should_use_react(state: WorkflowState) -> bool:
+        settings = get_settings()
+        if not settings.enable_react_subgraph:
+            return False
+
+        intent = state.get("intent", "")
+        user_message = state.get("user_message", "")
+
+        if intent == "schedule_guidance" and re.search(r"详细|仔细|全面|compare|plan|安排一下周末", user_message, re.I):
+            return True
+        if intent == "event_context_advice" and state.get("extracted_slots", {}).get("location"):
             return True
         return False
-    
-    @staticmethod
-    def _needs_events(intent: str) -> bool:
-        """判断是否需要事件上下文"""
-        return intent in ("create_event", "query_events", "schedule_guidance", "event_context_advice", "progress_followup")
-    
-    @staticmethod
-    def _needs_tasks(intent: str) -> bool:
-        """判断是否需要任务上下文"""
-        return intent in ("create_task", "query_tasks", "schedule_guidance", "progress_followup")
-    
-    @staticmethod
-    def _needs_habits(intent: str) -> bool:
-        """判断是否需要习惯上下文"""
-        return intent in ("schedule_guidance", "create_event")
-    
+
     @staticmethod
     async def parse_intent(state: WorkflowState) -> WorkflowState:
-        """意图识别节点
-        
-        将用户消息解析为结构化意图和槽位。
-        """
+        assistant = WorkflowNodes._assistant_from_state(state)
+        user_message = state.get("user_message", "")
+        user_id = state.get("user_id", "")
+
         try:
-            from app.services.enhanced_assistant import EnhancedIntentParser
-            
+            if assistant is not None:
+                intent = assistant.text_runtime._classify_intent(user_message)
+                extracted_slots: dict[str, Any] = {}
+
+                if intent in {"create_event", "event_context_advice"}:
+                    extracted_slots["new_event"] = assistant.text_runtime._build_rule_based_event_payload(user_message)
+                    extracted_slots["location"] = assistant.text_runtime._extract_location(user_message)
+                    extracted_slots["activity"] = assistant.text_runtime._extract_event_topic(user_message)
+                elif intent == "create_task":
+                    extracted_slots["task"] = assistant.text_runtime._build_rule_based_task_payload(user_message)
+                    extracted_slots["activity"] = assistant.text_runtime._extract_task_content(user_message)
+                elif intent == "schedule_guidance":
+                    extracted_slots["location"] = assistant.text_runtime._extract_location(user_message)
+                    extracted_slots["activity"] = (assistant.text_runtime._extract_requested_items(user_message) or [None])[0]
+                    extracted_slots["time_range"] = "planning_window"
+
+                confidence = 0.85 if intent != "unknown" else 0.35
+                state["intent"] = intent
+                state["extracted_slots"] = extracted_slots
+                state["confidence"] = confidence
+                return state
+
+            from app.services.intent_parser import EnhancedIntentParser
+
             parser = EnhancedIntentParser()
-            result = await parser.parse_with_context(
-                state.get("user_message", ""),
-                state.get("user_id", "")
-            )
-            
+            result = await parser.parse_with_context(user_message, user_id)
+            extracted_slots = {
+                "activity": result.activity,
+                "location": result.location,
+                "start_time": result.start_time,
+                "end_time": result.end_time,
+                "time_context": result.time_context,
+            }
             state["intent"] = result.intent
-            state["extracted_slots"] = result.slots
+            state["extracted_slots"] = {k: v for k, v in extracted_slots.items() if v is not None}
             state["confidence"] = result.confidence
-            
-        except Exception as e:
-            logger.error(f"Intent parsing failed: {e}")
+        except Exception as exc:
+            logger.error("Intent parsing failed: %s", exc)
             state["intent"] = "unknown"
             state["extracted_slots"] = {}
             state["confidence"] = 0.0
-        
+
         return state
-    
+
     @staticmethod
     async def collect_context(state: WorkflowState) -> WorkflowState:
-        """上下文收集节点（Phase V7 P1-1: 条件化收集）
-        
-        根据意图和槽位，按需收集相关的上下文信息。
-        不再无条件收集所有上下文。
-        """
+        assistant = WorkflowNodes._assistant_from_state(state)
         user_id = state.get("user_id", "")
         intent = state.get("intent", "unknown")
         slots = state.get("extracted_slots", {})
         user_message = state.get("user_message", "")
-        
-        # Phase V7 P1-1: Collect context in parallel, but only when needed
+        profile = state.get("profile")
+
         async def _fetch_events():
-            if not WorkflowNodes._needs_events(intent):
-                return []
-            if state.get("event_service"):
-                time_range = slots.get("time_range", "today")
-                events = await state["event_service"].get_relevant_events(user_id, time_range)
-                return events or []
+            if assistant is not None:
+                return await assistant.event_service.list_events(user_id=user_id)
+            service = WorkflowNodes._get_runtime_service(state, "event_service")
+            if service is not None and intent in {"create_event", "schedule_guidance", "query_events", "event_context_advice", "progress_followup"}:
+                return await service.get_relevant_events(user_id, slots.get("time_range", "today"))
             return []
-        
+
         async def _fetch_tasks():
-            if not WorkflowNodes._needs_tasks(intent):
-                return []
-            if state.get("task_service"):
-                tasks = await state["task_service"].get_active_tasks(user_id)
-                return tasks or []
+            if assistant is not None:
+                return await assistant.task_service.list_tasks(user_id=user_id)
+            service = WorkflowNodes._get_runtime_service(state, "task_service")
+            if service is not None and intent in {"create_task", "schedule_guidance", "query_tasks", "progress_followup"}:
+                return await service.get_active_tasks(user_id)
             return []
-        
+
         async def _fetch_habits():
-            if not WorkflowNodes._needs_habits(intent):
+            activity = slots.get("activity")
+            if not activity:
                 return []
-            if state.get("habit_retriever"):
-                activity = slots.get("activity", "")
-                if activity:
-                    habits = await state["habit_retriever"].get_relevant_habits(activity)
-                    return habits or []
+            if assistant is not None and getattr(assistant, "habit_retriever", None) is not None:
+                return await assistant.habit_retriever.get_relevant_habits(activity=activity, user_id=user_id)
+            retriever = WorkflowNodes._get_runtime_service(state, "habit_retriever")
+            if retriever is not None:
+                return await retriever.get_relevant_habits(activity=activity, user_id=user_id)
             return []
-        
+
         async def _fetch_weather():
             if not WorkflowNodes._needs_weather(intent, user_message):
                 return None
-            location = slots.get("location")
-            if location and state.get("weather_service"):
-                try:
-                    weather = await state["weather_service"].get_weather(location)
-                    return weather
-                except Exception as e:
-                    logger.warning(f"Weather fetch failed: {e}")
-            return None
-        
+            location = slots.get("location") or getattr(profile, "home_location_coords", None)
+            if not location:
+                return None
+            try:
+                if assistant is not None:
+                    weather = await assistant.context_service.weather_now(location=location)
+                else:
+                    service = WorkflowNodes._get_runtime_service(state, "weather_service")
+                    if service is None:
+                        return None
+                    weather = await service.get_weather(location)
+                if hasattr(weather, "model_dump"):
+                    return weather.model_dump(mode="json")
+                return dict(weather) if isinstance(weather, dict) else weather
+            except Exception as exc:
+                logger.warning("Weather fetch failed: %s", exc)
+                return None
+
         async def _fetch_traffic():
             if not WorkflowNodes._needs_traffic(intent, user_message):
                 return None
             location = slots.get("location")
-            if location and state.get("maps_service"):
-                try:
-                    traffic = await state["maps_service"].estimate_travel_time(user_id, location)
-                    return traffic
-                except Exception as e:
-                    logger.warning(f"Traffic fetch failed: {e}")
-            return None
-        
-        # Execute all fetches in parallel
-        try:
-            events_result, tasks_result, habits_result, weather_result, traffic_result = await asyncio.gather(
-                _fetch_events(),
-                _fetch_tasks(),
-                _fetch_habits(),
-                _fetch_weather(),
-                _fetch_traffic(),
-            )
-            
-            state["existing_events"] = events_result
-            state["existing_tasks"] = tasks_result
-            state["habits"] = habits_result
-            state["weather"] = weather_result
-            state["traffic"] = traffic_result
-                
-        except Exception as e:
-            logger.error(f"Context collection failed: {e}")
-            state.setdefault("existing_events", [])
-            state.setdefault("existing_tasks", [])
-            state.setdefault("habits", [])
-        
+            if not location:
+                return None
+            try:
+                origin = (
+                    getattr(profile, "home_location_coords", None)
+                    or getattr(profile, "home_location_name", None)
+                    or getattr(profile, "work_location_coords", None)
+                    or getattr(profile, "work_location_name", None)
+                )
+                if assistant is not None:
+                    if not origin:
+                        return None
+                    travel = await assistant.context_service.estimate_travel(
+                        origin=origin,
+                        destination=location,
+                        mode=getattr(profile, "transport_preference", None) or "driving",
+                    )
+                else:
+                    service = WorkflowNodes._get_runtime_service(state, "maps_service")
+                    if service is None:
+                        return None
+                    travel = await service.estimate_travel_time(user_id, location)
+                if hasattr(travel, "model_dump"):
+                    return travel.model_dump(mode="json")
+                return dict(travel) if isinstance(travel, dict) else travel
+            except Exception as exc:
+                logger.warning("Traffic fetch failed: %s", exc)
+                return None
+
+        events_result, tasks_result, habits_result, weather_result, traffic_result = await asyncio.gather(
+            _fetch_events(),
+            _fetch_tasks(),
+            _fetch_habits(),
+            _fetch_weather(),
+            _fetch_traffic(),
+        )
+
+        state["existing_events"] = events_result or []
+        state["existing_tasks"] = tasks_result or []
+        state["habits"] = habits_result or []
+        state["weather"] = weather_result
+        state["traffic"] = traffic_result
+        state["external_context"] = {
+            "weather_now": weather_result,
+            "default_commute": traffic_result,
+        }
         return state
-    
+
     @staticmethod
     async def schedule_decision(state: WorkflowState) -> WorkflowState:
-        """调度决策节点
-        
-        根据意图和上下文，决定如何调度事件/任务。
-        Phase V7 P1-3: 增加LLM驱动的路由决策，判断是否需要激活ReAct子图。
-        """
+        assistant = WorkflowNodes._assistant_from_state(state)
+        settings = get_settings()
         intent = state.get("intent", "")
+        user_message = state.get("user_message", "")
+        user_id = state.get("user_id", "")
+        confidence = state.get("confidence", 0.0)
         slots = state.get("extracted_slots", {})
-        existing_events = state.get("existing_events", [])
-        
-        try:
-            if intent == "create_event" and state.get("conflict_detector"):
-                # 检测冲突
-                new_event = slots.get("new_event", {})
-                if new_event:
-                    conflicts = state["conflict_detector"].detect_conflicts(
-                        existing_events + [new_event]
-                    )
-                    state["conflicts"] = conflicts or []
-                    
-                    # 如果有冲突，生成替代建议
-                    if conflicts:
-                        alternatives = state["conflict_detector"].suggest_alternatives(
-                            new_event,
-                            existing_events
-                        )
-                        state["suggestions"] = alternatives or []
-            
-            elif intent == "create_task" and state.get("task_service"):
-                # 任务创建决策
-                task_payload = slots.get("task", {})
-                if task_payload:
-                    state["actions"] = [{
-                        "type": "create_task",
-                        "payload": task_payload
-                    }]
-            
-            # Phase V7 P1-3: 判断是否需要激活ReAct子图
-            state["use_react"] = WorkflowNodes._should_use_react(
-                intent=intent,
-                slots=slots,
-                user_message=state.get("user_message", ""),
-            )
-            
-        except Exception as e:
-            logger.error(f"Schedule decision failed: {e}")
-            state.setdefault("conflicts", [])
-            state.setdefault("suggestions", [])
-            state["use_react"] = False
-        
-        return state
-    
-    @staticmethod
-    def _should_use_react(*, intent: str, slots: dict, user_message: str) -> bool:
-        """判断是否需要激活ReAct子图
-        
-        Phase V7 P1-3: 基于规则的判断，未来可替换为LLM分类器。
-        """
-        # 复杂调度场景：多个事件需要协调安排
-        if intent == "schedule_guidance":
-            num_events = len(slots.get("events", []))
-            if num_events >= 2:
-                return True
-        
-        # 天气敏感 + 需要通勤判断的复合场景
-        if intent == "event_context_advice":
-            has_location = bool(slots.get("location"))
-            has_time = bool(slots.get("time_range"))
-            if has_location and has_time:
-                return True
-        
-        # 用户明确要求详细分析
-        if re.search(r"详细|仔细|全面分析|deep|analyze|compare", user_message, re.I):
-            return True
-        
-        return False
-    
-    @staticmethod
-    async def execute_react_subgraph(state: WorkflowState) -> WorkflowState:
-        """ReAct子图节点
-        
-        Phase V7 P1-2: 当需要复杂推理时，激活ReAct子图进行多轮工具选择。
-        """
-        if not state.get("use_react"):
-            logger.info("ReAct subgraph not needed, skipping")
+        events = state.get("existing_events", [])
+        tasks = state.get("existing_tasks", [])
+        profile = state.get("profile")
+        external_context = state.get("external_context", {})
+
+        state.setdefault("actions", [])
+        state.setdefault("conflicts", [])
+        state.setdefault("suggestions", [])
+        state["use_react"] = WorkflowNodes._should_use_react(state)
+
+        if confidence < settings.route_confidence_threshold and intent == "unknown":
+            state["needs_clarification"] = True
+            state["clarification_question"] = "你希望我帮你创建日程、创建任务，还是做安排建议？"
             return state
-        
-        logger.info("Activating ReAct subgraph for complex reasoning")
-        
-        try:
-            # 导入工具注册表（触发装饰器注册）
-            import app.workflow.react_tools  # noqa: F401
-            from app.workflow.react_subgraph import react_subgraph
-            
-            state = await react_subgraph(state, max_rounds=3)
-        except Exception as e:
-            logger.error(f"ReAct subgraph failed: {e}")
-            state.setdefault("react_observations", [])
-            state.setdefault("react_steps", [])
-        
-        return state
-    
-    @staticmethod
-    async def execute_tools(state: WorkflowState) -> WorkflowState:
-        """工具执行节点
-        
-        执行具体的动作（创建事件、任务等）。
-        """
-        actions = state.get("actions", [])
-        
-        try:
-            for action in actions:
-                action_type = action.get("type", "")
-                payload = action.get("payload", {})
-                
-                if action_type == "create_event" and state.get("event_service"):
-                    await state["event_service"].create_event(payload)
-                    
-                elif action_type == "create_task" and state.get("task_service"):
-                    await state["task_service"].create_task(payload)
-                    
-                elif action_type == "update_event" and state.get("event_service"):
-                    await state["event_service"].update_event(payload)
-                    
-                elif action_type == "delete_event" and state.get("event_service"):
-                    await state["event_service"].delete_event(payload.get("event_id"))
-                    
-        except Exception as e:
-            logger.error(f"Tool execution failed: {e}")
-            state["reply"] = f"执行操作时出错：{str(e)}"
-        
-        return state
-    
-    @staticmethod
-    async def render_response(state: WorkflowState) -> WorkflowState:
-        """回复渲染节点
-        
-        根据工作流结果生成自然语言回复。
-        """
-        try:
-            intent = state.get("intent", "")
-            actions = state.get("actions", [])
-            conflicts = state.get("conflicts", [])
-            suggestions = state.get("suggestions", [])
-            habits = state.get("habits", [])
-            
-            # 如果需要澄清
-            if state.get("needs_clarification"):
-                state["reply"] = state.get(
-                    "clarification_question",
-                    "我需要更多信息来帮助你。"
+
+        if assistant is None:
+            if intent == "create_task" and slots.get("task"):
+                state["actions"] = [{"type": "create_task", "payload": slots["task"]}]
+            elif intent == "create_event" and slots.get("new_event"):
+                detector = WorkflowNodes._get_runtime_service(state, "conflict_detector")
+                if detector is not None:
+                    conflicts = detector.detect_conflicts(events + [slots["new_event"]])
+                    state["conflicts"] = conflicts or []
+                    if conflicts:
+                        state["suggestions"] = detector.suggest_alternatives(slots["new_event"], events) or []
+                state["actions"] = [{"type": "create_event", "payload": slots["new_event"]}]
+            return state
+
+        if intent in {"schedule_guidance", "event_context_advice", "progress_followup"}:
+            plan = await assistant._build_rule_based_plan(
+                user_id=user_id,
+                user_message=user_message,
+                events=events,
+                tasks=tasks,
+                profile=profile,
+                external_context=external_context,
+            )
+            state["reply"] = plan.get("reply", "")
+            state["actions"] = plan.get("actions", [])
+            return state
+
+        if intent == "create_task":
+            task_payload = slots.get("task") or assistant.text_runtime._build_rule_based_task_payload(user_message)
+            if not task_payload.get("content"):
+                state["needs_clarification"] = True
+                state["clarification_question"] = assistant.formatter.build_clarification_reply(
+                    intent="create_task",
+                    missing_fields=["content"],
+                    prefers_chinese=assistant.text_runtime._prefers_chinese(user_message),
                 )
                 return state
-            
-            # 构建回复
-            reply_parts = []
-            
-            # 确认操作
-            if actions:
-                action_descriptions = []
-                for action in actions:
+
+            state["reply"] = assistant._build_task_preflight_reply(payload=task_payload, user_message=user_message)
+            state["actions"] = [{"type": "create_task", "payload": task_payload}]
+            return state
+
+        if intent in {"create_event", "event_context_advice"}:
+            event_payload = slots.get("new_event") or assistant.text_runtime._build_rule_based_event_payload(user_message)
+            start_time = event_payload.get("start_time")
+            end_time = event_payload.get("end_time")
+
+            if not event_payload.get("title") or event_payload.get("title") == "New event" or not start_time or not end_time:
+                missing_fields: list[str] = []
+                if not event_payload.get("title") or event_payload.get("title") == "New event":
+                    missing_fields.append("title")
+                if not start_time:
+                    missing_fields.append("start_time")
+                if not end_time:
+                    missing_fields.append("end_time")
+                state["needs_clarification"] = True
+                state["clarification_question"] = assistant.formatter.build_clarification_reply(
+                    intent="create_event",
+                    missing_fields=missing_fields or ["start_time", "end_time"],
+                    prefers_chinese=assistant.text_runtime._prefers_chinese(user_message),
+                )
+                return state
+
+            conflict_events = await assistant.event_service.detect_conflicts(
+                user_id=user_id,
+                start_time=assistant._coerce_datetime(start_time),
+                end_time=assistant._coerce_datetime(end_time),
+                buffer_before=int(event_payload.get("buffer_before") or 0),
+                buffer_after=int(event_payload.get("buffer_after") or 0),
+            )
+            if conflict_events:
+                state["conflicts"] = [
+                    {
+                        "event_id": item.id,
+                        "title": item.title,
+                        "start_time": item.start_time.isoformat() if item.start_time else None,
+                        "end_time": item.end_time.isoformat() if item.end_time else None,
+                    }
+                    for item in conflict_events
+                ]
+                state["suggestions"] = await assistant.event_service.find_alternative_slots(
+                    user_id=user_id,
+                    duration_minutes=int((assistant._coerce_datetime(end_time) - assistant._coerce_datetime(start_time)).total_seconds() // 60),
+                    preferred_date=assistant._coerce_datetime(start_time).date(),
+                    buffer_before=int(event_payload.get("buffer_before") or 0),
+                    buffer_after=int(event_payload.get("buffer_after") or 0),
+                )
+                return state
+
+            event_context = await assistant._build_event_specific_context(
+                payload=event_payload,
+                profile=profile,
+                user_message=user_message,
+            )
+            state["reply"] = assistant._build_event_preflight_reply(
+                payload=event_payload,
+                user_message=user_message,
+                external_context=external_context,
+                event_context=event_context,
+            )
+            state["actions"] = [{"type": "create_event", "payload": event_payload}]
+            return state
+
+        state["reply"] = ""
+        state["actions"] = []
+        return state
+
+    @staticmethod
+    async def execute_react_subgraph(state: WorkflowState) -> WorkflowState:
+        if not state.get("use_react"):
+            return state
+
+        try:
+            import app.workflow.react_tools  # noqa: F401
+            from app.workflow.react_subgraph import react_subgraph
+
+            return await react_subgraph(state, max_rounds=3)
+        except Exception as exc:
+            logger.error("ReAct subgraph failed: %s", exc)
+            state.setdefault("react_observations", [])
+            state.setdefault("react_steps", [])
+            return state
+
+    @staticmethod
+    async def execute_tools(state: WorkflowState) -> WorkflowState:
+        assistant = WorkflowNodes._assistant_from_state(state)
+        if assistant is None:
+            event_service = WorkflowNodes._get_runtime_service(state, "event_service")
+            task_service = WorkflowNodes._get_runtime_service(state, "task_service")
+            try:
+                for action in state.get("actions", []):
+                    action_type = action.get("type", "")
+                    payload = action.get("payload", {})
+                    if action_type == "create_event" and event_service is not None:
+                        await event_service.create_event(payload)
+                    elif action_type == "create_task" and task_service is not None:
+                        await task_service.create_task(payload)
+                    elif action_type == "update_event" and event_service is not None:
+                        await event_service.update_event(payload)
+                    elif action_type == "delete_event" and event_service is not None:
+                        await event_service.delete_event(payload.get("event_id"))
+            except Exception as exc:
+                state["reply"] = f"执行操作时出错：{exc}"
+            return state
+
+        executed = await assistant._execute_actions(
+            user_id=state.get("user_id", ""),
+            actions=state.get("actions", []),
+            user_message=state.get("user_message", ""),
+            existing_events=state.get("existing_events", []),
+            profile=state.get("profile"),
+        )
+        state["actions"] = [action.model_dump() if hasattr(action, "model_dump") else action for action in executed]
+        return state
+
+    @staticmethod
+    async def render_response(state: WorkflowState) -> WorkflowState:
+        assistant = WorkflowNodes._assistant_from_state(state)
+        user_message = state.get("user_message", "")
+
+        if state.get("needs_clarification"):
+            clarification = state.get("clarification_question") or "我还需要一些补充信息。"
+            if assistant is not None:
+                state["reply"] = assistant._format_reply_text(clarification, user_message=user_message)
+            else:
+                state["reply"] = clarification
+            return state
+
+        if assistant is None:
+            if state.get("reply"):
+                return state
+            reply_parts: list[str] = []
+            if state.get("actions"):
+                for action in state.get("actions", []):
                     action_type = action.get("type", "")
                     if action_type == "create_event":
-                        title = action.get("payload", {}).get("title", "事件")
-                        action_descriptions.append(f"已创建事件：{title}")
+                        reply_parts.append(f"已创建事件：{action.get('payload', {}).get('title', '事件')}")
                     elif action_type == "create_task":
-                        title = action.get("payload", {}).get("title", "任务")
-                        action_descriptions.append(f"已创建任务：{title}")
-                
-                if action_descriptions:
-                    reply_parts.append("\n".join(action_descriptions))
-            
-            # 冲突警告
-            if conflicts:
-                conflict_msg = f"⚠️ 检测到 {len(conflicts)} 个时间冲突"
-                reply_parts.append(conflict_msg)
-                
-                if suggestions:
-                    suggestion_msg = "建议的替代时间：\n" + "\n".join(
-                        f"- {s.get('time', '')}: {s.get('reason', '')}"
-                        for s in suggestions[:3]
+                        reply_parts.append(f"已创建任务：{action.get('payload', {}).get('title', action.get('payload', {}).get('content', '任务'))}")
+            if state.get("conflicts"):
+                reply_parts.append(f"⚠️ 检测到 {len(state.get('conflicts', []))} 个时间冲突")
+                if state.get("suggestions"):
+                    reply_parts.append(
+                        "建议的替代时间：\n" + "\n".join(
+                            f"- {item.get('time', item.get('start_time', ''))}: {item.get('reason', '')}".rstrip(": ")
+                            for item in state.get("suggestions", [])[:3]
+                        )
                     )
-                    reply_parts.append(suggestion_msg)
-            
-            # 习惯提示
-            if habits:
-                habit_msg = "💡 根据你的习惯："
-                for habit in habits[:2]:
-                    desc = habit.get("description", "")
-                    if desc:
-                        habit_msg += f"\n- {desc}"
-                reply_parts.append(habit_msg)
-            
-            # 默认回复
+            if state.get("habits"):
+                reply_parts.append(
+                    "💡 根据你的习惯：\n" + "\n".join(
+                        f"- {item.get('description', item.get('metadata', {}).get('description', ''))}"
+                        for item in state.get("habits", [])[:2]
+                    )
+                )
             if not reply_parts:
-                if intent == "query_events":
+                if state.get("intent") == "query_events":
                     reply_parts.append("已为你查询相关事件。")
-                elif intent == "create_event":
+                elif state.get("intent") == "create_event":
                     reply_parts.append("事件创建成功！")
                 else:
                     reply_parts.append("已完成你的请求。")
-            
             state["reply"] = "\n\n".join(reply_parts)
-            
-        except Exception as e:
-            logger.error(f"Response rendering failed: {e}")
-            state["reply"] = "抱歉，处理你的请求时出现了问题。"
-        
+            return state
+
+        action_models = [
+            assistant._ensure_assistant_action(action)
+            for action in state.get("actions", [])
+        ]
+        if state.get("conflicts") and not action_models:
+            new_event = state.get("extracted_slots", {}).get("new_event", {})
+            if new_event:
+                action_models.append(
+                    assistant._ensure_assistant_action(
+                        {
+                            "type": "conflict_warning",
+                            "payload": {
+                                "title": new_event.get("title"),
+                                "event_title": new_event.get("title"),
+                                "start_time": new_event.get("start_time"),
+                                "end_time": new_event.get("end_time"),
+                                "conflicts": state.get("conflicts", []),
+                                "suggestions": state.get("suggestions", []),
+                            },
+                        }
+                    )
+                )
+            if state.get("suggestions"):
+                action_models.append(
+                    assistant._ensure_assistant_action(
+                        {
+                            "type": "suggest_reschedule",
+                            "payload": {
+                                "event_title": new_event.get("title"),
+                                "alternatives": state.get("suggestions", []),
+                            },
+                        }
+                    )
+                )
+        requested_actions = state.get("actions", [])
+        reply = state.get("reply", "")
+
+        if not reply or state.get("conflicts"):
+            reply = assistant._compose_reply(
+                user_message=user_message,
+                base_reply=reply,
+                actions=action_models,
+                requested_actions=requested_actions,
+                fallback_message=user_message,
+                event_count=len(state.get("existing_events", [])),
+                task_count=len(state.get("existing_tasks", [])),
+                external_context=state.get("external_context", {}),
+            )
+
+        state["reply"] = assistant._format_reply_text(reply, user_message=user_message)
+        state["actions"] = [action.model_dump() for action in action_models]
         return state
-    
+
     @staticmethod
     async def clarify_and_retry(state: WorkflowState) -> WorkflowState:
-        """澄清并重试节点
-        
-        当信息不足时，向用户发起澄清问题。
-        """
         if state.get("needs_clarification"):
-            slot_name = state.get("clarification_question", "")
-            state["reply"] = f"请问{slot_name}是什么？"
             state["retry_count"] = state.get("retry_count", 0) + 1
-        
+            clarification = state.get("clarification_question")
+            if clarification and not state.get("reply"):
+                state["reply"] = f"请问{clarification}是什么？"
         return state

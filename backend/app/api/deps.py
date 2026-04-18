@@ -34,6 +34,7 @@ from app.api.schemas import (
     UserProfileUpdate,
     WeatherNowRead,
 )
+from app.db.session import get_session
 from app.services.context import ContextService as DefaultContextService
 from app.services.assistant import AssistantService as DefaultAssistantService
 from app.services.events import EventService as DefaultEventService
@@ -52,6 +53,11 @@ def get_current_user_id(x_user_id: str | None = Header(default=None, alias="X-Us
     """
 
     return x_user_id or "local-user"
+
+
+async def get_db_session():
+    async for session in get_session():
+        yield session
 
 
 class AssistantService(Protocol):
@@ -85,6 +91,7 @@ class GoogleCalendarService(Protocol):
 class TaskService(Protocol):
     async def list_tasks(self, user_id: str) -> list[TaskRead | dict[str, Any]]: ...
     async def create_task(self, user_id: str, payload: TaskCreate) -> TaskRead | dict[str, Any]: ...
+    async def get_task(self, user_id: str, task_id: int) -> TaskRead | dict[str, Any] | None: ...
     async def update_task(self, user_id: str, task_id: int, payload: TaskUpdate) -> TaskRead | dict[str, Any] | None: ...
     async def delete_task(self, user_id: str, task_id: int) -> None: ...
 

@@ -13,6 +13,9 @@ class WorkflowState(TypedDict, total=False):
     user_message: str
     user_id: str
     session_id: str
+    history: list
+    profile: Any
+    external_context: dict
     
     # 意图解析结果
     intent: Optional[str]
@@ -46,3 +49,6 @@ class WorkflowState(TypedDict, total=False):
     react_observations: list
     # ReAct执行步骤记录
     react_steps: list
+
+    # Runtime-only helpers
+    assistant_service: Any

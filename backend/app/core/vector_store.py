@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any, Optional
 
-import chromadb
 from loguru import logger
 
 from app.core.embedding import GeminiEmbeddingFunction
+
+try:
+    import chromadb
+except ImportError:  # pragma: no cover - optional dependency fallback
+    chromadb = SimpleNamespace(PersistentClient=None)
 
 
 class VectorStore:
@@ -20,6 +25,10 @@ class VectorStore:
     """
 
     def __init__(self, persist_directory: str = "./chroma_db"):
+        if chromadb.PersistentClient is None:
+            raise RuntimeError(
+                "ChromaDB is not installed. Install `chromadb` to enable vector store features."
+            )
         self.client = chromadb.PersistentClient(path=persist_directory)
         self.embed_fn = GeminiEmbeddingFunction()
 

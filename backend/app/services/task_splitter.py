@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -175,7 +175,10 @@ class SmartTaskSplitter:
         deadline = task.deadline
         if isinstance(deadline, str):
             deadline = datetime.fromisoformat(deadline)
-        return (deadline - datetime.utcnow()).total_seconds() < 86400  # 24 hours
+        now = datetime.now(timezone.utc)
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=timezone.utc)
+        return (deadline - now).total_seconds() < 86400  # 24 hours
 
     def _sort_slots(
         self,
@@ -372,7 +375,7 @@ class SmartTaskSplitter:
         
         # Get user's wake/sleep times from profile
         user_result = await self.db.execute(
-            select(UserProfile).where(UserProfile.user_id == user_id)
+            select(UserProfile).where(UserProfile.username == user_id)
         )
         user = user_result.scalar_one_or_none()
         
@@ -443,13 +446,7 @@ class SmartTaskSplitter:
                     ))
             
             current = day_end
-            from datetime import date as date_type
-            day = day + timedelta(days=1) if isinstance(day, date_type) else day.replace(day=day.day + 1)
-            # Handle month/year rollover properly
-            try:
-                day = day.replace(day=day.day + 1)
-            except ValueError:
-                day = (day.replace(day=1) + timedelta(days=31)).replace(day=1)
+            day = day + timedelta(days=1)
         
         return slots
 

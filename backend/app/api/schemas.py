@@ -128,6 +128,9 @@ class TaskBase(APIBaseModel):
     can_split: bool | None = None
     preferred_period: str | None = None
     linked_event_id: int | None = None
+    max_splits: int | None = None
+    min_chunk_minutes: int | None = None
+    split_strategy: str | None = None
 
 
 class TaskCreate(TaskBase):

@@ -1,7 +1,7 @@
 """偏好学习服务 — 从用户历史行为中提取偏好模式"""
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from typing import Optional
 
@@ -23,7 +23,7 @@ class PreferenceLearner:
 
     async def learn_from_history(self, user_id: str, days: int = 30) -> dict:
         """分析过去 N 天的事件数据，提取偏好模式"""
-        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
         stmt = (
             select(Event)

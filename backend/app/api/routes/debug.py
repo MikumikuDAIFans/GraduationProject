@@ -13,7 +13,10 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from loguru import logger
 
+from app.core.config import get_settings
+from app.core.metrics import metrics_snapshot
 from app.db.session import get_sessionmaker
+from app.workflow.visualization import generate_node_responsibility_table, generate_workflow_diagram
 
 router = APIRouter(prefix="/debug", tags=["debug"])
 
@@ -23,13 +26,6 @@ request_log: deque[dict[str, Any]] = deque(maxlen=500)
 # In-memory log buffer for SSE streaming
 log_buffer: deque[dict[str, Any]] = deque(maxlen=1000)
 sse_subscribers: list[asyncio.Queue] = []
-
-
-@router.on_event("startup")
-async def startup_debug():
-    logger.info("Debug endpoints initialized")
-
-
 @router.get("/logs")
 async def stream_logs() -> StreamingResponse:
     """Server-Sent Events endpoint for real-time log streaming."""
@@ -142,6 +138,29 @@ async def get_system_info() -> dict[str, Any]:
         "platform": platform.platform(),
         "uptime": time.time(),
         "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@router.get("/workflow/summary")
+async def get_workflow_summary() -> dict[str, Any]:
+    """Return workflow configuration and node summary for the V7 debug view."""
+    settings = get_settings()
+    return {
+        "workflow_enabled": settings.enable_workflow,
+        "react_enabled": settings.enable_react_subgraph,
+        "route_confidence_threshold": settings.route_confidence_threshold,
+        "metrics": metrics_snapshot(),
+        "nodes": generate_node_responsibility_table(),
+    }
+
+
+@router.get("/workflow/diagram")
+async def get_workflow_diagram() -> dict[str, str]:
+    """Return the Mermaid diagram for the current workflow shape."""
+    settings = get_settings()
+    return {
+        "format": "mermaid",
+        "diagram": generate_workflow_diagram(include_react=settings.enable_react_subgraph),
     }
 
 

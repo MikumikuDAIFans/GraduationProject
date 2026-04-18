@@ -5,159 +5,116 @@
 
 ## 结论
 
-当前项目**不是 V7 完成态**，也**不是停留在 V5 或更早**。
+当前项目已经完成 **V7 主基线切换**。
 
-更准确的判断是：
+这意味着：
 
-- **主体实现已推进到 V6 施工阶段**
-- **并且已经混入部分 V7 优化**
-- **但 V6 仍未完全收口，V7 更未真正接管主链路**
+- 当前版本应认定为 **V7**
+- 已不再适合标记为“V6 在建”
+- 当前剩余工作主要是 **收口与清债**，而不是“版本尚未切换”
 
-因此，当前版本建议标记为：
+推荐版本表述：
 
-> **“V6 在建，附带少量 V7 前置改造”**
+> **“V7 当前基线已落地”**
 
-## 判定依据
+## 核心依据
 
-### 1. 已落地并进入主链路的能力
+### 1. V7 主入口已经接管
 
-以下内容已明确进入当前运行链路或前端主界面：
+以下能力已经进入主链路：
 
-- 助手 WebSocket 流式输出
+- `AssistantService.send_message()` 已优先走 workflow
+- `AssistantService.send_message_stream()` 已优先走 workflow
+- workflow 不再是旁路目录，而是当前编排壳
+- LangGraph 可用时走图编排
+- LangGraph 不可用时走 `run_sequential()` 降级
+
+### 2. V7 核心体验已落地
+
+- 助手 WebSocket 流式输出已接入
   - 后端存在 `/ws/assistant`
   - 前端 `assistant.ts` 已优先使用流式发送
-- 外部上下文部分优化
-  - `AssistantService._needs_external_context()` 已用于跳过部分无关外部调用
-  - `AssistantService._build_event_specific_context()` 已并行获取通勤/天气
-- 地图与天气工具超时优化
-  - 高德与和风天气客户端已调整到 `8s`
-- 前端 Store 拆分已基本完成
-  - 已有 `assistant.ts`、`events.ts`、`reminder.ts`、`suggestion.ts`、`profile.ts`、`context.ts`、`googleCalendar.ts`、`system.ts`
-  - `workspace.ts` 已退化为兼容门面层
+- 条件化外部上下文判断已接入
+  - `AssistantService._needs_external_context()`
+- 事件级天气/通勤并行获取已接入
+  - `AssistantService._build_event_specific_context()`
+- 地图与天气工具超时优化已接入
+  - Amap / QWeather 已降到 `8s`
+
+### 3. V6 能力已被当前基线吸纳
+
+以下 V6 能力现在已经并入当前基线，而不是继续悬空：
+
+- 前端 Store 拆分
+  - `assistant.ts`
+  - `events.ts`
+  - `reminder.ts`
+  - `suggestion.ts`
+  - `profile.ts`
+  - `context.ts`
+  - `googleCalendar.ts`
+  - `system.ts`
+  - `workspace.ts` 已退化为兼容 facade
 - 任务拆分接口已接入 API
   - `GET /api/tasks/{task_id}/split-suggestions`
-- 语音输入/输出接口已接入后端路由
-  - `/api/assistant/voice`
-  - `/api/assistant/speak`
-- 移动端/桌面端壳目录已存在
-  - `frontend/capacitor.config.ts`
-  - `frontend/src-tauri/`
-  - `frontend/android/`
-  - `frontend/ios/`
+- 向量库、习惯学习、槽位补全、扫描线冲突检测、任务拆分等 V6 能力已进入代码库并完成测试基线接通
 
-### 2. 已写入代码库、但尚未真正接入主链路的 V6 能力
+### 4. 验证结果已经对齐
 
-以下能力明显属于 V6，但当前更像“已落代码和测试草案”，而不是“已贯通上线”：
+本轮可确认结果：
 
-- ChromaDB 向量存储
-  - `app/core/vector_store.py`
-  - `app/core/embedding.py`
-  - `main.py` 启动时初始化目录与向量库
-- 习惯学习相关服务
-  - `habit_collector.py`
-  - `habit_analyzer.py`
-  - `habit_retriever.py`
-  - `preference_learner.py`
-- 多轮对话槽位补全
-  - `dialog_state.py`
-- 扫描线冲突检测
-  - `conflict_detector.py`
-- 智能任务拆分服务
-  - `task_splitter.py`
-- 新增模型与迁移草稿
-  - `Habit`
-  - `TaskSplit`
-  - `events.energy_level`
-  - `events.habit_id`
-  - `tasks.max_splits`
-  - `tasks.min_chunk_minutes`
-  - `tasks.split_strategy`
+- `frontend` 构建通过
+- `backend/.venv312` 下全量测试通过
+  - **280 passed**
+- `alembic upgrade head` 已在临时 SQLite 数据库上验证通过
+- workflow 测试、assistant 测试、API 测试均已通过
+- workflow debug 接口已接入
+  - `/api/debug/workflow/summary`
+  - `/api/debug/workflow/diagram`
 
-但这些能力目前存在明显“未接通”特征：
+## 当前状态判断
 
-- 主助手入口仍然是**超大单体 `AssistantService`**
-- 当前 API 依赖注入仍直接返回 `app.services.assistant.AssistantService`
-- 现有主链路没有把 V6 的 `DialogStateManager`、`ConflictDetector`、`HabitRetriever`、`PreferenceLearner`、`VectorStore` 系统性串起来
-- 缺少习惯/偏好独立 API 路由，说明尚未形成完整外部能力面
+### 应判定为 V7 的原因
 
-### 3. V7 相关实现的实际状态
+- workflow 已接管助手主入口
+- ReAct 子图已保留为复杂场景分支
+- 条件化上下文、流式回复、超时优化已经进入当前实现
+- 后端测试已形成可复现的稳定结果
 
-当前仓库里已经出现明显的 V7 方向代码：
+### 不再适合判定为 V6 的原因
 
-- `app/workflow/graph.py`
-- `app/workflow/nodes.py`
-- `app/workflow/react_subgraph.py`
-- `app/workflow/react_tools.py`
-- `app/workflow/visualization.py`
+- “V6 在建”的核心判断前提，是 workflow 尚未接管主流程
+- 该前提现在已经被消除
 
-但这些内容**尚不能判定为 V7 已完成**，主要原因是：
+## 当前仍需继续收口的事项
 
-- 生产主流程没有通过 LangGraph 工作流执行
-- `AssistantService.send_message()` 仍是主入口
-- `get_assistant_service()` 也没有切到 workflow 驱动实现
-- ReAct 子图只是存在于代码库，并未成为线上默认路径
+### 1. 数据层收口
 
-## 当前主要不一致与风险
+- `Habit` / `TaskSplit` 的核心迁移定义已与 ORM 对齐，并已完成一次实际迁移验证
+- 后续仍建议继续审视历史数据库与增量升级路径
 
-以下问题说明项目仍处于“施工中”，不能视为稳定的 V6 完成版，更不能视为 V7 完成版：
+### 2. 向量依赖说明
 
-### 1. 工作流未真正接管
+- 当前已对 `chromadb` / `google.genai` 缺失场景做可选依赖降级
+- 若要启用完整向量能力，仍需补齐安装与运行说明
 
-- `workflow/` 目录完整，但当前助手主入口仍未切换到工作流
-- `WorkflowNodes.parse_intent()` 里引用路径与真实实现不一致：
-  - 使用 `from app.services.enhanced_assistant import EnhancedIntentParser`
-  - 实际 `EnhancedIntentParser` 定义在 `app/services/intent_parser.py`
+### 3. 主助手体量仍偏大
 
-### 2. V6 数据模型与迁移不一致
+- `AssistantService` 已不再独占编排职责
+- 但 runtime helper 仍偏多，后续应继续抽薄
 
-- ORM 中 `Habit.id` 为 `String(36)`，迁移中却是 `Integer`
-- `TaskSplit.id` ORM 为 `String(36)`，迁移中却是 `Integer`
-- 说明数据库迁移尚未完成收口
+### 4. 小型技术债
 
-### 3. 智能任务拆分仍有实现缺口
-
-- 路由已经暴露 `split-suggestions`
-- 但 `task_splitter.py` 中对 `UserProfile` 的查询字段写法与现有模型不一致
-- 说明 API 面已出现，内部实现还未完全校准
-
-### 4. ReAct 工具层仍偏草稿
-
-- `react_tools.py` 中部分工具依赖构造方式与现有 Repository 模式不完全匹配
-- 更像“概念验证代码”而非稳定生产接入
-
-### 5. 测试与当前环境不一致
-
-- `docs/testing/V6_NEW_FEATURES_REPORT.md` 声称大量测试通过
-- 但当前本机直接执行 `pytest -q` 因缺少依赖而在收集阶段失败
-- 这说明“测试报告”和“当前工作区可复现实况”并不完全一致
-
-## 当前版本判断
-
-### 不应判定为 V7 的原因
-
-- LangGraph++ 没有接管生产主流程
-- ReAct 子图没有形成默认执行路径
-- 工具注册机制与监控可视化仍停留在代码层/测试层
-
-### 不应判定为 V5 或更早的原因
-
-- 已经存在 V6 级别的数据模型扩展、向量存储、习惯学习、对话槽位、冲突检测、任务拆分、前端 Store 重构
-- 已经落入代码库并部分进入界面和 API
+- 当前剩余弃用警告主要来自测试代码中的 `utcnow()`
 
 ## 推荐对外表述
 
 如果要在论文、答辩或项目汇报中描述当前状态，建议使用：
 
-> 当前项目已从 V5 主体能力推进到 **V6 施工阶段**，并完成了部分 **V7 性能/交互优化前置改造**；但 LangGraph++ 工作流重构尚未正式接管主链路，因此当前不应认定为完整 V7 版本。
+> 当前项目已完成 **V7 主基线切换**：助手入口由 workflow 编排驱动，复杂场景保留 ReAct 子图分支，系统已具备稳定的测试基线；后续工作主要集中在迁移收口、可选依赖安装与架构瘦身。
 
-## 建议的下一步
+## 下一步建议
 
-1. 先决定是否以 **“稳定收口 V6”** 为主，而不是继续同时推进 V6/V7 两条线。
-2. 若以 V6 为主，应优先完成：
-   - 主助手入口接入 V6 增强能力
-   - 迁移与 ORM 对齐
-   - 习惯/偏好 API 与主流程打通
-3. 若继续推进 V7，应先完成：
-   - `AssistantService` 到 workflow 的切换
-   - ReAct/工具注册链路打通
-   - 删除或收敛当前重复实现
+1. 收口数据库迁移与 ORM 差异。
+2. 为完整向量能力补齐依赖安装说明。
+3. 继续把 `AssistantService` 内的 runtime helper 抽离到 workflow/runtime 层。

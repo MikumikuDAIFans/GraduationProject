@@ -27,6 +27,13 @@ class TaskService:
         task = await self.repository.create_task({"user_id": user_id, **payload.model_dump()})
         return self._build_task_read(task, [])
 
+    async def get_task(self, user_id: str, task_id: int) -> TaskRead | None:
+        task = await self.repository.get_task(task_id, user_id=user_id)
+        if task is None:
+            return None
+        linked_events = await self.event_repository.list_events_for_task_ids(user_id=user_id, task_ids=[task.id])
+        return self._build_task_read(task, linked_events)
+
     async def update_task(self, user_id: str, task_id: int, payload: TaskUpdate) -> TaskRead:
         task = await self.repository.update_task(
             task_id,

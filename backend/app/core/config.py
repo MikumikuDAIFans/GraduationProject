@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     notification_in_app: bool = Field(default=True, alias="NOTIFICATION_IN_APP")
     notification_desktop: bool = Field(default=True, alias="NOTIFICATION_DESKTOP")
 
+    enable_workflow: bool = Field(default=True, alias="ENABLE_WORKFLOW")
+    enable_react_subgraph: bool = Field(default=True, alias="ENABLE_REACT_SUBGRAPH")
+    route_confidence_threshold: float = Field(default=0.6, alias="ROUTE_CONFIDENCE_THRESHOLD")
+
     voice_input_enabled: bool = Field(default=False, alias="VOICE_INPUT_ENABLED")
     voice_output_enabled: bool = Field(default=False, alias="VOICE_OUTPUT_ENABLED")
     voice_input_model: str = Field(default="base", alias="VOICE_INPUT_MODEL")

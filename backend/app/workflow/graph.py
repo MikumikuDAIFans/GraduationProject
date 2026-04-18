@@ -77,18 +77,18 @@ def route_after_decision(state: WorkflowState) -> Literal["react", "execute", "c
     
     Phase V7 P1-2: 优先检查是否需要ReAct子图。
     """
-    # Phase V7: 如果需要ReAct子图，优先走ReAct分支
-    if state.get("use_react"):
-        return "react"
-    
     # 如果需要澄清，走澄清分支
     if state.get("needs_clarification"):
         return "clarify"
-    
+
     # 如果有动作需要执行，走执行分支
     if state.get("actions"):
         return "execute"
-    
+
+    # 只有在当前还没有形成明确动作或直接回复时，才进入 ReAct 子图
+    if state.get("use_react") and not state.get("reply"):
+        return "react"
+
     # 否则直接渲染回复
     return "render"
 

@@ -74,15 +74,15 @@ async def query_events(user_id: str, date: str) -> list[dict]:
     """查询用户在指定日期的事件"""
     try:
         from datetime import datetime, timedelta
-        from app.repositories.events import EventRepository
-        
+        from app.services.events import EventService
+
         # 计算日期范围
         dt_start = datetime.fromisoformat(date)
         dt_end = dt_start + timedelta(days=1)
-        
-        repo = EventRepository()
-        events = await repo.list_events(user_id=user_id, limit=100)
-        
+
+        service = EventService()
+        events = await service.list_events(user_id=user_id, start=dt_start, end=dt_end)
+
         # 过滤指定日期的事件
         day_events = [
             e for e in events

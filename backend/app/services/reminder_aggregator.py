@@ -1,7 +1,7 @@
 """提醒聚合与降噪服务 — 避免提醒轰炸"""
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from pydantic import BaseModel
@@ -33,6 +33,13 @@ class ReminderAggregator:
             "start": "23:00",
             "end": "07:00",
         }
+
+    @staticmethod
+    def _ensure_utc(dt_value: datetime) -> datetime:
+        """Normalize stored timestamps to UTC-aware datetimes."""
+        if dt_value.tzinfo is None:
+            return dt_value.replace(tzinfo=timezone.utc)
+        return dt_value.astimezone(timezone.utc)
 
     async def should_send_reminder(self, reminder: Reminder) -> bool:
         """判断是否应该发送提醒"""
@@ -127,14 +134,14 @@ class ReminderAggregator:
             return False
 
         time_since_last_sent = (
-            datetime.utcnow() - self.last_sent[target_id]
+            datetime.now(timezone.utc) - self._ensure_utc(self.last_sent[target_id])
         ).total_seconds() / 60
 
         return time_since_last_sent < self.cooldown_minutes
 
     def mark_sent(self, target_id: int):
         """标记提醒已发送"""
-        self.last_sent[target_id] = datetime.utcnow()
+        self.last_sent[target_id] = datetime.now(timezone.utc)
 
     async def _already_sent_similar(self, reminder: Reminder) -> bool:
         """检查是否已发送过类似提醒"""
@@ -144,18 +151,18 @@ class ReminderAggregator:
             return False
 
         time_since_last_sent = (
-            datetime.utcnow() - self.last_sent[target_id]
+            datetime.now(timezone.utc) - self._ensure_utc(self.last_sent[target_id])
         ).total_seconds() / 60
 
         return time_since_last_sent < 60  # 1 小时内不重复提醒
 
     def clear_old_entries(self, max_age_minutes: int = 120):
         """清理旧的发送记录"""
-        cutoff = datetime.utcnow() - timedelta(minutes=max_age_minutes)
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)
         to_remove = [
             target_id
             for target_id, sent_time in self.last_sent.items()
-            if sent_time < cutoff
+            if self._ensure_utc(sent_time) < cutoff
         ]
         for target_id in to_remove:
             del self.last_sent[target_id]

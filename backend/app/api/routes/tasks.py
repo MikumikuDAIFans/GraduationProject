@@ -5,9 +5,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Path, Query, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.live_updates import broadcast_workspace_update
-from app.api.deps import TaskService, get_current_user_id, get_task_service
+from app.api.deps import TaskService, get_current_user_id, get_db_session, get_task_service
 from app.api.schemas import OperationResult, TaskCreate, TaskRead, TaskUpdate
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -61,6 +62,7 @@ async def get_split_suggestions(
     days_ahead: int = Query(default=7, ge=1, le=30),
     user_id: str = Depends(get_current_user_id),
     service: TaskService = Depends(get_task_service),
+    db: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """
     Get intelligent split suggestions for a task.
@@ -69,38 +71,33 @@ async def get_split_suggestions(
     to suggest optimal splitting strategies.
     """
     from app.services.task_splitter import SmartTaskSplitter
-    from app.api.deps import get_db_session
-    
-    db = await anext(get_db_session())
+
     splitter = SmartTaskSplitter(db)
-    
-    try:
-        # Get the task
-        task = await service.get_task(user_id=user_id, task_id=task_id)
-        if not task:
-            from fastapi import HTTPException
-            raise HTTPException(status_code=404, detail="Task not found")
-        
-        # Find idle slots
-        now = datetime.utcnow()
-        end = now + timedelta(days=days_ahead)
-        slots = await splitter.get_idle_slots(
-            user_id=user_id,
-            start=now,
-            end=end,
-            min_duration=15,
-        )
-        
-        # Generate split suggestions
-        plan = await splitter.suggest_splits(task, slots)
-        
-        return {
-            "task_id": task_id,
-            "original_duration_minutes": plan.original_duration_minutes,
-            "strategy_used": plan.strategy_used,
-            "completion_ratio": round(plan.completion_ratio, 2),
-            "suggested_splits": plan.splits,
-            "notes": plan.notes,
-        }
-    finally:
-        await db.close()
+
+    # Get the task
+    task = await service.get_task(user_id=user_id, task_id=task_id)
+    if not task:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    # Find idle slots
+    now = datetime.utcnow()
+    end = now + timedelta(days=days_ahead)
+    slots = await splitter.get_idle_slots(
+        user_id=user_id,
+        start=now,
+        end=end,
+        min_duration=15,
+    )
+
+    # Generate split suggestions
+    plan = await splitter.suggest_splits(task, slots)
+
+    return {
+        "task_id": task_id,
+        "original_duration_minutes": plan.original_duration_minutes,
+        "strategy_used": plan.strategy_used,
+        "completion_ratio": round(plan.completion_ratio, 2),
+        "suggested_splits": plan.splits,
+        "notes": plan.notes,
+    }
