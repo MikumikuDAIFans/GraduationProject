@@ -22,7 +22,7 @@ class AmapClient:
 
     async def geocode(self, address: str, city: str | None = None) -> dict[str, Any]:
         self._ensure_enabled()
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        async with httpx.AsyncClient(timeout=8.0) as client:
             response = await client.get(
                 f"{self.base_url}/v3/geocode/geo",
                 params={
@@ -59,7 +59,7 @@ class AmapClient:
         destination_location = await self._resolve_location(destination, city)
         endpoint = "/v3/direction/driving" if mode != "walking" else "/v3/direction/walking"
 
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        async with httpx.AsyncClient(timeout=8.0) as client:
             response = await client.get(
                 f"{self.base_url}{endpoint}",
                 params={
@@ -93,13 +93,24 @@ class AmapClient:
         }
 
     async def _resolve_location(self, text: str, city: str | None = None) -> str:
-        if "," in text:
+        if self._looks_like_coordinates(text):
             return text
         geocoded = await self.geocode(text, city)
         location = geocoded.get("location")
         if not location:
             raise RuntimeError(f"Amap could not resolve location for {text!r}.")
         return str(location)
+
+    def _looks_like_coordinates(self, text: str) -> bool:
+        parts = [part.strip() for part in text.split(",")]
+        if len(parts) != 2 or any(not part for part in parts):
+            return False
+        try:
+            lng = float(parts[0])
+            lat = float(parts[1])
+        except ValueError:
+            return False
+        return -180 <= lng <= 180 and -90 <= lat <= 90
 
     def _ensure_enabled(self) -> None:
         if not self.enabled:

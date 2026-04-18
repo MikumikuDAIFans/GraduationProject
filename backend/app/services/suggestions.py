@@ -519,3 +519,34 @@ class SuggestionService:
         if task.can_split:
             return "task_split_slot", "Split"
         return "task_slot", "Suggested slot for"
+
+    async def find_idle_slots_with_quality(
+        self, user_id: str, date: date
+    ) -> list[dict]:
+        """查找空闲时段并计算质量分数（基于偏好学习）"""
+        slots = self._compute_gaps_for_date(
+            events=await self.event_repository.list_events(user_id=user_id),
+            profile=await self.profile_repository.get_profile(user_id),
+            target_date=date,
+        )
+
+        preferences = await self._get_user_preferences(user_id)
+        energy_curve = preferences.get("energy_curve", [0.5] * 24)
+
+        result = []
+        for start, end in slots:
+            duration_minutes = int((end - start).total_seconds() // 60)
+            hour = start.hour
+            energy = energy_curve[hour] if 0 <= hour < 24 else 0.5
+            quality_score = energy * 0.5 + min(duration_minutes / 60, 1.0) * 0.5
+
+            result.append({
+                "start": start,
+                "end": end,
+                "duration_minutes": duration_minutes,
+                "quality_score": round(quality_score, 2),
+                "energy_level": energy,
+            })
+
+        result.sort(key=lambda s: s["quality_score"], reverse=True)
+        return result

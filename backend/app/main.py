@@ -15,18 +15,31 @@ from app.core.config import get_settings
 from app.core.error_handler import global_exception_handler
 from app.core.logging import configure_logging
 from app.core.metrics import record_request
+from app.core.vector_store import VectorStore
+
+_vector_store: VectorStore | None = None
+
+
+def get_vector_store() -> VectorStore:
+    """Get the global vector store singleton."""
+    global _vector_store
+    if _vector_store is None:
+        _vector_store = VectorStore(persist_directory="./chroma_db")
+    return _vector_store
 
 
 def _ensure_runtime_directories() -> None:
     """Create runtime directories required by the backend."""
     settings = get_settings()
     Path(settings.sqlite_db_file).parent.mkdir(parents=True, exist_ok=True)
+    Path("./chroma_db").mkdir(parents=True, exist_ok=True)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     """Initialize runtime dependencies during startup."""
     _ensure_runtime_directories()
+    logger.info("Vector store initialized at ./chroma_db")
     yield
 
 

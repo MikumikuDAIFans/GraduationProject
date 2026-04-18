@@ -18,9 +18,12 @@ services:
       - ./.env
     environment:
       REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: sqlite+aiosqlite:////app/data/app.db
+      SQLITE_DB_PATH: /app/data/app.db
     volumes:
       - ./backend:/app
       - ./backend/data:/app/data
+      - ./chroma_db:/app/chroma_db
     ports:
       - "8000:8000"
     depends_on:
@@ -29,7 +32,14 @@ services:
     entrypoint:
       - /bin/sh
       - -lc
-      - python scripts/wait_for_redis.py && alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000
+      - |
+        echo "Waiting for Redis..."
+        python scripts/wait_for_redis.py
+        echo "Running database migrations..."
+        alembic upgrade head || echo "Migration failed, continuing anyway..."
+        echo "Starting API server..."
+        uvicorn app.main:app --host 0.0.0.0 --port 8000
+    restart: unless-stopped
 
   celery_worker:
     build: ./backend
@@ -39,16 +49,24 @@ services:
       - ./.env
     environment:
       REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: sqlite+aiosqlite:////app/data/app.db
+      SQLITE_DB_PATH: /app/data/app.db
     volumes:
       - ./backend:/app
       - ./backend/data:/app/data
+      - ./chroma_db:/app/chroma_db
     depends_on:
       redis:
         condition: service_healthy
     entrypoint:
       - /bin/sh
       - -lc
-      - python scripts/wait_for_redis.py && celery -A app.core.celery_app.celery_app worker -l info
+      - |
+        echo "Waiting for Redis..."
+        python scripts/wait_for_redis.py
+        echo "Starting Celery worker..."
+        celery -A app.core.celery_app.celery_app worker -l info
+    restart: unless-stopped
 
   celery_beat:
     build: ./backend
@@ -58,6 +76,8 @@ services:
       - ./.env
     environment:
       REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: sqlite+aiosqlite:////app/data/app.db
+      SQLITE_DB_PATH: /app/data/app.db
     volumes:
       - ./backend:/app
       - ./backend/data:/app/data
@@ -67,4 +87,9 @@ services:
     entrypoint:
       - /bin/sh
       - -lc
-      - python scripts/wait_for_redis.py && celery -A app.core.celery_app.celery_app beat -l info
+      - |
+        echo "Waiting for Redis..."
+        python scripts/wait_for_redis.py
+        echo "Starting Celery beat..."
+        celery -A app.core.celery_app.celery_app beat -l info --schedule=/app/data/celerybeat-schedule
+    restart: unless-stopped

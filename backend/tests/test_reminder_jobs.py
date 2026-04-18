@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from app.jobs.reminders import (
+    _is_task_deadline_at_risk,
     _build_departure_reminder_payload,
     _build_event_start_reminder_payload,
     cleanup_old_reminders,
@@ -76,3 +77,13 @@ def test_scan_conflict_warnings_is_callable() -> None:
 
 def test_cleanup_old_reminders_is_callable() -> None:
     assert callable(cleanup_old_reminders)
+
+
+def test_is_task_deadline_at_risk_excludes_overdue_tasks() -> None:
+    now = datetime(2026, 4, 18, 8, 0, tzinfo=timezone.utc)
+    today_end = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+    overdue_task = SimpleNamespace(deadline=now - timedelta(minutes=1), status="pending")
+    upcoming_task = SimpleNamespace(deadline=now + timedelta(hours=2), status="pending")
+
+    assert _is_task_deadline_at_risk(task=overdue_task, now=now, today_end=today_end) is False
+    assert _is_task_deadline_at_risk(task=upcoming_task, now=now, today_end=today_end) is True

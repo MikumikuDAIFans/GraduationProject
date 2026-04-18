@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin
@@ -63,6 +63,8 @@ class Event(Base, TimestampMixin):
     external_etag: Mapped[str | None] = mapped_column(String(255), nullable=True)
     sync_status: Mapped[str] = mapped_column(String(32), nullable=False, default="local_only")
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    energy_level: Mapped[str | None] = mapped_column(String(20), nullable=True)  # high/medium/low
+    habit_id: Mapped[str | None] = mapped_column(ForeignKey("habits.id", ondelete="SET NULL"), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("user_id", "external_event_id", name="uq_events_user_external_event"),
@@ -83,6 +85,9 @@ class Task(Base, TimestampMixin):
     can_split: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     preferred_period: Mapped[str | None] = mapped_column(String(64), nullable=True)
     linked_event_id: Mapped[int | None] = mapped_column(ForeignKey("events.id", ondelete="SET NULL"), nullable=True, index=True)
+    max_splits: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    min_chunk_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=15)
+    split_strategy: Mapped[str | None] = mapped_column(String(50), nullable=True)  # equal/priority_based/time_based
 
 
 class Reminder(Base, TimestampMixin):
@@ -109,6 +114,39 @@ class Reminder(Base, TimestampMixin):
             name="uq_reminders_user_target_type_time",
         ),
     )
+
+
+class Habit(Base, TimestampMixin):
+    """User habit pattern and routine tracking."""
+
+    __tablename__ = "habits"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("user_profile.username", ondelete="CASCADE"), nullable=False, index=True)
+    habit_type: Mapped[str] = mapped_column(String(50), nullable=False)  # routine/preference/pattern
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    time_pattern: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    day_pattern: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    location: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    activity: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    frequency: Mapped[str | None] = mapped_column(String(20), nullable=True)  # daily/weekly/monthly
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    occurrences: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    last_occurrence: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class TaskSplit(Base, TimestampMixin):
+    """Task split records for intelligent task decomposition."""
+
+    __tablename__ = "task_splits"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True)
+    split_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    scheduled_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")  # pending/completed/skipped
 
 
 class AssistantSession(Base, TimestampMixin):

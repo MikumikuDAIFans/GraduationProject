@@ -26,7 +26,7 @@ class QWeatherClient:
 
     async def get_weather_now(self, *, location: str) -> dict[str, Any]:
         self._ensure_enabled()
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        async with httpx.AsyncClient(timeout=8.0) as client:
             try:
                 response = await client.get(
                     f"{self.settings.qweather_api_host}/v7/weather/now",

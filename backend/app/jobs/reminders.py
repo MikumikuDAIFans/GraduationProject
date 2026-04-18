@@ -151,7 +151,6 @@ async def _scan_idle_slot_risks() -> dict[str, int]:
             await session.scalars(
                 select(Task).where(
                     Task.deadline.is_not(None),
-                    Task.deadline <= today_end,
                     Task.status.notin_(["done"]),
                 )
             )
@@ -159,6 +158,8 @@ async def _scan_idle_slot_risks() -> dict[str, int]:
 
         generated_count = 0
         for task in at_risk_tasks:
+            if not _is_task_deadline_at_risk(task=task, now=now, today_end=today_end):
+                continue
             existing = await session.scalar(
                 select(Reminder).where(
                     Reminder.user_id == task.user_id,
@@ -190,6 +191,14 @@ async def _scan_idle_slot_risks() -> dict[str, int]:
             await session.commit()
 
     return {"generated_count": generated_count}
+
+
+def _is_task_deadline_at_risk(*, task: Task, now: datetime, today_end: datetime) -> bool:
+    deadline = task.deadline
+    status = (task.status or "pending").lower()
+    if deadline is None or status == "done":
+        return False
+    return now <= deadline <= today_end
 
 
 @celery_app.task(name="app.jobs.reminders.scan_conflict_warnings")

@@ -112,7 +112,10 @@ class AssistantService:
             events = await self.event_repository.list_events(user_id=user_id)
             profile = await self.profile_repository.get_profile(user_id)
             tasks = await self.task_service.list_tasks(user_id=user_id)
-            external_context = await self._build_external_context(profile=profile)
+            intent = self._classify_intent(payload.message)
+            external_context = await self._build_external_context(
+                profile=profile, user_message=payload.message, intent=intent,
+            )
             session_context = dict(session.context_json or {})
 
             pending_decision = await self._maybe_handle_pending_action_decision(
@@ -215,7 +218,10 @@ class AssistantService:
             events = await self.event_repository.list_events(user_id=user_id)
             profile = await self.profile_repository.get_profile(user_id)
             tasks = await self.task_service.list_tasks(user_id=user_id)
-            external_context = await self._build_external_context(profile=profile)
+            intent = self._classify_intent(payload.message)
+            external_context = await self._build_external_context(
+                profile=profile, user_message=payload.message, intent=intent,
+            )
             session_context = dict(session.context_json or {})
 
             pending_decision = await self._maybe_handle_pending_action_decision(
@@ -1058,6 +1064,38 @@ class AssistantService:
                     )
                     if schedule_action is not None:
                         executed.append(schedule_action)
+                elif action_type == "update_event":
+                    event_id = payload.get("event_id")
+                    if event_id is None:
+                        continue
+                    update_fields = {k: v for k, v in payload.items() if k != "event_id"}
+                    updated = await self.event_service.update_event(
+                        user_id=user_id,
+                        event_id=event_id,
+                        payload=EventUpdate.model_validate(update_fields),
+                    )
+                    executed.append(
+                        AssistantAction(
+                            type="update_event",
+                            payload={
+                                "event_id": updated.id,
+                                "title": updated.title,
+                                "start_time": updated.start_time.isoformat() if updated.start_time else None,
+                                "end_time": updated.end_time.isoformat() if updated.end_time else None,
+                            },
+                        )
+                    )
+                elif action_type == "delete_event":
+                    event_id = payload.get("event_id")
+                    if event_id is None:
+                        continue
+                    await self.event_service.delete_event(user_id=user_id, event_id=event_id)
+                    executed.append(
+                        AssistantAction(
+                            type="delete_event",
+                            payload={"event_id": event_id, "status": "deleted"},
+                        )
+                    )
                 elif action_type == "suggest_schedule":
                     executed.append(AssistantAction(type="suggest_schedule", payload=payload))
                 elif action_type == "propose_event":
@@ -2326,41 +2364,58 @@ class AssistantService:
             except Exception:
                 destination_coords = None
 
+        # Phase V7 P0-3: Parallelize independent commute and weather fetches
         origin_name, origin_value = self._select_commute_origin(profile=profile, user_message=user_message)
-        if origin_value and destination:
-            try:
-                travel = await self.context_service.estimate_travel(
-                    origin=origin_value,
-                    destination=destination_coords or destination,
-                    mode=profile.transport_preference or "driving",
-                )
-                context["commute_minutes"] = int(round(travel.duration_minutes))
-                context["distance_km"] = travel.distance_km
-                if self._prefers_chinese(user_message):
-                    context["commute_summary"] = (
-                        f"从{origin_name}到{location_name or '目的地'}预计约 {int(round(travel.duration_minutes))} 分钟，"
-                        f"路程约 {travel.distance_km} 公里。"
-                    )
-                else:
-                    context["commute_summary"] = (
-                        f"Estimated commute from {origin_name} to {location_name or 'the destination'} "
-                        f"is about {int(round(travel.duration_minutes))} minutes for {travel.distance_km} km."
-                    )
-            except Exception:
-                pass
-
         weather_location = destination_coords or getattr(profile, "home_location_coords", None)
-        if weather_location:
-            try:
-                weather = await self.context_service.weather_now(location=weather_location)
-                weather_text = f"{weather.text}, {weather.temp}°C"
-                if self._prefers_chinese(user_message):
-                    context["weather_summary"] = f"{location_name or '该地点'}当前天气 {weather_text}。"
-                else:
-                    context["weather_summary"] = f"Current weather near {location_name or 'the destination'} is {weather_text}."
-                context["weather_text"] = weather.text
-            except Exception:
-                pass
+
+        async def _fetch_commute():
+            if origin_value and destination:
+                try:
+                    travel = await self.context_service.estimate_travel(
+                        origin=origin_value,
+                        destination=destination_coords or destination,
+                        mode=profile.transport_preference or "driving",
+                    )
+                    commute_minutes = int(round(travel.duration_minutes))
+                    distance = travel.distance_km
+                    if self._prefers_chinese(user_message):
+                        summary = f"从{origin_name}到{location_name or '目的地'}预计约 {commute_minutes} 分钟，路程约 {distance} 公里。"
+                    else:
+                        summary = f"Estimated commute from {origin_name} to {location_name or 'the destination'} is about {commute_minutes} minutes for {distance} km."
+                    return {
+                        "commute_minutes": commute_minutes,
+                        "distance_km": distance,
+                        "commute_summary": summary,
+                        "origin_name": origin_name,
+                    }
+                except Exception:
+                    pass
+            return None
+
+        async def _fetch_weather():
+            if weather_location:
+                try:
+                    weather = await self.context_service.weather_now(location=weather_location)
+                    weather_text = f"{weather.text}, {weather.temp}°C"
+                    if self._prefers_chinese(user_message):
+                        summary = f"{location_name or '该地点'}当前天气 {weather_text}。"
+                    else:
+                        summary = f"Current weather near {location_name or 'the destination'} is {weather_text}."
+                    return {
+                        "weather_summary": summary,
+                        "weather_text": weather.text,
+                        "weather_temp": weather.temp,
+                    }
+                except Exception:
+                    pass
+            return None
+
+        commute_result, weather_result = await asyncio.gather(_fetch_commute(), _fetch_weather())
+
+        if commute_result:
+            context.update({k: v for k, v in commute_result.items() if k != "origin_name"})
+        if weather_result:
+            context.update(weather_result)
 
         advice_parts: list[str] = []
         if self._is_outdoor_request(user_message, location_name):
@@ -2459,7 +2514,17 @@ class AssistantService:
     def _prefers_chinese(self, text: str) -> bool:
         return bool(re.search(r"[\u4e00-\u9fff]", text))
 
-    async def _build_external_context(self, *, profile) -> dict[str, Any]:
+    async def _build_external_context(
+        self,
+        *,
+        profile,
+        user_message: str | None = None,
+        intent: str | None = None,
+    ) -> dict[str, Any]:
+        # Phase V7 P0-1: Skip unnecessary API calls based on intent
+        if not self._needs_external_context(user_message=user_message, intent=intent):
+            return {}
+
         async def _fetch_weather():
             if profile.home_location_coords:
                 try:
@@ -2495,3 +2560,38 @@ class AssistantService:
         if commute_result is not None:
             context["default_commute"] = commute_result
         return context
+
+    def _needs_external_context(
+        self,
+        *,
+        user_message: str | None = None,
+        intent: str | None = None,
+    ) -> bool:
+        """Determine if weather/commute API calls are needed for this request.
+
+        Phase V7 P0-1: Rule-based check with LLM fallback.
+        Skip external API calls for intents that don't need location/weather context.
+        """
+        # Intents that definitely need external context
+        if intent in {"event_context_advice", "create_event"}:
+            return True
+
+        # Schedule guidance benefits from commute context for planning
+        if intent == "schedule_guidance":
+            return True
+
+        # Progress followup rarely needs weather/commute
+        if intent == "progress_followup":
+            return False
+
+        # Unknown intents: check message for weather/commute/location keywords
+        if user_message:
+            needs_weather = bool(re.search(r"天气|气温|温度|冷|热|下雨|下雪|weather|temperature", user_message, re.I))
+            needs_commute = bool(re.search(r"通勤|出发|多久到|多远|路程|路线|怎么去|commute|how long.*get|travel time", user_message, re.I))
+            needs_location = bool(re.search(r"在哪里|地址|位置|地点|where|address|location", user_message, re.I))
+            if needs_weather or needs_commute or needs_location:
+                return True
+
+        # Default: be conservative and fetch context for unknown intents
+        # (preserves backward compatibility)
+        return user_message is not None

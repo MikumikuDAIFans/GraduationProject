@@ -32,6 +32,7 @@ htmlcov/
 *.db-shm
 *.db-wal
 data/
+chroma_db/
 
 # Node / frontend
 node_modules/

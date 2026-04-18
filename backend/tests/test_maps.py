@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, patch
 
+from app.tools.amap import AmapClient
 from app.tools.maps import MapsClient
 
 
@@ -70,3 +71,21 @@ def test_search_poi() -> None:
 
     assert len(pois) == 1
     assert pois[0]["name"] == "星巴克"
+
+
+def test_amap_resolve_location_geocodes_text_with_comma() -> None:
+    client = AmapClient()
+    client.settings.map_api_key = "test-key"
+    client.geocode = AsyncMock(return_value={"location": "116.397463,39.909187"})  # type: ignore[method-assign]
+
+    resolved = asyncio.run(client._resolve_location("Tiananmen, Beijing"))
+
+    assert resolved == "116.397463,39.909187"
+    client.geocode.assert_awaited_once_with("Tiananmen, Beijing", None)
+
+
+def test_amap_recognizes_real_coordinate_text() -> None:
+    client = AmapClient()
+
+    assert client._looks_like_coordinates("116.397463,39.909187") is True
+    assert client._looks_like_coordinates("Tiananmen, Beijing") is False
