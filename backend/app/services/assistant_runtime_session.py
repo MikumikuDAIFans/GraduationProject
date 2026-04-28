@@ -21,6 +21,13 @@ from app.api.schemas import (
 class AssistantSessionRuntime:
     """Owns session, inbox, and summary orchestration."""
 
+    ACTIONABLE_SUGGESTION_TYPES = {
+        "task_slot",
+        "task_split_slot",
+        "task_replan_slot",
+        "task_resume_slot",
+    }
+
     def __init__(self, owner) -> None:
         self.owner = owner
 
@@ -67,7 +74,7 @@ class AssistantSessionRuntime:
             ],
         )
 
-    async def get_current_session(self, user_id: str) -> AssistantCurrentSessionRead:
+    async def get_current_session(self, user_id: str, *, include_inbox: bool = True) -> AssistantCurrentSessionRead:
         session = await self.owner.repository.get_latest_session(user_id=user_id, session_type="chat")
         if session is None:
             session = await self.owner.repository.create_session(
@@ -76,22 +83,40 @@ class AssistantSessionRuntime:
                 context_json={"status": "assistant-active"},
             )
 
-        inbox = await self.owner.get_inbox(user_id=user_id)
-        session = await self.owner._sync_inbox_to_session(user_id=user_id, session=session, inbox=inbox)
+        inbox = AssistantInboxRead()
+        if include_inbox:
+            inbox = await self.owner.get_inbox(user_id=user_id)
+            # Only sync inbox to session if there are new unread items not yet surfaced
+            context_json = dict(session.context_json or {})
+            surfaced_ids = set(context_json.get("surfaced_inbox_ids", []))
+            has_new_items = any(item.id not in surfaced_ids and not item.archived for item in inbox.items)
+            if has_new_items:
+                session = await self.owner._sync_inbox_to_session(user_id=user_id, session=session, inbox=inbox)
         session_read = await self.owner.get_session(user_id=user_id, session_id=session.id)
         return AssistantCurrentSessionRead(session=session_read, inbox=inbox)
 
     async def get_summary(self, user_id: str) -> AssistantSummaryRead:
-        inbox = await self.owner.get_inbox(user_id=user_id)
+        session, inbox_state = await self._prepare_inbox_state(user_id=user_id)
         tasks = await self.owner.task_service.list_tasks(user_id=user_id)
         reminders = await self.owner.reminder_repository.list_reminders(user_id=user_id, limit=20)
-        today = await self.owner.suggestion_service.get_today_suggestions(user_id=user_id)
-        next_items = await self.owner.suggestion_service.get_next_suggestions(user_id=user_id)
+        recent_followups = await self.owner.reminder_repository.list_recent_task_followups(user_id=user_id, limit=6)
+        suggestion_items = await self.owner.suggestion_service.build_suggestions_for_dates(
+            user_id=user_id,
+            dates=[datetime.now().date() + timedelta(days=offset) for offset in range(0, 4)],
+            limit=8,
+            core_only=True,
+        )
+        inbox = self._build_inbox_read(
+            tasks=tasks,
+            reminders=recent_followups,
+            suggestion_items=suggestion_items,
+            inbox_state=inbox_state,
+        )
         cards = self.build_summary_cards(
             inbox=inbox,
             tasks=tasks,
             reminders=reminders,
-            suggestions=[*today.items, *next_items.items],
+            suggestions=suggestion_items,
         )
         return AssistantSummaryRead(
             generated_at=datetime.now(),
@@ -100,6 +125,23 @@ class AssistantSessionRuntime:
         )
 
     async def get_inbox(self, user_id: str) -> AssistantInboxRead:
+        _session, inbox_state = await self._prepare_inbox_state(user_id=user_id)
+        tasks = await self.owner.task_service.list_tasks(user_id=user_id)
+        reminders = await self.owner.reminder_repository.list_recent_task_followups(user_id=user_id, limit=6)
+        suggestion_items = await self.owner.suggestion_service.build_suggestions_for_dates(
+            user_id=user_id,
+            dates=[datetime.now().date() + timedelta(days=offset) for offset in range(0, 3)],
+            limit=6,
+            core_only=True,
+        )
+        return self._build_inbox_read(
+            tasks=tasks,
+            reminders=reminders,
+            suggestion_items=suggestion_items,
+            inbox_state=inbox_state,
+        )
+
+    async def _prepare_inbox_state(self, *, user_id: str):
         session = await self.owner.repository.get_latest_session(user_id=user_id, session_type="chat")
         session_context = dict(session.context_json or {}) if session is not None else {}
         inbox_state = dict(session_context.get("inbox_item_state", {}))
@@ -112,15 +154,16 @@ class AssistantSessionRuntime:
                 context_json=session_context,
             ) or session
             inbox_state = cleaned_state
+        return session, inbox_state
 
-        tasks = await self.owner.task_service.list_tasks(user_id=user_id)
-        reminders = await self.owner.reminder_repository.list_recent_task_followups(user_id=user_id, limit=6)
-        suggestion_items = await self.owner.suggestion_service.build_suggestions_for_dates(
-            user_id=user_id,
-            dates=[datetime.now().date() + timedelta(days=offset) for offset in range(0, 3)],
-            limit=6,
-        )
-
+    def _build_inbox_read(
+        self,
+        *,
+        tasks,
+        reminders,
+        suggestion_items,
+        inbox_state: dict[str, Any],
+    ) -> AssistantInboxRead:
         inbox_items: list[AssistantInboxItem] = []
 
         for reminder in reminders[:3]:
@@ -168,6 +211,8 @@ class AssistantSessionRuntime:
 
         grouped_suggestions: dict[int | None, list] = {}
         for item in suggestion_items:
+            if not self.is_actionable_suggestion(item):
+                continue
             grouped_suggestions.setdefault(item.related_task_id, []).append(item)
 
         for task_id, items in list(grouped_suggestions.items())[:3]:
@@ -282,6 +327,12 @@ class AssistantSessionRuntime:
         if item.kind == "task_status":
             return f"{item.title} 当前状态更新：{item.description}"
         return f"{item.title}：{item.description}"
+
+    def is_actionable_suggestion(self, suggestion) -> bool:
+        suggestion_type = getattr(suggestion, "type", None)
+        if suggestion_type is None and hasattr(suggestion, "model_dump"):
+            suggestion_type = suggestion.model_dump(mode="json").get("type")
+        return suggestion_type in self.ACTIONABLE_SUGGESTION_TYPES
 
     async def sync_inbox_to_session(self, *, user_id: str, session, inbox: AssistantInboxRead):
         context_json = dict(session.context_json or {})

@@ -24,15 +24,15 @@ class SuggestionService:
         self.context_service = ContextService()
         self.maps_client = MapsClient()
 
-    async def get_today_suggestions(self, user_id: str) -> SuggestionList:
+    async def get_today_suggestions(self, user_id: str, core_only: bool = True) -> SuggestionList:
         target_date = datetime.now().date()
-        items = await self._build_suggestions_for_dates(user_id=user_id, dates=[target_date], limit=5)
+        items = await self._build_suggestions_for_dates(user_id=user_id, dates=[target_date], limit=5, core_only=core_only)
         return SuggestionList(items=items, total=len(items))
 
-    async def get_next_suggestions(self, user_id: str) -> SuggestionList:
+    async def get_next_suggestions(self, user_id: str, core_only: bool = True) -> SuggestionList:
         today = datetime.now().date()
         dates = [today + timedelta(days=offset) for offset in range(1, 4)]
-        items = await self._build_suggestions_for_dates(user_id=user_id, dates=dates, limit=8)
+        items = await self._build_suggestions_for_dates(user_id=user_id, dates=dates, limit=8, core_only=core_only)
         return SuggestionList(items=items, total=len(items))
 
     async def build_suggestions_for_dates(
@@ -42,12 +42,14 @@ class SuggestionService:
         dates: list[date],
         limit: int,
         related_task_ids: list[int] | None = None,
+        core_only: bool = True,
     ) -> list[SuggestionRead]:
         return await self._build_suggestions_for_dates(
             user_id=user_id,
             dates=dates,
             limit=limit,
             related_task_ids=related_task_ids,
+            core_only=core_only,
         )
 
     async def _build_suggestions_for_dates(
@@ -57,6 +59,7 @@ class SuggestionService:
         dates: list[date],
         limit: int,
         related_task_ids: list[int] | None = None,
+        core_only: bool = True,
     ) -> list[SuggestionRead]:
         events = await self.event_repository.list_events(user_id=user_id)
         profile = await self.profile_repository.get_profile(user_id)
@@ -76,7 +79,11 @@ class SuggestionService:
         )
 
         suggestions: list[SuggestionRead] = []
-        suggestions.extend(await self._build_context_suggestions(events=events, profile=profile, dates=dates))
+        if not core_only:
+            suggestions.extend(await self._build_context_suggestions(events=events, profile=profile, dates=dates))
+        else:
+            # Core-only path: only include departure_plan suggestions (no weather/maps calls)
+            suggestions.extend(self._build_departure_suggestions(events=events, dates=dates))
         task_suggestions = self._build_task_slot_suggestions(
             events=events,
             profile=profile,
@@ -285,6 +292,33 @@ class SuggestionService:
         if cursor < working_end:
             gaps.append((cursor, working_end))
         return gaps
+
+    def _build_departure_suggestions(self, *, events, dates: list[date]) -> list[SuggestionRead]:
+        """Build departure-plan suggestions without any external API calls."""
+        suggestions: list[SuggestionRead] = []
+        target_dates = set(dates)
+        for event in events:
+            if event.start_time is None or event.end_time is None:
+                continue
+            if event.start_time.date() not in target_dates:
+                continue
+            if event.departure_time is not None and event.travel_duration_minutes:
+                suggestions.append(
+                    SuggestionRead(
+                        type="departure_plan",
+                        title=f"Leave for {event.title}",
+                        description=(
+                            f"Planned departure at {event.departure_time.isoformat()} "
+                            f"for {event.location_name or 'the destination'}, travel {event.travel_duration_minutes} minutes."
+                        ),
+                        start_time=event.departure_time,
+                        end_time=event.start_time,
+                        related_event_id=event.id,
+                        confidence=0.84,
+                        estimated_minutes=event.travel_duration_minutes,
+                    )
+                )
+        return suggestions
 
     async def _build_context_suggestions(self, *, events, profile, dates: list[date]) -> list[SuggestionRead]:
         suggestions: list[SuggestionRead] = []

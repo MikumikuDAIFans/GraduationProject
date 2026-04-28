@@ -564,8 +564,8 @@ class AssistantService:
     async def get_session(self, user_id: str, session_id: int) -> AssistantSessionRead:
         return await self.session_runtime.get_session(user_id=user_id, session_id=session_id)
 
-    async def get_current_session(self, user_id: str) -> AssistantCurrentSessionRead:
-        return await self.session_runtime.get_current_session(user_id=user_id)
+    async def get_current_session(self, user_id: str, *, include_inbox: bool = True) -> AssistantCurrentSessionRead:
+        return await self.session_runtime.get_current_session(user_id=user_id, include_inbox=include_inbox)
 
     async def get_summary(self, user_id: str) -> AssistantSummaryRead:
         return await self.session_runtime.get_summary(user_id=user_id)

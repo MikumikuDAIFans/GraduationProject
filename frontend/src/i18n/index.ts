@@ -30,6 +30,7 @@ const messages = {
       calendar: "日历",
       tasks: "任务",
       assistant: "助手",
+      settings: "设置",
       profile: "资料",
       save: "保存",
       saving: "保存中…",
@@ -173,6 +174,10 @@ const messages = {
       plan: "继续规划",
       segment: "第 {index}/{total} 段",
     },
+    settings: {
+      title: "系统设置",
+      context: "天气与通勤",
+    },
     summary: {
       title: "助手摘要",
       items: "{count} 项",
@@ -219,6 +224,7 @@ const messages = {
       calendar: "Calendar",
       tasks: "Tasks",
       assistant: "Assistant",
+      settings: "Settings",
       profile: "Profile",
       save: "Save",
       saving: "Saving…",
@@ -361,6 +367,10 @@ const messages = {
       resume: "Resume",
       plan: "Plan",
       segment: "Segment {index}/{total}",
+    },
+    settings: {
+      title: "Settings",
+      context: "Weather & Commute",
     },
     summary: {
       title: "Assistant digest",

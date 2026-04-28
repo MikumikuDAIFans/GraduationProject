@@ -2,7 +2,6 @@ import { defineStore } from "pinia";
 import { api } from "@/api/client";
 import { defaultInputAdapter } from "@/inputAdapters/textInput";
 import { defaultOutputAdapter } from "@/outputAdapters/textOutput";
-import { i18n } from "@/i18n";
 
 export interface AssistantAction {
   type: string;
@@ -78,9 +77,6 @@ export const useAssistantStore = defineStore("assistant", {
     sessionId: null as number | null,
     messages: [] as AssistantMessage[],
     lastAssistantActions: [] as AssistantAction[],
-    assistantInbox: [] as AssistantInboxItem[],
-    assistantInboxUnreadTotal: 0,
-    assistantSummary: null as AssistantSummary | null,
     assistantSessions: [] as AssistantSession[],
     loadingAssistantSessions: false,
     creatingAssistantSession: false,
@@ -108,16 +104,6 @@ export const useAssistantStore = defineStore("assistant", {
       return `${wsProtocol}//${httpUrl.host}${path}`;
     },
 
-    async fetchAssistantInbox() {
-      try {
-        const response = await api.get<AssistantInbox>("/assistant/inbox");
-        this.assistantInbox = response.data.items;
-        this.assistantInboxUnreadTotal = response.data.unread_total;
-      } catch (error) {
-        console.error("Failed to fetch assistant inbox:", error);
-      }
-    },
-
     async fetchAssistantSessions() {
       this.loadingAssistantSessions = true;
       try {
@@ -133,26 +119,17 @@ export const useAssistantStore = defineStore("assistant", {
         const response = await api.get<{
           session: AssistantSession;
           inbox: AssistantInbox;
-        }>("/assistant/current");
+        }>("/assistant/current", {
+          params: { include_inbox: false },
+        });
         this.sessionId = response.data.session.id;
         this.messages = response.data.session.messages;
-        this.assistantInbox = response.data.inbox.items;
-        this.assistantInboxUnreadTotal = response.data.inbox.unread_total;
         const existing = this.assistantSessions.find((item) => item.id === response.data.session.id);
         if (!existing) {
           this.assistantSessions = [response.data.session, ...this.assistantSessions];
         }
       } catch (error) {
         console.error("Failed to fetch current assistant session:", error);
-      }
-    },
-
-    async fetchAssistantSummary() {
-      try {
-        const response = await api.get<AssistantSummary>("/assistant/summary");
-        this.assistantSummary = response.data;
-      } catch (error) {
-        console.error("Failed to fetch assistant summary:", error);
       }
     },
 
@@ -218,16 +195,6 @@ export const useAssistantStore = defineStore("assistant", {
         throw error;
       } finally {
         this.clearingAssistantSession = false;
-      }
-    },
-
-    async updateInboxItem(itemId: string, action: "read" | "archive") {
-      try {
-        await api.post("/assistant/inbox/" + itemId, null, { params: { action } });
-        await this.fetchCurrentAssistantSession();
-      } catch (error) {
-        console.error("Failed to update inbox item:", error);
-        throw error;
       }
     },
 

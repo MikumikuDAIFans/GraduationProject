@@ -3,8 +3,8 @@
  * 
  * This store now delegates to the new focused stores created during P2-2 refactoring:
  * - useEventsStore: CalendarEvent, TaskItem, CRUD operations
- * - useAssistantStore: Sessions, messages, WebSocket streaming, inbox/summary
- * - useReminderStore: Reminders, suggestions, WebSocket notifications, toasts
+ * - useAssistantStore: Sessions, messages, WebSocket streaming
+ * - useReminderStore: WebSocket notifications, toasts
  * - useProfileStore: UserProfile, locale management
  * - useContextStore: Weather, travel estimates
  * - useGoogleCalendarStore: Google Calendar auth/sync
@@ -22,14 +22,10 @@ import { sendPlatformNotification } from "@/platform/notifications";
 export type { CalendarEvent, TaskItem } from "@/stores/events";
 export type {
   AssistantAction,
-  AssistantInboxItem,
-  AssistantInbox,
-  AssistantSummaryCard,
-  AssistantSummary,
   AssistantMessage,
   AssistantSession,
 } from "@/stores/assistant";
-export type { Reminder, Suggestion, ToastItem } from "@/stores/reminder";
+export type { ToastItem } from "@/stores/reminder";
 export type { UserProfile } from "@/stores/profile";
 export type { WeatherNow, TravelEstimate } from "@/stores/context";
 export type { GoogleCalendarStatus, GoogleCalendarSyncResult } from "@/stores/googleCalendar";
@@ -44,7 +40,6 @@ export type {
 import { useEventsStore } from "@/stores/events";
 import { useAssistantStore } from "@/stores/assistant";
 import { useReminderStore } from "@/stores/reminder";
-import { useSuggestionStore } from "@/stores/suggestion";
 import { useProfileStore } from "@/stores/profile";
 import { useContextStore } from "@/stores/context";
 import { useGoogleCalendarStore } from "@/stores/googleCalendar";
@@ -76,21 +71,11 @@ export const useWorkspaceStore = defineStore("workspace", {
     sessionId: () => useAssistantStore().sessionId,
     messages: () => useAssistantStore().messages,
     lastAssistantActions: () => useAssistantStore().lastAssistantActions,
-    assistantInbox: () => useAssistantStore().assistantInbox,
-    assistantInboxUnreadTotal: () => useAssistantStore().assistantInboxUnreadTotal,
-    assistantSummary: () => useAssistantStore().assistantSummary,
     assistantSessions: () => useAssistantStore().assistantSessions,
     loadingAssistantSessions: () => useAssistantStore().loadingAssistantSessions,
     creatingAssistantSession: () => useAssistantStore().creatingAssistantSession,
     archivingAssistantSession: () => useAssistantStore().archivingAssistantSession,
     clearingAssistantSession: () => useAssistantStore().clearingAssistantSession,
-
-    // Reminder/Suggestion proxies
-    reminders: () => useReminderStore().reminders,
-    todaySuggestions: () => useSuggestionStore().todaySuggestions,
-    nextSuggestions: () => useSuggestionStore().nextSuggestions,
-    seenReminderIds: () => useReminderStore().seenReminderIds,
-    initializedReminderSnapshot: () => useReminderStore().initializedReminderSnapshot,
 
     // Profile proxy
     profile: () => useProfileStore().profile,
@@ -138,12 +123,7 @@ export const useWorkspaceStore = defineStore("workspace", {
     async hydrate() {
       const eventsStore = useEventsStore();
       const assistantStore = useAssistantStore();
-      const reminderStore = useReminderStore();
-      const suggestionStore = useSuggestionStore();
       const profileStore = useProfileStore();
-      const contextStore = useContextStore();
-      const gcStore = useGoogleCalendarStore();
-      const systemStore = useSystemStore();
 
       this.loading = true;
       try {
@@ -151,27 +131,13 @@ export const useWorkspaceStore = defineStore("workspace", {
         await profileStore.fetchProfile();
         this.syncProfileContext();
 
-        // Fetch critical data in parallel
+        // Layer A: critical first-screen data only
         await Promise.allSettled([
           eventsStore.fetchEvents(),
           eventsStore.fetchTasks(),
-          reminderStore.fetchReminders(),
-          suggestionStore.fetchSuggestions(),
-          gcStore.fetchGoogleCalendarStatus(),
-          assistantStore.fetchAssistantSessions(),
           assistantStore.fetchCurrentAssistantSession(),
-          assistantStore.fetchAssistantSummary(),
+          assistantStore.fetchAssistantSessions(),
         ]);
-
-        // Non-critical data, delayed load
-        setTimeout(async () => {
-          await Promise.allSettled([
-            contextStore.fetchWeatherNow(),
-            contextStore.fetchTravelEstimate(),
-            systemStore.fetchBackendPerformance(),
-            systemStore.fetchAIHealth(),
-          ]);
-        }, 1000);
 
         this.captureFrontendPerformance();
         await MobileNotificationService.registerPushNotifications();
@@ -187,15 +153,28 @@ export const useWorkspaceStore = defineStore("workspace", {
       }
     },
 
+    // Layer B: settings-page data (Google Calendar status + context)
+    async hydrateSettings() {
+      const gcStore = useGoogleCalendarStore();
+      const contextStore = useContextStore();
+      const profileStore = useProfileStore();
+      this.syncProfileContext();
+      await Promise.allSettled([
+        gcStore.fetchGoogleCalendarStatus(),
+        profileStore.fetchProfile(),
+      ]);
+      this.syncProfileContext();
+      await Promise.allSettled([
+        contextStore.fetchWeatherNow(),
+        contextStore.fetchTravelEstimate(),
+      ]);
+    },
+
     // Delegate to focused stores
     async fetchEvents(force = false) { return useEventsStore().fetchEvents(force); },
     async fetchTasks(force = false) { return useEventsStore().fetchTasks(force); },
-    async fetchReminders(force = false) { return useReminderStore().fetchReminders(force); },
-    async fetchSuggestions(force = false) { return useSuggestionStore().fetchSuggestions(force); },
-    async fetchAssistantInbox() { return useAssistantStore().fetchAssistantInbox(); },
     async fetchAssistantSessions() { return useAssistantStore().fetchAssistantSessions(); },
     async fetchCurrentAssistantSession() { return useAssistantStore().fetchCurrentAssistantSession(); },
-    async fetchAssistantSummary() { return useAssistantStore().fetchAssistantSummary(); },
     async fetchWeatherNow(force = false) { return useContextStore().fetchWeatherNow(force); },
     async fetchTravelEstimate(force = false) { return useContextStore().fetchTravelEstimate(force); },
     async fetchProfile(force = false) {
@@ -222,43 +201,39 @@ export const useWorkspaceStore = defineStore("workspace", {
     async switchAssistantSession(sessionId: number) { return useAssistantStore().switchAssistantSession(sessionId); },
     async archiveCurrentAssistantSession() { return useAssistantStore().archiveCurrentAssistantSession(); },
     async clearCurrentAssistantSession() { return useAssistantStore().clearCurrentAssistantSession(); },
-    async sendAssistantMessageStream(message: string) { return useAssistantStore().sendAssistantMessageStream(message); },
-    async sendAssistantMessage(message: string) { return useAssistantStore().sendAssistantMessage(message); },
+    async sendAssistantMessageStream(message: string) {
+      return useAssistantStore().sendAssistantMessageStream(
+        message,
+        () => this.refreshAssistantWorkspace(false),
+      );
+    },
+    async sendAssistantMessage(message: string) {
+      return useAssistantStore().sendAssistantMessage(
+        message,
+        () => this.refreshAssistantWorkspace(false),
+      );
+    },
     async refreshAssistantWorkspace(selective = true) {
       const eventsStore = useEventsStore();
-      const reminderStore = useReminderStore();
-      const suggestionStore = useSuggestionStore();
       const assistantStore = useAssistantStore();
 
       if (selective) {
         await Promise.allSettled([
           eventsStore.fetchEvents(),
           eventsStore.fetchTasks(),
-          reminderStore.fetchReminders(),
-          suggestionStore.fetchSuggestions(),
-          assistantStore.fetchAssistantInbox(),
-          assistantStore.fetchAssistantSummary(),
           assistantStore.fetchCurrentAssistantSession(),
         ]);
       } else {
         await Promise.allSettled([
           eventsStore.fetchEvents(true),
           eventsStore.fetchTasks(true),
-          reminderStore.fetchReminders(true),
-          suggestionStore.fetchSuggestions(true),
           assistantStore.fetchAssistantSessions(),
-          assistantStore.fetchAssistantInbox(),
-          assistantStore.fetchAssistantSummary(),
-          useSystemStore().fetchBackendPerformance(),
           this.sessionId != null ? assistantStore.fetchSession(this.sessionId) : Promise.resolve(),
         ]);
       }
     },
     async updateEventStatus(eventId: number, status: string) {
       const eventsStore = useEventsStore();
-      const reminderStore = useReminderStore();
-      const suggestionStore = useSuggestionStore();
-      const assistantStore = useAssistantStore();
 
       try {
         await eventsStore.updateEventStatus(eventId, status);
@@ -267,9 +242,6 @@ export const useWorkspaceStore = defineStore("workspace", {
         await Promise.allSettled([
           eventsStore.fetchEvents(true),
           eventsStore.fetchTasks(true),
-          reminderStore.fetchReminders(true),
-          suggestionStore.fetchSuggestions(true),
-          assistantStore.fetchAssistantSummary(),
         ]);
       } catch (error) {
         console.error("Failed to update event status:", error);
@@ -279,28 +251,14 @@ export const useWorkspaceStore = defineStore("workspace", {
         );
       }
     },
-    async updateInboxItem(itemId: string, action: "read" | "archive") {
-      try {
-        await useAssistantStore().updateInboxItem(itemId, action);
-      } catch (error) {
-        console.error("Failed to update inbox item:", error);
-        this.pushToast("Inbox update failed", "danger");
-      }
-    },
     async deleteTask(taskId: number) {
       const eventsStore = useEventsStore();
-      const suggestionStore = useSuggestionStore();
-      const assistantStore = useAssistantStore();
 
       try {
         await eventsStore.deleteTask(taskId);
         if (this.focusedTaskId === taskId) this.focusedTaskId = null;
         this.pushToast(this.locale === "zh-CN" ? "任务已删除" : "Task deleted", "success");
-        await Promise.allSettled([
-          eventsStore.fetchTasks(true),
-          suggestionStore.fetchSuggestions(true),
-          assistantStore.fetchAssistantSummary(),
-        ]);
+        await eventsStore.fetchTasks(true);
       } catch (error) {
         console.error("Failed to delete task:", error);
         this.pushToast(
@@ -311,19 +269,12 @@ export const useWorkspaceStore = defineStore("workspace", {
     },
     async deleteEvent(eventId: number) {
       const eventsStore = useEventsStore();
-      const suggestionStore = useSuggestionStore();
-      const assistantStore = useAssistantStore();
 
       try {
         // Pass skipRefresh=true to avoid double-fetching, since eventsStore.deleteEvent already refreshes
         await eventsStore.deleteEvent(eventId, true);
         if (this.focusedEventId === eventId) this.focusedEventId = null;
         this.pushToast(this.locale === "zh-CN" ? "事件已删除" : "Event deleted", "success");
-        // Only refresh suggestions and summary, events are already refreshed in eventsStore.deleteEvent
-        await Promise.allSettled([
-          suggestionStore.fetchSuggestions(true),
-          assistantStore.fetchAssistantSummary(),
-        ]);
       } catch (error) {
         console.error("Failed to delete event:", error);
         this.pushToast(

@@ -674,6 +674,88 @@ def test_get_inbox_combines_followups_tasks_and_suggestions() -> None:
     assert "task_followup_group" in kinds
 
 
+def test_get_summary_reuses_single_suggestion_snapshot() -> None:
+    service = AssistantService()
+    calls = {"tasks": 0, "recent_followups": 0, "reminders": 0, "suggestions": 0}
+
+    async def fake_get_latest_session(*, user_id: str, session_type: str = "chat"):
+        del user_id, session_type
+        return SimpleNamespace(context_json={})
+
+    async def fake_list_tasks(user_id: str):
+        del user_id
+        calls["tasks"] += 1
+        return [
+            SimpleNamespace(
+                id=12,
+                content="Write thesis chapter",
+                status="in_progress",
+                completed_minutes=60,
+                remaining_minutes=60,
+                scheduled_minutes=120,
+            )
+        ]
+
+    async def fake_list_recent_task_followups(*, user_id: str, limit: int = 6):
+        del user_id, limit
+        calls["recent_followups"] += 1
+        return [
+            SimpleNamespace(
+                id=25,
+                remind_type="task_replan",
+                message="Task replan needed: Write thesis chapter still has 60 minutes remaining.",
+                target_id=12,
+                remind_at=datetime.fromisoformat("2026-03-28T02:00:00"),
+            )
+        ]
+
+    async def fake_list_reminders(*, user_id: str, limit: int = 20):
+        del user_id, limit
+        calls["reminders"] += 1
+        return [
+            SimpleNamespace(
+                target_type="task",
+                target_id=12,
+                remind_type="task_replan",
+                remind_at=datetime.fromisoformat("2026-03-29T08:00:00"),
+                message="Task replan needed.",
+                status="pending",
+            )
+        ]
+
+    async def fake_build_suggestions_for_dates(**kwargs):
+        assert kwargs["core_only"] is True
+        calls["suggestions"] += 1
+        return [
+            SimpleNamespace(
+                type="task_replan_slot",
+                title="Replan Write thesis chapter",
+                start_time=datetime.fromisoformat("2026-03-29T15:10:00"),
+                end_time=datetime.fromisoformat("2026-03-29T16:10:00"),
+                related_task_id=12,
+                related_event_id=None,
+                model_dump=lambda mode="json": {
+                    "type": "task_replan_slot",
+                    "title": "Replan Write thesis chapter",
+                    "start_time": "2026-03-29T15:10:00",
+                    "end_time": "2026-03-29T16:10:00",
+                    "related_task_id": 12,
+                },
+            )
+        ]
+
+    service.repository.get_latest_session = fake_get_latest_session  # type: ignore[method-assign]
+    service.task_service.list_tasks = fake_list_tasks  # type: ignore[method-assign]
+    service.reminder_repository.list_recent_task_followups = fake_list_recent_task_followups  # type: ignore[method-assign]
+    service.reminder_repository.list_reminders = fake_list_reminders  # type: ignore[method-assign]
+    service.suggestion_service.build_suggestions_for_dates = fake_build_suggestions_for_dates  # type: ignore[method-assign]
+
+    summary = asyncio.run(service.get_summary("demo-user"))
+
+    assert summary.unread_followups == 1
+    assert calls == {"tasks": 1, "recent_followups": 1, "reminders": 1, "suggestions": 1}
+
+
 def test_build_summary_cards_include_cross_panel_targets() -> None:
     service = AssistantService()
 
@@ -870,6 +952,63 @@ def test_get_session_filters_hidden_messages() -> None:
 
     assert len(result.messages) == 1
     assert result.messages[0].content == "keep"
+
+
+def test_get_inbox_ignores_non_actionable_context_suggestions() -> None:
+    service = AssistantService()
+
+    async def fake_list_tasks(*, user_id: str):
+        del user_id
+        return []
+
+    async def fake_list_recent_task_followups(*, user_id: str, limit: int):
+        del user_id, limit
+        return []
+
+    async def fake_build_suggestions_for_dates(**kwargs):
+        del kwargs
+        return [
+            SimpleNamespace(
+                type="location_based_break",
+                title="Nearby break option: 北京贵宾楼饭店",
+                start_time=datetime.fromisoformat("2026-04-19T07:30:00"),
+                end_time=datetime.fromisoformat("2026-04-19T08:00:00"),
+                related_task_id=None,
+                model_dump=lambda mode="json": {
+                    "type": "location_based_break",
+                    "title": "Nearby break option: 北京贵宾楼饭店",
+                },
+            ),
+            SimpleNamespace(
+                type="task_slot",
+                title="Suggested slot for 整理论文",
+                start_time=datetime.fromisoformat("2026-04-19T08:00:00"),
+                end_time=datetime.fromisoformat("2026-04-19T09:00:00"),
+                related_task_id=7,
+                model_dump=lambda mode="json": {
+                    "type": "task_slot",
+                    "title": "Suggested slot for 整理论文",
+                    "start_time": "2026-04-19T08:00:00",
+                    "end_time": "2026-04-19T09:00:00",
+                    "related_task_id": 7,
+                },
+            ),
+        ]
+
+    async def fake_get_latest_session(*, user_id: str, session_type: str = "chat"):
+        del user_id, session_type
+        return SimpleNamespace(context_json={})
+
+    service.task_service.list_tasks = fake_list_tasks  # type: ignore[method-assign]
+    service.reminder_repository.list_recent_task_followups = fake_list_recent_task_followups  # type: ignore[method-assign]
+    service.suggestion_service.build_suggestions_for_dates = fake_build_suggestions_for_dates  # type: ignore[method-assign]
+    service.repository.get_latest_session = fake_get_latest_session  # type: ignore[method-assign]
+
+    inbox = asyncio.run(service.get_inbox("demo-user"))
+
+    assert len(inbox.items) == 1
+    assert inbox.items[0].title == "Suggested slot for 整理论文"
+    assert all("北京贵宾楼饭店" not in item.title for item in inbox.items)
 
 
 def test_render_inbox_group_as_summary_message() -> None:

@@ -4,18 +4,22 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Personal Affairs Assistant - Debug Console</title>
+  <link rel="icon" href="data:,">
   <style>
     :root {
-      --bg-primary: #0f172a;
-      --bg-secondary: #1e293b;
-      --bg-tertiary: #334155;
-      --text-primary: #f1f5f9;
-      --text-secondary: #94a3b8;
-      --accent: #3b82f6;
-      --success: #10b981;
-      --warning: #f59e0b;
-      --error: #ef4444;
-      --border: #475569;
+      --bg-primary: #f8fafc;
+      --bg-secondary: #ffffff;
+      --bg-tertiary: #f1f5f9;
+      --bg-hover: #e2e8f0;
+      --text-primary: #0f172a;
+      --text-secondary: #64748b;
+      --accent: #2563eb;
+      --success: #059669;
+      --warning: #d97706;
+      --error: #dc2626;
+      --border: #dbe2ea;
+      --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+      --shadow-md: 0 10px 24px rgba(15, 23, 42, 0.08);
     }
     
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -34,6 +38,7 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
+      box-shadow: var(--shadow-sm);
     }
     
     .header h1 {
@@ -77,7 +82,7 @@
       color: var(--text-secondary);
     }
     
-    .tab:hover { color: var(--text-primary); }
+    .tab:hover { color: var(--text-primary); background: rgba(37, 99, 235, 0.04); }
     .tab.active {
       color: var(--accent);
       border-bottom-color: var(--accent);
@@ -94,6 +99,7 @@
       border-right: 1px solid var(--border);
       padding: 1rem;
       overflow-y: auto;
+      box-shadow: inset -1px 0 0 rgba(15, 23, 42, 0.03);
     }
     
     .sidebar h3 {
@@ -109,6 +115,8 @@
       border-radius: 0.5rem;
       padding: 0.75rem;
       margin-bottom: 0.75rem;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow-sm);
     }
     
     .metric-card .label {
@@ -157,10 +165,10 @@
       margin-right: 0.5rem;
     }
     
-    .log-entry .level.info { background: #1e40af; color: white; }
-    .log-entry .level.warn { background: #b45309; color: white; }
-    .log-entry .level.error { background: #dc2626; color: white; }
-    .log-entry .level.debug { background: #475569; color: white; }
+    .log-entry .level.info { background: #dbeafe; color: #1d4ed8; }
+    .log-entry .level.warn { background: #fef3c7; color: #b45309; }
+    .log-entry .level.error { background: #fee2e2; color: #b91c1c; }
+    .log-entry .level.debug { background: #e2e8f0; color: #334155; }
     
     .btn {
       padding: 0.5rem 1rem;
@@ -174,6 +182,7 @@
     .btn-primary {
       background: var(--accent);
       color: white;
+      box-shadow: var(--shadow-sm);
     }
     
     .btn-primary:hover { background: #2563eb; }
@@ -181,6 +190,7 @@
     .btn-danger {
       background: var(--error);
       color: white;
+      box-shadow: var(--shadow-sm);
     }
     
     .btn-danger:hover { background: #dc2626; }
@@ -188,9 +198,10 @@
     .btn-secondary {
       background: var(--bg-tertiary);
       color: var(--text-primary);
+      border: 1px solid var(--border);
     }
     
-    .btn-secondary:hover { background: #475569; }
+    .btn-secondary:hover { background: var(--bg-hover); }
     
     .request-item {
       background: var(--bg-tertiary);
@@ -198,6 +209,8 @@
       padding: 1rem;
       margin-bottom: 0.75rem;
       border-left: 3px solid var(--accent);
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow-sm);
     }
     
     .request-item.slow { border-left-color: var(--warning); }
@@ -260,6 +273,7 @@
       text-transform: uppercase;
       letter-spacing: 0.05em;
       color: var(--text-secondary);
+      background: #f8fafc;
     }
     
     .badge {
@@ -270,9 +284,9 @@
       font-weight: 600;
     }
     
-    .badge-green { background: #064e3b; color: #6ee7b7; }
-    .badge-yellow { background: #78350f; color: #fcd34d; }
-    .badge-red { background: #7f1d1d; color: #fca5a5; }
+    .badge-green { background: #dcfce7; color: #166534; }
+    .badge-yellow { background: #fef3c7; color: #92400e; }
+    .badge-red { background: #fee2e2; color: #991b1b; }
   </style>
 </head>
 <body>
@@ -303,8 +317,14 @@
         <div class="value" id="avgResponseTime">-</div>
       </div>
       <div class="metric-card">
-        <div class="label">Error Rate</div>
+        <div class="label">Error Rate (window)</div>
         <div class="value" id="errorRate">-</div>
+        <div style="font-size:0.7rem;color:var(--text-secondary);margin-top:0.2rem;">All requests in log window</div>
+      </div>
+      <div class="metric-card">
+        <div class="label">Error Rate (last 5 min)</div>
+        <div class="value" id="recentErrorRate">-</div>
+        <div style="font-size:0.7rem;color:var(--text-secondary);margin-top:0.2rem;">Current live failures only</div>
       </div>
       <div class="metric-card">
         <div class="label">Active Connections</div>
@@ -314,7 +334,12 @@
       <h3 style="margin-top: 1.5rem;">Actions</h3>
       <button class="btn btn-primary" style="width: 100%; margin-bottom: 0.5rem;" onclick="refreshMetrics()">Refresh Metrics</button>
       <button class="btn btn-secondary" style="width: 100%; margin-bottom: 0.5rem;" onclick="clearLogs()">Clear Logs</button>
+      <button class="btn btn-secondary" style="width: 100%; margin-bottom: 0.5rem;" onclick="clearRequestLog()">Clear Request Log</button>
       <button id="toggleStreamBtn" class="btn btn-danger" style="width: 100%;">Toggle Log Stream</button>
+      <div style="margin-top:1rem;padding:0.75rem;background:var(--bg-tertiary);border-radius:0.5rem;border:1px solid var(--border);font-size:0.7rem;color:var(--text-secondary);">
+        <strong style="color:var(--text-primary);">About error rates:</strong><br>
+        "Window" rate includes all historical requests in the log (may contain legacy path errors from older routes). "Last 5 min" reflects the current live session only.
+      </div>
     </div>
     
     <div class="content">
@@ -403,11 +428,31 @@
   </div>
 
   <script>
-    const API_BASE = 'http://127.0.0.1:8000/api';
+    const API_BASE = resolveApiBase();
     let logStream = null;
     let logs = [];
     let requests = [];
     let metricsInterval = null;
+
+    function resolveApiBase() {
+      const params = new URLSearchParams(window.location.search);
+      const fromQuery = params.get('apiBase');
+      if (fromQuery) {
+        localStorage.setItem('debugConsoleApiBase', fromQuery);
+        return fromQuery.replace(/\/$/, '');
+      }
+
+      const fromStorage = localStorage.getItem('debugConsoleApiBase');
+      if (fromStorage) {
+        return fromStorage.replace(/\/$/, '');
+      }
+
+      if (window.location.protocol.startsWith('http') && window.location.port === '8000') {
+        return `${window.location.origin}/api`;
+      }
+
+      return 'http://127.0.0.1:8000/api';
+    }
     
     // Auto-refresh metrics every 5 seconds
     function startAutoRefresh() {
@@ -430,6 +475,7 @@
       refreshMetrics();
       startAutoRefresh();
       startLogStream(); // Auto-start log streaming
+      document.getElementById('toggleStreamBtn').textContent = 'Stop Log Stream';
       
       // Toggle log stream button handler
       document.getElementById('toggleStreamBtn').addEventListener('click', () => {
@@ -438,7 +484,7 @@
           logStream = null;
           document.getElementById('statusDot').className = 'status-dot disconnected';
           document.getElementById('statusText').textContent = 'Disconnected';
-          document.getElementById('toggleStreamBtn').textContent = 'Toggle Log Stream';
+          document.getElementById('toggleStreamBtn').textContent = 'Start Log Stream';
         } else {
           startLogStream();
           document.getElementById('toggleStreamBtn').textContent = 'Stop Log Stream';
@@ -450,9 +496,9 @@
     async function refreshMetrics() {
       try {
         const [dbPool, cacheStats, requestsData] = await Promise.all([
-          fetch(`${API_BASE}/debug/db-pool`).then(r => r.json()).catch(() => null),
-          fetch(`${API_BASE}/debug/cache-stats`).then(r => r.json()).catch(() => null),
-          fetch(`${API_BASE}/debug/requests`).then(r => r.json()).catch(() => ({ requests: [] }))
+          fetchJson(`${API_BASE}/debug/db-pool`),
+          fetchJson(`${API_BASE}/debug/cache-stats`),
+          fetchJson(`${API_BASE}/debug/requests`, { requests: [] })
         ]);
         
         updateDbPoolTable(dbPool);
@@ -467,6 +513,19 @@
         updateQuickStats();
       } catch (err) {
         console.error('Failed to fetch metrics:', err);
+      }
+    }
+
+    async function fetchJson(url, fallback = null) {
+      try {
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        return await response.json();
+      } catch (err) {
+        console.error(`Failed to fetch ${url}:`, err);
+        return fallback;
       }
     }
     
@@ -496,16 +555,18 @@
         <tr><td>Hit Rate</td><td>${data.hit_rate || '0%'}</td><td>${getHitRateBadge(data.hit_rate)}</td></tr>
         <tr><td>Total Hits</td><td>${data.hits || 0}</td><td><span class="badge badge-green">OK</span></td></tr>
         <tr><td>Total Misses</td><td>${data.misses || 0}</td><td><span class="badge badge-green">OK</span></td></tr>
-        <tr><td>Memory Usage</td><td>${data.memory || '-'}</td><td><span class="badge badge-green">OK</span></td></tr>
+        <tr><td>Memory Usage</td><td>${data.used_memory || '-'}</td><td><span class="badge badge-green">OK</span></td></tr>
       `;
     }
     
     function updateSystemInfo(data) {
       const tbody = document.querySelector('#systemInfoTable tbody');
+      const backendHealthy = Boolean(data.dbPool);
+      const cacheHealthy = Boolean(data.cacheStats && data.cacheStats.status === 'connected');
       tbody.innerHTML = `
-        <tr><td>Backend API</td><td>${API_BASE}</td><td><span class="badge badge-green">Running</span></td></tr>
-        <tr><td>Database</td><td>SQLite (Async)</td><td><span class="badge badge-green">Connected</span></td></tr>
-        <tr><td>Cache</td><td>Redis</td><td><span class="badge ${data.cacheStats ? 'badge-green' : 'badge-red'}">${data.cacheStats ? 'Connected' : 'Disconnected'}</span></td></tr>
+        <tr><td>Backend API</td><td>${API_BASE}</td><td><span class="badge ${backendHealthy ? 'badge-green' : 'badge-red'}">${backendHealthy ? 'Running' : 'Unavailable'}</span></td></tr>
+        <tr><td>Database</td><td>SQLite (Async)</td><td><span class="badge ${backendHealthy ? 'badge-green' : 'badge-red'}">${backendHealthy ? 'Connected' : 'Unknown'}</span></td></tr>
+        <tr><td>Cache</td><td>Redis</td><td><span class="badge ${cacheHealthy ? 'badge-green' : 'badge-red'}">${cacheHealthy ? 'Connected' : 'Disconnected'}</span></td></tr>
         <tr><td>Task Queue</td><td>Celery</td><td><span class="badge badge-green">Active</span></td></tr>
       `;
     }
@@ -528,17 +589,57 @@
     
     function updateQuickStats() {
       document.getElementById('totalRequests').textContent = requests.length;
-      
+      const avgEl = document.getElementById('avgResponseTime');
+      const errorEl = document.getElementById('errorRate');
+      const recentEl = document.getElementById('recentErrorRate');
+
+      const now = Date.now();
+      const fiveMinMs = 5 * 60 * 1000;
+      const recentRequests = requests.filter(r => {
+        const ts = r.timestamp ? new Date(r.timestamp).getTime() : 0;
+        return Number.isFinite(ts) && now - ts <= fiveMinMs;
+      });
+
       if (requests.length > 0) {
         const avg = requests.reduce((sum, r) => sum + (r.duration || 0), 0) / requests.length;
-        document.getElementById('avgResponseTime').textContent = `${avg.toFixed(0)}ms`;
-        
+        avgEl.textContent = `${avg.toFixed(0)}ms`;
+        avgEl.className = `value ${avg > 1200 ? 'error' : avg > 600 ? 'warning' : 'success'}`;
+
+        // Window error rate (all history)
         const errors = requests.filter(r => r.status >= 400).length;
         const errorRate = ((errors / requests.length) * 100).toFixed(1);
-        const errorEl = document.getElementById('errorRate');
         errorEl.textContent = `${errorRate}%`;
         errorEl.className = `value ${parseFloat(errorRate) > 5 ? 'error' : parseFloat(errorRate) > 2 ? 'warning' : 'success'}`;
+
+        // Recent (5 min) error rate
+        if (recentRequests.length > 0) {
+          const recentErrors = recentRequests.filter(r => r.status >= 400).length;
+          const recentRate = ((recentErrors / recentRequests.length) * 100).toFixed(1);
+          recentEl.textContent = `${recentRate}%`;
+          recentEl.className = `value ${parseFloat(recentRate) > 5 ? 'error' : parseFloat(recentRate) > 2 ? 'warning' : 'success'}`;
+        } else {
+          recentEl.textContent = '0.0%';
+          recentEl.className = 'value success';
+        }
+      } else {
+        avgEl.textContent = '-';
+        avgEl.className = 'value';
+        errorEl.textContent = '0.0%';
+        errorEl.className = 'value success';
+        recentEl.textContent = '0.0%';
+        recentEl.className = 'value success';
       }
+
+      const activeConnectionsEl = document.getElementById('activeConnections');
+      const activeConnections = recentRequests.length;
+      activeConnectionsEl.textContent = String(activeConnections);
+      activeConnectionsEl.className = `value ${activeConnections > 20 ? 'warning' : 'success'}`;
+    }
+
+    function clearRequestLog() {
+      requests = [];
+      renderRequests();
+      updateQuickStats();
     }
     
     // Log streaming
@@ -554,6 +655,7 @@
       eventSource.onopen = () => {
         document.getElementById('statusDot').className = 'status-dot connected';
         document.getElementById('statusText').textContent = 'Connected';
+        document.getElementById('toggleStreamBtn').textContent = 'Stop Log Stream';
       };
       
       eventSource.onmessage = (event) => {
@@ -575,6 +677,7 @@
           // Manually closed
           document.getElementById('statusDot').className = 'status-dot disconnected';
           document.getElementById('statusText').textContent = 'Disconnected';
+          document.getElementById('toggleStreamBtn').textContent = 'Start Log Stream';
         } else if (eventSource.readyState === 0) {
           // Reconnecting (normal behavior)
           document.getElementById('statusDot').className = 'status-dot disconnected';

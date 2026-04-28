@@ -123,7 +123,7 @@ class FakeAssistantService:
             "unread_total": 1,
         }
 
-    async def get_current_session(self, user_id: str):
+    async def get_current_session(self, user_id: str, include_inbox: bool = True):
         return {
             "session": {
                 "id": self.session_id,
@@ -137,7 +137,7 @@ class FakeAssistantService:
                 "messages": list(self.messages),
             },
             "inbox": {
-                "items": [
+                "items": [] if not include_inbox else [
                     {
                         "id": "task-1",
                         "kind": "task_replan",
@@ -156,8 +156,8 @@ class FakeAssistantService:
                         "meta": {},
                     }
                 ],
-                "total": 1,
-                "unread_total": 1,
+                "total": 0 if not include_inbox else 1,
+                "unread_total": 0 if not include_inbox else 1,
             },
         }
 
@@ -331,7 +331,7 @@ class FakeReminderService:
 
 
 class FakeSuggestionService:
-    async def get_today_suggestions(self, user_id: str):
+    async def get_today_suggestions(self, user_id: str, core_only: bool = True):
         return {
             "items": [
                 {
@@ -348,7 +348,7 @@ class FakeSuggestionService:
             "total": 1,
         }
 
-    async def get_next_suggestions(self, user_id: str):
+    async def get_next_suggestions(self, user_id: str, core_only: bool = True):
         return {
             "items": [
                 {
@@ -607,6 +607,17 @@ def test_assistant_message_and_session() -> None:
     assert archive_response.json()["total"] == 0
 
 
+def test_assistant_current_can_skip_inbox_payload() -> None:
+    client, _, _, _, _, _, _, _, _ = build_client()
+
+    current_response = client.get("/api/assistant/current", params={"include_inbox": "false"})
+
+    assert current_response.status_code == 200
+    assert current_response.json()["session"]["id"] >= 1
+    assert current_response.json()["inbox"]["items"] == []
+    assert current_response.json()["inbox"]["unread_total"] == 0
+
+
 def test_assistant_voice_and_speak_endpoints(monkeypatch: pytest.MonkeyPatch) -> None:
     client, _, _, _, _, _, _, _, _ = build_client()
 
@@ -631,6 +642,39 @@ def test_assistant_voice_and_speak_endpoints(monkeypatch: pytest.MonkeyPatch) ->
     assert voice_response.json()["transcript"] == "voice transcript"
     assert speak_response.status_code == 200
     assert speak_response.content == b"fake-mp3"
+
+
+def test_assistant_ws_broadcasts_workspace_update(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.api import ws as ws_module
+
+    class FakeStreamingAssistantService:
+        async def send_message_stream(self, user_id: str, payload):
+            assert user_id == "local-user"
+            assert payload.message == "创建一个日程"
+            assert payload.session_id == 1
+            yield {"type": "token", "text": "ok"}
+            yield {"type": "done", "session_id": 1, "full_reply": "ok"}
+
+    broadcast_calls: list[str] = []
+
+    async def fake_broadcast(user_id: str) -> None:
+        broadcast_calls.append(user_id)
+
+    monkeypatch.setattr(ws_module, "AssistantService", lambda: FakeStreamingAssistantService())
+    monkeypatch.setattr(ws_module, "broadcast_workspace_update", fake_broadcast)
+
+    app = FastAPI()
+    app.include_router(ws_module.router)
+    client = TestClient(app)
+
+    with client.websocket_connect("/ws/assistant?user_id=local-user") as websocket:
+        websocket.send_json({"message": "创建一个日程", "session_id": 1})
+        first = websocket.receive_json()
+        second = websocket.receive_json()
+
+    assert first["type"] == "token"
+    assert second["type"] == "done"
+    assert broadcast_calls == ["local-user"]
 
 
 def test_suggestions_endpoints() -> None:

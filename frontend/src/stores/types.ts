@@ -5,14 +5,10 @@
 export type { CalendarEvent, TaskItem } from "@/stores/events";
 export type {
   AssistantAction,
-  AssistantInboxItem,
-  AssistantInbox,
-  AssistantSummaryCard,
-  AssistantSummary,
   AssistantMessage,
   AssistantSession,
 } from "@/stores/assistant";
-export type { Reminder, Suggestion, ToastItem } from "@/stores/reminder";
+export type { ToastItem } from "@/stores/reminder";
 export type { UserProfile } from "@/stores/profile";
 export type {
   WeatherNow,

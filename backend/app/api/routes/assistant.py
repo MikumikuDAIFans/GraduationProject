@@ -136,10 +136,11 @@ async def get_inbox(
 
 @router.get("/current", response_model=AssistantCurrentSessionRead)
 async def get_current_session(
+    include_inbox: bool = Query(default=True),
     user_id: str = Depends(get_current_user_id),
     service: AssistantService = Depends(get_assistant_service),
 ) -> AssistantCurrentSessionRead:
-    return await service.get_current_session(user_id=user_id)
+    return await service.get_current_session(user_id=user_id, include_inbox=include_inbox)
 
 
 @router.get("/summary", response_model=AssistantSummaryRead)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from app.api.deps import SuggestionService, get_current_user_id, get_suggestion_service
 from app.api.schemas import SuggestionList
@@ -12,15 +12,17 @@ router = APIRouter(prefix="/suggestions", tags=["suggestions"])
 
 @router.get("/today", response_model=SuggestionList)
 async def get_today_suggestions(
+    core_only: bool = Query(default=True, description="Skip expensive external context calls (weather/maps)"),
     user_id: str = Depends(get_current_user_id),
     service: SuggestionService = Depends(get_suggestion_service),
 ) -> SuggestionList:
-    return await service.get_today_suggestions(user_id=user_id)
+    return await service.get_today_suggestions(user_id=user_id, core_only=core_only)
 
 
 @router.get("/next", response_model=SuggestionList)
 async def get_next_suggestions(
+    core_only: bool = Query(default=True, description="Skip expensive external context calls (weather/maps)"),
     user_id: str = Depends(get_current_user_id),
     service: SuggestionService = Depends(get_suggestion_service),
 ) -> SuggestionList:
-    return await service.get_next_suggestions(user_id=user_id)
+    return await service.get_next_suggestions(user_id=user_id, core_only=core_only)

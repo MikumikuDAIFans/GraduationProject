@@ -7,7 +7,7 @@ import asyncio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from loguru import logger
 from app.api.schemas import AssistantMessageCreate
-from app.api.live_updates import workspace_updates
+from app.api.live_updates import broadcast_workspace_update, workspace_updates
 
 from app.services.assistant import AssistantService
 
@@ -51,6 +51,7 @@ async def assistant_ws(websocket: WebSocket) -> None:
             payload = AssistantMessageCreate(session_id=session_id, message=message)
             async for chunk in assistant_service.send_message_stream(user_id, payload):
                 await websocket.send_json(chunk)
+            await broadcast_workspace_update(user_id)
     except WebSocketDisconnect:
         return
     except Exception as exc:
