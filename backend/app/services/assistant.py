@@ -11,6 +11,7 @@ from fastapi import HTTPException, status
 from loguru import logger
 from pydantic import ValidationError
 
+from app.assistant_agents import AssistantAgentContext, AssistantConductor
 from app.api.schemas import (
     AssistantCurrentSessionRead,
     AssistantAction,
@@ -24,6 +25,7 @@ from app.api.schemas import (
     AssistantSessionCreate,
     AssistantSessionListRead,
     AssistantSessionRead,
+    AssistantSessionSummaryRead,
     EventCreate,
     EventRead,
     TaskCreate,
@@ -83,6 +85,12 @@ class AssistantService:
         self.plan_runtime = AssistantPlanRuntime(self)
         self.session_runtime = AssistantSessionRuntime(self)
         self.text_runtime = AssistantTextRuntime()
+        conductor_mode = (self.settings.assistant_conductor_mode or "legacy").lower()
+        self.conductor = (
+            AssistantConductor.build_default(self.text_runtime)
+            if conductor_mode in {"shadow", "proposal"}
+            else None
+        )
         self.suggestion_service = SuggestionService()
         self.task_service = TaskService()
         self.gemini = GeminiClient()
@@ -118,6 +126,16 @@ class AssistantService:
                 profile=profile, user_message=payload.message, intent=intent,
             )
             session_context = dict(session.context_json or {})
+            await self._run_conductor_for_message(
+                user_id=user_id,
+                session_id=session.id,
+                user_message=payload.message,
+                history=history,
+                events=events,
+                tasks=tasks,
+                profile=profile,
+                external_context=external_context,
+            )
 
             pending_decision = await self._maybe_handle_pending_action_decision(
                 user_id=user_id,
@@ -235,6 +253,16 @@ class AssistantService:
                 profile=profile, user_message=payload.message, intent=intent,
             )
             session_context = dict(session.context_json or {})
+            await self._run_conductor_for_message(
+                user_id=user_id,
+                session_id=session.id,
+                user_message=payload.message,
+                history=history,
+                events=events,
+                tasks=tasks,
+                profile=profile,
+                external_context=external_context,
+            )
 
             pending_decision = await self._maybe_handle_pending_action_decision(
                 user_id=user_id,
@@ -388,7 +416,19 @@ class AssistantService:
 
     async def list_sessions(self, user_id: str, limit: int = 20) -> AssistantSessionListRead:
         sessions = await self.repository.list_active_sessions(user_id=user_id, limit=limit)
-        items = [await self.get_session(user_id=user_id, session_id=session.id) for session in sessions]
+        items = [
+            AssistantSessionSummaryRead(
+                id=session.id,
+                user_id=session.user_id,
+                session_type=session.session_type,
+                title=getattr(session, "title", "New chat"),
+                is_archived=getattr(session, "is_archived", False),
+                context_json=session.context_json,
+                created_at=session.created_at,
+                updated_at=session.updated_at,
+            )
+            for session in sessions
+        ]
         return AssistantSessionListRead(items=items, total=len(items))
 
     async def archive_session(self, user_id: str, session_id: int) -> dict[str, bool]:
@@ -418,6 +458,58 @@ class AssistantService:
         if isinstance(action, dict):
             return AssistantAction.model_validate(action)
         raise TypeError(f"Unsupported assistant action type: {type(action)!r}")
+
+    async def _run_conductor_for_message(
+        self,
+        *,
+        user_id: str,
+        session_id: int,
+        user_message: str,
+        history,
+        events,
+        tasks,
+        profile,
+        external_context: dict[str, Any],
+    ):
+        mode = (self.settings.assistant_conductor_mode or "legacy").lower()
+        if mode == "legacy":
+            return None
+        if mode not in {"shadow", "proposal"}:
+            logger.bind(component="assistant.conductor").warning(
+                "Unknown ASSISTANT_CONDUCTOR_MODE={mode}; falling back to legacy",
+                mode=mode,
+            )
+            return None
+        if self.conductor is None:
+            self.conductor = AssistantConductor.build_default(self.text_runtime)
+        if mode == "proposal":
+            logger.bind(component="assistant.conductor").warning(
+                "ASSISTANT_CONDUCTOR_MODE=proposal requested before Action Executor is enabled; using shadow"
+            )
+
+        context = AssistantAgentContext(
+            user_id=user_id,
+            session_id=session_id,
+            user_message=user_message,
+            history=list(history or []),
+            events=list(events or []),
+            tasks=list(tasks or []),
+            profile=profile,
+            external_context=external_context,
+        )
+        try:
+            result = await self.conductor.run(context, mode="shadow")
+            logger.bind(component="assistant.conductor").info(
+                "Assistant conductor shadow result: {result}",
+                result=result.to_log_payload(),
+            )
+            return result
+        except Exception as exc:
+            logger.bind(component="assistant.conductor").warning(
+                "Assistant conductor shadow failed: {error}",
+                error=str(exc),
+            )
+            return None
 
     async def _run_workflow_for_message(
         self,

@@ -1,0 +1,19 @@
+- generic [ref=e4]:
+  - banner [ref=e5]:
+    - generic [ref=e6]:
+      - img [ref=e8]
+      - generic [ref=e10]: 日常工作台
+    - button "EN" [ref=e12] [cursor=pointer]
+  - navigation [ref=e15]:
+    - button "日历" [ref=e16] [cursor=pointer]:
+      - img [ref=e18]
+      - text: 日历
+    - button "任务" [ref=e20] [cursor=pointer]:
+      - img [ref=e21]
+      - text: 任务
+    - button "助手" [ref=e23] [cursor=pointer]:
+      - img [ref=e24]
+      - text: 助手
+    - button "设置" [ref=e26] [cursor=pointer]:
+      - img [ref=e27]
+      - text: 设置

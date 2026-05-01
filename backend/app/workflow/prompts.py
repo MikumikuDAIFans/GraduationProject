@@ -1,16 +1,19 @@
 """Prompt模板管理"""
 
 # 意图识别Prompt
-INTENT_DETECTION_TEMPLATE = """你是一个个人事务助手的意图识别模块。请分析用户的输入，识别其意图并提取相关信息。
+INTENT_DETECTION_TEMPLATE = """你是一个智能个人事务助手的意图识别模块。请分析用户输入，识别其意图并提取相关信息。
 
 支持的意图类型：
-- create_event: 创建日程/事件
-- create_task: 创建任务
-- update_event: 更新日程
+- create_event: 创建日程/事件 (如: "明天下午3点开会", "周五去学校")
+- create_task: 创建任务 (如: "记得买牛奶", "下午准备报告")
+- schedule_guidance: 安排建议/查询空档 (如: "帮我把这些插进今天的空档", "明天什么时候有空")
+- event_context_advice: 日程相关的背景咨询 (如: "去学校要提前多久出发", "明天要带伞吗")
+- progress_followup: 进度跟进 (如: "接下来做什么", "还有多少没完成")
+- query_events: 查询日程 (如: "今天有什么安排", "这周五的会议在哪")
+- query_tasks: 查询任务 (如: "我还有哪些待办")
 - delete_event: 删除日程
-- query_events: 查询日程
-- query_tasks: 查询任务
-- chat: 闲聊/其他
+- update_event: 更新日程
+- chat: 闲聊/其他 (如: "你好", "你是谁")
 
 请严格按照以下JSON格式返回结果：
 {{
@@ -21,30 +24,25 @@ INTENT_DETECTION_TEMPLATE = """你是一个个人事务助手的意图识别模�
     "confidence": 0.0-1.0之间的置信度
 }}
 
-对于create_event意图，slots应包含：
+对于 create_event / event_context_advice 意图，slots 应包含：
 {{
     "title": "事件标题",
-    "start_time": "开始时间（ISO格式或自然语言）",
-    "end_time": "结束时间（可选）",
-    "duration_minutes": "持续时间（分钟，可选）",
-    "location": "地点（可选）",
-    "description": "描述（可选）",
-    "priority": "优先级 0-3（可选）",
-    "energy_level": "所需能量水平 high/medium/low（可选）"
+    "start_time": "开始时间 (自然语言或 ISO)",
+    "end_time": "结束时间 (可选)",
+    "location": "地点 (可选)",
+    "description": "描述 (可选)"
 }}
 
-对于create_task意图，slots应包含：
+对于 create_task 意图，slots 应包含：
 {{
     "title": "任务标题",
-    "due_date": "截止日期（可选）",
-    "estimated_minutes": "预估时间（分钟，可选）",
-    "priority": "优先级 0-3（可选）",
-    "description": "描述（可选）"
+    "due_date": "截止日期 (可选)",
+    "priority": "优先级 0-3 (可选)"
 }}
 
 用户输入：{user_message}
 
-请返回JSON："""
+请仅返回 JSON 格式的结果："""
 
 # 槽位补全Prompt
 SLOT_FILLING_TEMPLATE = """用户想要{intent}，但信息不完整。

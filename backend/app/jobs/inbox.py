@@ -8,17 +8,32 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 
 from app.core.celery_app import celery_app
+from app.core.config import get_settings
 from app.db.session import get_sessionmaker
 from app.models import Event, Reminder, Task
 
 
 @celery_app.task(name="app.jobs.inbox.generate_proactive_inbox_items")
-def generate_proactive_inbox_items() -> dict[str, int]:
+def generate_proactive_inbox_items() -> dict[str, int | str]:
     """Scan tasks with partial progress and generate inbox follow-up reminders."""
     return asyncio.run(_generate_proactive_inbox_items())
 
 
-async def _generate_proactive_inbox_items() -> dict[str, int]:
+async def _generate_proactive_inbox_items(*, force: bool = False) -> dict[str, int | str]:
+    settings = get_settings()
+    if not force and not settings.assistant_legacy_inbox_job_enabled:
+        return {
+            "status": "skipped",
+            "reason": "legacy proactive inbox job is disabled",
+            "generated_count": 0,
+        }
+    if not force and settings.assistant_proactive_mode == "off":
+        return {
+            "status": "skipped",
+            "reason": "assistant proactive mode is off",
+            "generated_count": 0,
+        }
+
     now = datetime.now(timezone.utc)
     session_factory = get_sessionmaker()
     generated_count = 0
@@ -108,4 +123,4 @@ async def _generate_proactive_inbox_items() -> dict[str, int]:
         if generated_count:
             await session.commit()
 
-    return {"generated_count": generated_count}
+    return {"status": "ok", "generated_count": generated_count}

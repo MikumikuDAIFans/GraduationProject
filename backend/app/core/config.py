@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     weather_provider: str = Field(default="qweather", alias="WEATHER_PROVIDER")
     qweather_api_key: str | None = Field(default=None, alias="QWEATHER_API_KEY")
     qweather_api_host: str | None = Field(default=None, alias="QWEATHER_API_HOST")
+    weather_cache_path: str = Field(default="./data/weather_snapshot_cache.json", alias="WEATHER_CACHE_PATH")
+    weather_snapshot_max_age_hours: int = Field(default=10, alias="WEATHER_SNAPSHOT_MAX_AGE_HOURS")
 
     google_calendar_enabled: bool = Field(default=True, alias="GOOGLE_CALENDAR_ENABLED")
     google_client_id: str | None = Field(default=None, alias="GOOGLE_CLIENT_ID")
@@ -64,6 +66,10 @@ class Settings(BaseSettings):
     enable_workflow: bool = Field(default=True, alias="ENABLE_WORKFLOW")
     enable_react_subgraph: bool = Field(default=True, alias="ENABLE_REACT_SUBGRAPH")
     route_confidence_threshold: float = Field(default=0.6, alias="ROUTE_CONFIDENCE_THRESHOLD")
+    assistant_conductor_mode: str = Field(default="legacy", alias="ASSISTANT_CONDUCTOR_MODE")
+    assistant_proactive_mode: str = Field(default="off", alias="ASSISTANT_PROACTIVE_MODE")
+    assistant_legacy_inbox_job_enabled: bool = Field(default=False, alias="ASSISTANT_LEGACY_INBOX_JOB_ENABLED")
+    assistant_memory_path: str = Field(default="./data/assistant_memory", alias="ASSISTANT_MEMORY_PATH")
 
     voice_input_enabled: bool = Field(default=False, alias="VOICE_INPUT_ENABLED")
     voice_output_enabled: bool = Field(default=False, alias="VOICE_OUTPUT_ENABLED")
@@ -85,6 +91,22 @@ class Settings(BaseSettings):
         if not db_path.is_absolute():
             db_path = (BASE_DIR / db_path).resolve()
         return db_path
+
+    @property
+    def weather_cache_file(self) -> Path:
+        """Return the resolved weather snapshot cache path."""
+        cache_path = Path(self.weather_cache_path)
+        if not cache_path.is_absolute():
+            cache_path = (BASE_DIR / cache_path).resolve()
+        return cache_path
+
+    @property
+    def assistant_memory_dir(self) -> Path:
+        """Return the resolved assistant memory root directory."""
+        memory_path = Path(self.assistant_memory_path)
+        if not memory_path.is_absolute():
+            memory_path = (BASE_DIR / memory_path).resolve()
+        return memory_path
 
 
 @lru_cache(maxsize=1)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections import defaultdict
 
 from fastapi import WebSocket
@@ -35,23 +36,43 @@ class WorkspaceUpdateManager:
 
     async def send_snapshot(self, user_id: str, websocket: WebSocket) -> None:
         payload = await build_workspace_snapshot(user_id)
-        await websocket.send_json(payload)
+        try:
+            await asyncio.wait_for(websocket.send_json(payload), timeout=2.0)
+        except Exception as exc:
+            logger.bind(component="ws.snapshot").warning("Snapshot send failed: {error}", error=str(exc))
+            await self.disconnect(user_id, websocket)
+
+    async def _send_to_socket(self, user_id: str, socket: WebSocket, payload: dict, stale: list[WebSocket]) -> None:
+        try:
+            await asyncio.wait_for(socket.send_json(payload), timeout=2.0)
+        except Exception as exc:
+            logger.bind(component="ws.broadcast").warning("Workspace broadcast failed: {error}", error=str(exc))
+            stale.append(socket)
 
     async def broadcast(self, user_id: str) -> None:
+        start_time = time.perf_counter()
         async with self._lock:
             sockets = list(self._connections.get(user_id, set()))
+            
         if not sockets:
             return
+            
         payload = await build_workspace_snapshot(user_id)
         stale: list[WebSocket] = []
-        for socket in sockets:
-            try:
-                await socket.send_json(payload)
-            except Exception as exc:
-                logger.bind(component="ws.broadcast").warning("Workspace broadcast failed: {error}", error=str(exc))
-                stale.append(socket)
+        
+        # Broadcast in parallel
+        tasks = [self._send_to_socket(user_id, socket, payload, stale) for socket in sockets]
+        if tasks:
+            await asyncio.gather(*tasks)
+            
         for socket in stale:
             await self.disconnect(user_id, socket)
+            
+        logger.bind(component="ws.broadcast").info(
+            "Broadcasted snapshot to {count} clients in {ms:.2f}ms", 
+            count=len(sockets) - len(stale), 
+            ms=(time.perf_counter() - start_time) * 1000
+        )
 
 
 async def build_workspace_snapshot(user_id: str) -> dict[str, object]:
@@ -72,4 +93,5 @@ workspace_updates = WorkspaceUpdateManager()
 
 
 async def broadcast_workspace_update(user_id: str) -> None:
-    await workspace_updates.broadcast(user_id)
+    # Fire and forget instead of blocking the main thread!
+    asyncio.create_task(workspace_updates.broadcast(user_id))

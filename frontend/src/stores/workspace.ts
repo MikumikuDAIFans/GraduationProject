@@ -23,6 +23,8 @@ export type { CalendarEvent, TaskItem } from "@/stores/events";
 export type {
   AssistantAction,
   AssistantMessage,
+  AssistantProposal,
+  AssistantProposalOption,
   AssistantSession,
 } from "@/stores/assistant";
 export type { ToastItem } from "@/stores/reminder";
@@ -71,11 +73,14 @@ export const useWorkspaceStore = defineStore("workspace", {
     sessionId: () => useAssistantStore().sessionId,
     messages: () => useAssistantStore().messages,
     lastAssistantActions: () => useAssistantStore().lastAssistantActions,
+    assistantProposals: () => useAssistantStore().assistantProposals,
     assistantSessions: () => useAssistantStore().assistantSessions,
     loadingAssistantSessions: () => useAssistantStore().loadingAssistantSessions,
+    loadingAssistantProposals: () => useAssistantStore().loadingAssistantProposals,
     creatingAssistantSession: () => useAssistantStore().creatingAssistantSession,
     archivingAssistantSession: () => useAssistantStore().archivingAssistantSession,
     clearingAssistantSession: () => useAssistantStore().clearingAssistantSession,
+    proposalActionBusyId: () => useAssistantStore().proposalActionBusyId,
 
     // Profile proxy
     profile: () => useProfileStore().profile,
@@ -174,6 +179,7 @@ export const useWorkspaceStore = defineStore("workspace", {
     async fetchEvents(force = false) { return useEventsStore().fetchEvents(force); },
     async fetchTasks(force = false) { return useEventsStore().fetchTasks(force); },
     async fetchAssistantSessions() { return useAssistantStore().fetchAssistantSessions(); },
+    async fetchAssistantProposals() { return useAssistantStore().fetchAssistantProposals(); },
     async fetchCurrentAssistantSession() { return useAssistantStore().fetchCurrentAssistantSession(); },
     async fetchWeatherNow(force = false) { return useContextStore().fetchWeatherNow(force); },
     async fetchTravelEstimate(force = false) { return useContextStore().fetchTravelEstimate(force); },
@@ -201,17 +207,105 @@ export const useWorkspaceStore = defineStore("workspace", {
     async switchAssistantSession(sessionId: number) { return useAssistantStore().switchAssistantSession(sessionId); },
     async archiveCurrentAssistantSession() { return useAssistantStore().archiveCurrentAssistantSession(); },
     async clearCurrentAssistantSession() { return useAssistantStore().clearCurrentAssistantSession(); },
+    async confirmAssistantProposal(proposalId: number, optionId: string) {
+      const assistantStore = useAssistantStore();
+      const eventsStore = useEventsStore();
+      try {
+        const proposal = await assistantStore.confirmAssistantProposal(proposalId, optionId);
+        this.pushToast(this.locale === "zh-CN" ? "方案已执行" : "Proposal executed", "success");
+        await Promise.allSettled([
+          eventsStore.fetchEvents(true),
+          eventsStore.fetchTasks(true),
+        ]);
+        return proposal;
+      } catch (error) {
+        console.error("Failed to confirm proposal:", error);
+        this.pushToast(
+          this.locale === "zh-CN" ? "执行方案失败，请重试" : "Failed to execute proposal",
+          "danger"
+        );
+        throw error;
+      }
+    },
+    async rejectAssistantProposal(proposalId: number) {
+      try {
+        const proposal = await useAssistantStore().rejectAssistantProposal(proposalId);
+        this.pushToast(this.locale === "zh-CN" ? "已拒绝方案" : "Proposal rejected", "info");
+        return proposal;
+      } catch (error) {
+        console.error("Failed to reject proposal:", error);
+        this.pushToast(
+          this.locale === "zh-CN" ? "拒绝方案失败，请重试" : "Failed to reject proposal",
+          "danger"
+        );
+        throw error;
+      }
+    },
+    async reviseAssistantProposal(proposalId: number, message: string) {
+      try {
+        const proposal = await useAssistantStore().reviseAssistantProposal(proposalId, message);
+        this.pushToast(this.locale === "zh-CN" ? "已提交修改" : "Revision submitted", "success");
+        return proposal;
+      } catch (error) {
+        console.error("Failed to revise proposal:", error);
+        this.pushToast(
+          this.locale === "zh-CN" ? "修改方案失败，请重试" : "Failed to revise proposal",
+          "danger"
+        );
+        throw error;
+      }
+    },
+    async retryAssistantProposal(proposalId: number) {
+      const assistantStore = useAssistantStore();
+      const eventsStore = useEventsStore();
+      try {
+        const proposal = await assistantStore.retryAssistantProposal(proposalId);
+        this.pushToast(this.locale === "zh-CN" ? "已重新执行方案" : "Proposal retried", "success");
+        await Promise.allSettled([
+          eventsStore.fetchEvents(true),
+          eventsStore.fetchTasks(true),
+        ]);
+        return proposal;
+      } catch (error) {
+        console.error("Failed to retry proposal:", error);
+        this.pushToast(
+          this.locale === "zh-CN" ? "重试方案失败，请重试" : "Failed to retry proposal",
+          "danger"
+        );
+        throw error;
+      }
+    },
     async sendAssistantMessageStream(message: string) {
       return useAssistantStore().sendAssistantMessageStream(
         message,
-        () => this.refreshAssistantWorkspace(false),
+        () => this.refreshAssistantAfterSend(),
       );
     },
     async sendAssistantMessage(message: string) {
       return useAssistantStore().sendAssistantMessage(
         message,
-        () => this.refreshAssistantWorkspace(false),
+        () => this.refreshAssistantAfterSend(),
       );
+    },
+    async refreshAssistantAfterSend() {
+      const assistantStore = useAssistantStore();
+      const eventsStore = useEventsStore();
+      const reminderStore = useReminderStore();
+      await Promise.allSettled([
+        assistantStore.fetchAssistantSessions(),
+        assistantStore.fetchAssistantProposals(),
+      ]);
+
+      const notificationSocket = reminderStore.socket;
+      const websocketOpen =
+        typeof WebSocket !== "undefined" &&
+        notificationSocket?.readyState === WebSocket.OPEN;
+      if (!websocketOpen) {
+        await Promise.allSettled([
+          eventsStore.fetchEvents(true),
+          eventsStore.fetchTasks(true),
+        ]);
+      }
     },
     async refreshAssistantWorkspace(selective = true) {
       const eventsStore = useEventsStore();
@@ -222,13 +316,13 @@ export const useWorkspaceStore = defineStore("workspace", {
           eventsStore.fetchEvents(),
           eventsStore.fetchTasks(),
           assistantStore.fetchCurrentAssistantSession(),
+          assistantStore.fetchAssistantProposals(),
         ]);
       } else {
         await Promise.allSettled([
           eventsStore.fetchEvents(true),
           eventsStore.fetchTasks(true),
           assistantStore.fetchAssistantSessions(),
-          this.sessionId != null ? assistantStore.fetchSession(this.sessionId) : Promise.resolve(),
         ]);
       }
     },

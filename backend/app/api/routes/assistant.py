@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, Form, Path, Query, UploadFile
 from fastapi.responses import StreamingResponse
+import time
+from loguru import logger
 
 from app.api.live_updates import broadcast_workspace_update
 from app.api.deps import AssistantService, get_assistant_service, get_current_user_id
@@ -121,8 +123,18 @@ async def clear_session_messages(
     user_id: str = Depends(get_current_user_id),
     service: AssistantService = Depends(get_assistant_service),
 ) -> dict[str, bool]:
+    start_time = time.perf_counter()
     result = await service.clear_session_messages(user_id=user_id, session_id=session_id)
+    biz_time = time.perf_counter() - start_time
+
+    bc_start = time.perf_counter()
     await broadcast_workspace_update(user_id)
+    bc_time = time.perf_counter() - bc_start
+
+    logger.bind(component="assistant").info(
+        "DELETE session messages profiling | Biz: {biz:.2f}ms | BroadcastTrigger: {bc:.2f}ms",
+        biz=biz_time * 1000, bc=bc_time * 1000
+    )
     return result
 
 

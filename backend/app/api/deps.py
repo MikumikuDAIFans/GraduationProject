@@ -33,6 +33,7 @@ from app.api.schemas import (
     UserProfileRead,
     UserProfileUpdate,
     WeatherNowRead,
+    WeatherSnapshotRead,
 )
 from app.db.session import get_session
 from app.services.context import ContextService as DefaultContextService
@@ -110,6 +111,7 @@ class ContextService(Protocol):
     async def geocode(self, address: str, city: str | None = None) -> GeocodeRead | dict[str, Any]: ...
     async def estimate_travel(self, origin: str, destination: str, city: str | None = None, mode: str = "driving") -> TravelEstimateRead | dict[str, Any]: ...
     async def weather_now(self, location: str) -> WeatherNowRead | dict[str, Any]: ...
+    async def weather_snapshot(self, location: str, allow_refresh: bool = False) -> WeatherSnapshotRead | dict[str, Any]: ...
 
 
 class UserProfileService(Protocol):

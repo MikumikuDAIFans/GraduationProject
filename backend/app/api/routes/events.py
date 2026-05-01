@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import datetime
+import time
+from loguru import logger
 
 from fastapi import APIRouter, Depends, Path, Query, status
 
@@ -61,6 +63,16 @@ async def delete_event(
     user_id: str = Depends(get_current_user_id),
     service: EventService = Depends(get_event_service),
 ) -> OperationResult:
+    start_time = time.perf_counter()
     await service.delete_event(user_id=user_id, event_id=event_id)
+    biz_time = time.perf_counter() - start_time
+
+    bc_start = time.perf_counter()
     await broadcast_workspace_update(user_id)
+    bc_time = time.perf_counter() - bc_start
+
+    logger.bind(component="events").info(
+        "DELETE /api/events/{id} profiling | Biz: {biz:.2f}ms | BroadcastTrigger: {bc:.2f}ms",
+        id=event_id, biz=biz_time * 1000, bc=bc_time * 1000
+    )
     return OperationResult(message="event deleted", id=event_id)

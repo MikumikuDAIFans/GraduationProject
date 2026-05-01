@@ -1,24 +1,38 @@
 <script setup lang="ts">
 import MarkdownIt from "markdown-it";
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import type { AssistantAction, AssistantMessage, AssistantSession } from "@/stores/workspace";
+import type {
+  AssistantAction,
+  AssistantMessage,
+  AssistantProposal,
+  AssistantProposalOption,
+  AssistantSession,
+} from "@/stores/workspace";
 import { formatDateTime } from "@/utils/locale";
 
 const props = defineProps<{
   messages: AssistantMessage[];
   sending: boolean;
   lastAssistantActions: AssistantAction[];
+  assistantProposals: AssistantProposal[];
   assistantSessions: AssistantSession[];
   activeSessionId: number | null;
+  loadingProposals: boolean;
   creatingSession: boolean;
   archivingSession: boolean;
   clearingSession: boolean;
+  proposalBusyId: number | null;
 }>();
 
 const emit = defineEmits<{
   send: [message: string];
   focusTask: [taskId: number];
+  fetchProposals: [];
+  confirmProposal: [proposalId: number, optionId: string];
+  rejectProposal: [proposalId: number];
+  reviseProposal: [proposalId: number, message: string];
+  retryProposal: [proposalId: number];
   createSession: [];
   switchSession: [sessionId: number];
   archiveSession: [];
@@ -33,9 +47,11 @@ const markdown = new MarkdownIt({
 });
 
 const draft = ref("");
+const proposalRevisionDrafts = ref<Record<number, string>>({});
 const messageContainer = ref<HTMLElement | null>(null);
 const canSend = computed(() => draft.value.trim().length > 0 && !props.sending);
 const sessionBusy = computed(() => props.creatingSession || props.archivingSession || props.clearingSession);
+const visibleProposals = computed(() => props.assistantProposals.slice(0, 5));
 
 function renderMarkdown(text: string): string {
   return markdown.render(text.replace(/<script.*?>.*?<\/script>/gis, "").trim());
@@ -83,6 +99,55 @@ function linkedTasks(action: AssistantAction) {
   return (action.payload as { linked_tasks?: Array<Record<string, unknown>> }).linked_tasks ?? [];
 }
 
+function proposalOptions(proposal: AssistantProposal): AssistantProposalOption[] {
+  const options = proposal.payload_json?.options;
+  return Array.isArray(options) ? options : [];
+}
+
+function proposalStatusLabel(status: string) {
+  const map: Record<string, string> = {
+    pending: t("assistantPanel.proposalPending"),
+    accepted: t("assistantPanel.proposalAccepted"),
+    execution_pending: t("assistantPanel.proposalExecuting"),
+    executed: t("assistantPanel.proposalExecuted"),
+    execution_failed: t("assistantPanel.proposalFailed"),
+    rejected: t("assistantPanel.proposalRejected"),
+    expired: t("assistantPanel.proposalExpired"),
+    superseded: t("assistantPanel.proposalSuperseded"),
+  };
+  return map[status] ?? status;
+}
+
+function proposalStatusClass(status: string) {
+  if (status === "executed") return "border-positive/30 bg-positive-light text-positive";
+  if (status === "execution_failed") return "border-danger/30 bg-danger-light text-danger";
+  if (status === "execution_pending") return "border-accent/30 bg-accent-light text-accent";
+  if (status === "rejected" || status === "expired" || status === "superseded") {
+    return "border-border bg-surface-2 text-ink-3";
+  }
+  return "border-warn/30 bg-warn-light text-warn";
+}
+
+function proposalExecutionSummary(proposal: AssistantProposal) {
+  const execution = proposal.payload_json?.execution as { result?: { actions?: Array<Record<string, unknown>> } } | undefined;
+  return execution?.result?.actions ?? [];
+}
+
+function canConfirmProposal(proposal: AssistantProposal) {
+  return proposal.status === "pending" || proposal.status === "accepted";
+}
+
+function canReviseProposal(proposal: AssistantProposal) {
+  return proposal.status === "pending" || proposal.status === "accepted" || proposal.status === "execution_failed";
+}
+
+function submitRevision(proposalId: number) {
+  const message = (proposalRevisionDrafts.value[proposalId] ?? "").trim();
+  if (!message) return;
+  emit("reviseProposal", proposalId, message);
+  proposalRevisionDrafts.value[proposalId] = "";
+}
+
 function formatSlot(start?: unknown, end?: unknown) {
   return `${formatDateTime(String(start ?? ""), locale.value)} → ${formatDateTime(String(end ?? ""), locale.value)}`;
 }
@@ -103,6 +168,17 @@ watch(
     requestAnimationFrame(() => {
       messageContainer.value?.scrollTo({ top: messageContainer.value.scrollHeight, behavior: "smooth" });
     });
+  },
+);
+
+onMounted(() => {
+  emit("fetchProposals");
+});
+
+watch(
+  () => props.activeSessionId,
+  () => {
+    emit("fetchProposals");
   },
 );
 </script>
@@ -169,6 +245,116 @@ watch(
         >
           {{ t("assistantPanel.archiveChat") }}
         </button>
+      </div>
+    </div>
+
+    <div v-if="visibleProposals.length || loadingProposals" class="shrink-0 border-b border-border bg-surface-2 px-3 py-3">
+      <div class="mb-2 flex items-center justify-between">
+        <p class="text-xs font-semibold text-ink">{{ t("assistantPanel.proposals") }}</p>
+        <span v-if="loadingProposals" class="text-[10px] text-ink-3">{{ t("common.loading") }}</span>
+      </div>
+
+      <div class="max-h-64 space-y-2 overflow-y-auto">
+        <div
+          v-for="proposal in visibleProposals"
+          :key="proposal.id"
+          class="rounded-lg border border-border bg-white px-3 py-2.5 shadow-card"
+        >
+          <div class="flex items-start justify-between gap-2">
+            <div class="min-w-0">
+              <div class="flex flex-wrap items-center gap-1.5">
+                <span class="text-[10px] font-bold uppercase tracking-widest text-accent">P{{ proposal.id }}</span>
+                <span
+                  class="rounded-full border px-2 py-0.5 text-[10px] font-semibold"
+                  :class="proposalStatusClass(proposal.status)"
+                >
+                  {{ proposalStatusLabel(proposal.status) }}
+                </span>
+              </div>
+              <p class="mt-1 text-xs font-semibold leading-snug text-ink">{{ proposal.summary }}</p>
+            </div>
+            <button
+              v-if="proposal.status === 'execution_failed'"
+              type="button"
+              class="shrink-0 rounded-lg border border-accent/30 px-2.5 py-1 text-[11px] font-semibold text-accent transition hover:bg-accent-light disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="proposalBusyId === proposal.id"
+              @click="emit('retryProposal', proposal.id)"
+            >
+              {{ t("assistantPanel.retryProposal") }}
+            </button>
+          </div>
+
+          <div v-if="proposalOptions(proposal).length" class="mt-2 divide-y divide-border">
+            <div
+              v-for="option in proposalOptions(proposal)"
+              :key="option.option_id"
+              class="py-2 first:pt-0 last:pb-0"
+            >
+              <div class="flex items-start justify-between gap-2">
+                <div class="min-w-0">
+                  <p class="text-xs font-medium text-ink">
+                    {{ option.option_id }} · {{ option.title }}
+                    <span
+                      v-if="proposal.recommended_option_id === option.option_id"
+                      class="ml-1 text-[10px] font-semibold text-positive"
+                    >
+                      {{ t("assistantPanel.recommended") }}
+                    </span>
+                  </p>
+                  <p v-if="option.summary" class="mt-0.5 text-[11px] leading-snug text-ink-3">{{ option.summary }}</p>
+                  <p v-if="option.rationale" class="mt-0.5 text-[11px] leading-snug text-ink-3">{{ option.rationale }}</p>
+                </div>
+                <button
+                  v-if="canConfirmProposal(proposal)"
+                  type="button"
+                  class="shrink-0 rounded-lg bg-positive px-2.5 py-1 text-[11px] font-semibold text-white transition hover:bg-positive-hover disabled:cursor-not-allowed disabled:opacity-50"
+                  :disabled="proposalBusyId === proposal.id"
+                  @click="emit('confirmProposal', proposal.id, option.option_id)"
+                >
+                  {{ t("assistantPanel.confirmOption") }}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="proposal.status === 'executed' && proposalExecutionSummary(proposal).length" class="mt-2 border-t border-border pt-2">
+            <p
+              v-for="(item, i) in proposalExecutionSummary(proposal)"
+              :key="`${proposal.id}-result-${i}`"
+              class="text-[11px] text-positive"
+            >
+              {{ item.type || t("assistantPanel.proposalExecuted") }}
+            </p>
+          </div>
+
+          <div v-if="canReviseProposal(proposal)" class="mt-2 flex gap-2 border-t border-border pt-2">
+            <input
+              v-model="proposalRevisionDrafts[proposal.id]"
+              type="text"
+              class="min-w-0 flex-1 rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink placeholder:text-ink-3 focus:border-accent/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-accent/20"
+              :placeholder="t('assistantPanel.revisePlaceholder')"
+              :disabled="proposalBusyId === proposal.id"
+              @keydown.enter.prevent="submitRevision(proposal.id)"
+            />
+            <button
+              type="button"
+              class="rounded-lg border border-border px-2.5 py-1 text-[11px] font-semibold text-ink-3 transition hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="proposalBusyId === proposal.id || !(proposalRevisionDrafts[proposal.id] ?? '').trim()"
+              @click="submitRevision(proposal.id)"
+            >
+              {{ t("assistantPanel.reviseProposal") }}
+            </button>
+            <button
+              v-if="proposal.status === 'pending' || proposal.status === 'accepted'"
+              type="button"
+              class="rounded-lg border border-danger/20 px-2.5 py-1 text-[11px] font-semibold text-danger transition hover:bg-danger-light disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="proposalBusyId === proposal.id"
+              @click="emit('rejectProposal', proposal.id)"
+            >
+              {{ t("assistantPanel.rejectProposal") }}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
 

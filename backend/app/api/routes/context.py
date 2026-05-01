@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 
 from app.api.deps import ContextService, get_context_service
-from app.api.schemas import GeocodeRead, TravelEstimateRead, WeatherNowRead
+from app.api.schemas import GeocodeRead, TravelEstimateRead, WeatherNowRead, WeatherSnapshotRead
 
 router = APIRouter(prefix="/context", tags=["context"])
 
@@ -41,3 +41,12 @@ async def weather_now(
     service: ContextService = Depends(get_context_service),
 ) -> WeatherNowRead:
     return await service.weather_now(location=location)
+
+
+@router.get("/weather/snapshot", response_model=WeatherSnapshotRead)
+async def weather_snapshot(
+    location: str = Query(..., min_length=1),
+    allow_refresh: bool = Query(default=False),
+    service: ContextService = Depends(get_context_service),
+) -> WeatherSnapshotRead:
+    return await service.weather_snapshot(location=location, allow_refresh=allow_refresh)

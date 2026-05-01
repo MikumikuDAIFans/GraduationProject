@@ -1,0 +1,53 @@
+- generic [ref=e3]:
+  - text:  
+  - generic [ref=e4]:
+    - banner [ref=e5]:
+      - generic [ref=e6]:
+        - img [ref=e8]
+        - generic [ref=e10]: 日常工作台
+      - button "EN" [ref=e12] [cursor=pointer]
+    - generic [ref=e675]:
+      - generic [ref=e677]:
+        - heading "任务" [level=2] [ref=e678]
+        - generic [ref=e679]: 3 待处理
+      - generic [ref=e681]:
+        - generic [ref=e683]:
+          - generic [ref=e684]:
+            - generic [ref=e685]:
+              - paragraph [ref=e686]: review thesis notes
+              - generic [ref=e687]: 已安排
+            - generic [ref=e689]: 60 min scheduled
+          - generic [ref=e692]:
+            - button "继续规划" [ref=e693] [cursor=pointer]
+            - button "删除" [ref=e694] [cursor=pointer]
+        - generic [ref=e696]:
+          - generic [ref=e697]:
+            - generic [ref=e698]:
+              - paragraph [ref=e699]: 完成邮件测试
+              - generic [ref=e700]: 已安排
+            - generic [ref=e702]: 60 min scheduled
+          - generic [ref=e705]:
+            - button "继续规划" [ref=e706] [cursor=pointer]
+            - button "删除" [ref=e707] [cursor=pointer]
+        - generic [ref=e709]:
+          - generic [ref=e710]:
+            - generic [ref=e711]:
+              - paragraph [ref=e712]: 一个任务：最终验收链路测试
+              - generic [ref=e713]: pending
+            - generic [ref=e715]: 剩余 30 分钟
+          - generic [ref=e716]:
+            - button "继续规划" [ref=e717] [cursor=pointer]
+            - button "删除" [ref=e718] [cursor=pointer]
+    - navigation [ref=e15]:
+      - button "日历" [ref=e16] [cursor=pointer]:
+        - img [ref=e18]
+        - text: 日历
+      - button "任务" [active] [ref=e20] [cursor=pointer]:
+        - img [ref=e21]
+        - text: 任务
+      - button "助手" [ref=e23] [cursor=pointer]:
+        - img [ref=e24]
+        - text: 助手
+      - button "设置" [ref=e26] [cursor=pointer]:
+        - img [ref=e27]
+        - text: 设置

@@ -1,0 +1,63 @@
+- generic [ref=e3]:
+  - text:  
+  - generic [ref=e4]:
+    - banner [ref=e5]:
+      - generic [ref=e6]:
+        - img [ref=e8]
+        - generic [ref=e10]: 日常工作台
+      - button "EN" [ref=e12] [cursor=pointer]
+    - generic [ref=e371]:
+      - generic [ref=e372]:
+        - generic [ref=e374]:
+          - img [ref=e376]
+          - generic [ref=e378]:
+            - paragraph [ref=e379]: Daily Copilot
+            - paragraph [ref=e380]: 当前会话
+        - generic [ref=e381]:
+          - combobox [ref=e382]:
+            - option "点去学校上政治课 · 04/28 16:05" [selected]
+            - option "点上政治课 · 04/28 12:55"
+            - option "一个任务：最终验收链路测试二 · 04/28 11:53"
+            - option "继续任务 review thesis notes · 04/28 11:42"
+            - option "我要整理毕设论文 · 04/18 14:44"
+            - option "点我要尝试配置CKN工作流并生成图片进行投稿 · 04/18 09:25"
+            - option "告诉我你现在能调用的工具 · 04/03 17:55"
+          - button "新对话" [ref=e383] [cursor=pointer]
+        - generic [ref=e384]:
+          - button "清空消息" [ref=e385] [cursor=pointer]
+          - button "归档会话" [ref=e386] [cursor=pointer]
+      - generic [ref=e387]:
+        - paragraph [ref=e390]: 明天9点去学校上政治课
+        - generic [ref=e391]:
+          - img [ref=e393]
+          - paragraph [ref=e398]: 我可以帮你创建日程，不过还缺少关键信息：开始时间、结束时间。例如你可以说：“明天下午 3 点到 4 点在图书馆开组会”。
+        - paragraph [ref=e401]: 继续安排任务 一个任务：最终验收链路测试
+        - generic [ref=e402]:
+          - img [ref=e404]
+          - paragraph [ref=e409]: 我准备为你创建任务“继续任务 一个任务：最终验收链路测试”。
+        - paragraph [ref=e412]: 按这个安排执行
+        - generic [ref=e413]:
+          - img [ref=e415]
+          - paragraph [ref=e420]: 好的，我已经按刚才确认的计划落成日程。
+        - paragraph [ref=e423]: 创建日程 明天下午 3 点到 4 点在图书馆开组会
+        - generic [ref=e424]:
+          - img [ref=e426]
+          - paragraph [ref=e431]: 我可以帮你创建日程，不过还缺少关键信息：开始时间、结束时间。例如你可以说：“明天下午 3 点到 4 点在图书馆开组会”。
+      - generic [ref=e432]:
+        - generic [ref=e433]:
+          - textbox "输入你想安排的事情、任务或问题…" [ref=e434]
+          - button "发送" [disabled] [ref=e435]
+        - paragraph [ref=e436]: 按 Ctrl+Enter 发送
+    - navigation [ref=e356]:
+      - button "日历" [ref=e357] [cursor=pointer]:
+        - img [ref=e359]
+        - text: 日历
+      - button "任务" [ref=e361] [cursor=pointer]:
+        - img [ref=e362]
+        - text: 任务
+      - button "助手" [active] [ref=e364] [cursor=pointer]:
+        - img [ref=e365]
+        - text: 助手
+      - button "设置" [ref=e367] [cursor=pointer]:
+        - img [ref=e368]
+        - text: 设置

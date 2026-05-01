@@ -258,8 +258,19 @@ class AssistantSessionRead(ReadModel):
     messages: list[AssistantMessageRead] = Field(default_factory=list)
 
 
+class AssistantSessionSummaryRead(ReadModel):
+    id: int
+    user_id: str
+    session_type: str | None = None
+    title: str
+    is_archived: bool = False
+    context_json: dict[str, Any] | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
 class AssistantSessionListRead(ReadModel):
-    items: list[AssistantSessionRead] = Field(default_factory=list)
+    items: list[AssistantSessionSummaryRead] = Field(default_factory=list)
     total: int = 0
 
 
@@ -286,6 +297,257 @@ class AssistantSummaryRead(ReadModel):
     generated_at: datetime
     unread_followups: int = 0
     cards: list[AssistantSummaryCard] = Field(default_factory=list)
+
+
+class AssistantProposalOption(APIBaseModel):
+    option_id: str
+    title: str
+    summary: str | None = None
+    actions: list[dict[str, Any]] = Field(default_factory=list)
+    rationale: str | None = None
+
+
+class AssistantProposalCreate(APIBaseModel):
+    session_id: int | None = None
+    thread_state_id: int | None = None
+    proposal_type: str
+    trigger_type: str = "user_message"
+    status: str = "pending"
+    dedup_key: str | None = None
+    priority: int = 1
+    summary: str
+    payload_json: dict[str, Any] = Field(default_factory=dict)
+    recommended_option_id: str | None = None
+    is_time_sensitive: bool = False
+    related_task_id: int | None = None
+    related_event_id: int | None = None
+    source_signal_id: int | None = None
+    supersedes_proposal_id: int | None = None
+    expires_at: datetime | None = None
+    followup_after: datetime | None = None
+
+
+class AssistantProposalUpdate(APIBaseModel):
+    status: str | None = None
+    selected_option_id: str | None = None
+    payload_json: dict[str, Any] | None = None
+    recommended_option_id: str | None = None
+    priority: int | None = None
+    expires_at: datetime | None = None
+    followup_after: datetime | None = None
+    confirmed_at: datetime | None = None
+    execution_started_at: datetime | None = None
+    execution_error: str | None = None
+    executed_at: datetime | None = None
+    archived_at: datetime | None = None
+
+
+class AssistantProposalConfirmRequest(APIBaseModel):
+    option_id: str
+
+
+class AssistantProposalReviseRequest(APIBaseModel):
+    message: str
+
+
+class AssistantProposalRead(ReadModel):
+    id: int
+    user_id: str
+    session_id: int | None = None
+    thread_state_id: int | None = None
+    proposal_type: str
+    trigger_type: str
+    status: str
+    dedup_key: str | None = None
+    priority: int = 1
+    summary: str
+    payload_json: dict[str, Any] = Field(default_factory=dict)
+    recommended_option_id: str | None = None
+    selected_option_id: str | None = None
+    is_time_sensitive: bool = False
+    related_task_id: int | None = None
+    related_event_id: int | None = None
+    source_signal_id: int | None = None
+    supersedes_proposal_id: int | None = None
+    expires_at: datetime | None = None
+    followup_after: datetime | None = None
+    confirmed_at: datetime | None = None
+    execution_started_at: datetime | None = None
+    execution_error: str | None = None
+    executed_at: datetime | None = None
+    archived_at: datetime | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class AssistantProposalListRead(ReadModel):
+    items: list[AssistantProposalRead] = Field(default_factory=list)
+    total: int = 0
+
+
+class AssistantSignalCreate(APIBaseModel):
+    signal_type: str
+    severity: str = "info"
+    status: str = "new"
+    dedup_key: str | None = None
+    target_type: str | None = None
+    target_id: int | None = None
+    context_json: dict[str, Any] | None = None
+    source_job: str | None = None
+    cooldown_until: datetime | None = None
+
+
+class AssistantSignalUpdate(APIBaseModel):
+    status: str | None = None
+    severity: str | None = None
+    context_json: dict[str, Any] | None = None
+    cooldown_until: datetime | None = None
+    evaluated_at: datetime | None = None
+    proposal_created_at: datetime | None = None
+    dismissed_at: datetime | None = None
+
+
+class AssistantSignalRead(ReadModel):
+    id: int
+    user_id: str
+    signal_type: str
+    severity: str
+    status: str
+    dedup_key: str | None = None
+    target_type: str | None = None
+    target_id: int | None = None
+    context_json: dict[str, Any] | None = None
+    source_job: str | None = None
+    cooldown_until: datetime | None = None
+    evaluated_at: datetime | None = None
+    proposal_created_at: datetime | None = None
+    dismissed_at: datetime | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class AssistantSignalListRead(ReadModel):
+    items: list[AssistantSignalRead] = Field(default_factory=list)
+    total: int = 0
+
+
+class AssistantHeartbeatRunRequest(APIBaseModel):
+    signal_type: str = "daily_morning_review"
+    severity: str = "info"
+    dedup_key: str | None = None
+    target_type: str | None = None
+    target_id: int | None = None
+    context_json: dict[str, Any] | None = None
+
+
+class AssistantHeartbeatRunRead(ReadModel):
+    mode: str
+    created_or_reused_signal: AssistantSignalRead
+    message: str
+
+
+class AssistantThreadStateCreate(APIBaseModel):
+    session_id: int | None = None
+    thread_type: str
+    status: str = "active"
+    related_task_id: int | None = None
+    related_event_id: int | None = None
+    active_proposal_id: int | None = None
+    state_json: dict[str, Any] = Field(default_factory=dict)
+    is_waiting_user: bool = False
+    last_specialist: str | None = None
+    last_user_message_at: datetime | None = None
+    last_system_message_at: datetime | None = None
+
+
+class AssistantThreadStateUpdate(APIBaseModel):
+    status: str | None = None
+    active_proposal_id: int | None = None
+    state_json: dict[str, Any] | None = None
+    is_waiting_user: bool | None = None
+    last_specialist: str | None = None
+    last_user_message_at: datetime | None = None
+    last_system_message_at: datetime | None = None
+
+
+class AssistantThreadStateRead(ReadModel):
+    id: int
+    user_id: str
+    session_id: int | None = None
+    thread_type: str
+    status: str
+    related_task_id: int | None = None
+    related_event_id: int | None = None
+    active_proposal_id: int | None = None
+    state_json: dict[str, Any] = Field(default_factory=dict)
+    is_waiting_user: bool = False
+    last_specialist: str | None = None
+    last_user_message_at: datetime | None = None
+    last_system_message_at: datetime | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class AssistantThreadStateListRead(ReadModel):
+    items: list[AssistantThreadStateRead] = Field(default_factory=list)
+    total: int = 0
+
+
+class AssistantMemoryCandidateCreate(APIBaseModel):
+    memory_type: Literal["preferences", "places", "habits", "glossary"]
+    source_specialist: str = "memory"
+    status: Literal["proposed", "confirmed", "rejected", "written"] = "proposed"
+    confidence: float = 0.5
+    proposed_change_json: dict[str, Any] = Field(default_factory=dict)
+    reason: str | None = None
+    dedup_key: str | None = None
+
+
+class AssistantMemoryCandidateUpdate(APIBaseModel):
+    status: Literal["proposed", "confirmed", "rejected", "written"] | None = None
+    confidence: float | None = None
+    proposed_change_json: dict[str, Any] | None = None
+    reason: str | None = None
+    confirmed_at: datetime | None = None
+    rejected_at: datetime | None = None
+    written_at: datetime | None = None
+
+
+class AssistantMemoryCandidateRead(ReadModel):
+    id: int
+    user_id: str
+    memory_type: str
+    source_specialist: str
+    status: str
+    confidence: float
+    proposed_change_json: dict[str, Any] = Field(default_factory=dict)
+    reason: str | None = None
+    dedup_key: str | None = None
+    confirmed_at: datetime | None = None
+    rejected_at: datetime | None = None
+    written_at: datetime | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class AssistantMemoryCandidateListRead(ReadModel):
+    items: list[AssistantMemoryCandidateRead] = Field(default_factory=list)
+    total: int = 0
+
+
+class AssistantMemoryFileSummary(ReadModel):
+    memory_type: str
+    path: str
+    exists: bool = False
+    line_count: int = 0
+    updated_at: datetime | None = None
+    preview: list[str] = Field(default_factory=list)
+
+
+class AssistantMemoryRead(ReadModel):
+    user_id: str
+    root: str
+    files: list[AssistantMemoryFileSummary] = Field(default_factory=list)
 
 
 class SuggestionRead(ReadModel):
@@ -339,6 +601,15 @@ class WeatherNowRead(ReadModel):
     humidity: float | int | str | None = None
     precip: float | int | str | None = None
     vis: float | int | str | None = None
+
+
+class WeatherSnapshotRead(ReadModel):
+    location: str
+    source: Literal["cache", "live", "missing"] = "missing"
+    fetched_at: datetime | None = None
+    is_stale: bool = True
+    max_age_hours: int = 10
+    weather: WeatherNowRead | None = None
 
 
 class UserProfileRead(ReadModel):

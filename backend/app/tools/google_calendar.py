@@ -8,6 +8,7 @@ import secrets
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.core.config import BASE_DIR, get_settings
 
@@ -24,6 +25,7 @@ class GoogleCalendarClient:
 
     def __init__(self) -> None:
         self.settings = get_settings()
+        self.app_timezone = ZoneInfo(self.settings.app_timezone)
 
     def get_authorization_url(self) -> tuple[str, str]:
         flow = self._build_flow()
@@ -210,9 +212,10 @@ class GoogleCalendarClient:
 
     def _build_time_payload(self, value: datetime) -> dict[str, str]:
         if value.tzinfo is None:
-            value = value.replace(tzinfo=UTC)
-        timezone_name = value.tzinfo.tzname(value) or "UTC"
-        return {"dateTime": value.isoformat(), "timeZone": timezone_name}
+            value = value.replace(tzinfo=self.app_timezone)
+        else:
+            value = value.astimezone(self.app_timezone)
+        return {"dateTime": value.isoformat(), "timeZone": self.settings.app_timezone}
 
     def _parse_google_time(self, payload: dict[str, Any]) -> datetime | None:
         raw_datetime = payload.get("dateTime")

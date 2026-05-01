@@ -1,0 +1,83 @@
+- generic [ref=e4]:
+  - banner [ref=e5]:
+    - generic [ref=e6]:
+      - img [ref=e8]
+      - generic [ref=e10]: 日常工作台
+    - button "EN" [ref=e12] [cursor=pointer]
+  - generic [ref=e415]:
+    - paragraph [ref=e417]: 系统设置
+    - generic [ref=e419]:
+      - paragraph [ref=e420]: 个人资料设置
+      - generic [ref=e421]:
+        - generic [ref=e422]:
+          - generic [ref=e423]: 显示名称
+          - textbox "显示名称" [ref=e424]:
+            - /placeholder: 你的名字
+            - text: Graduation Demo User
+        - generic [ref=e425]:
+          - generic [ref=e426]: 通勤方式
+          - combobox "通勤方式" [ref=e427]:
+            - option "驾车"
+            - option "步行" [selected]
+        - generic [ref=e428]:
+          - generic [ref=e429]: 住址
+          - textbox "住址" [ref=e430]:
+            - /placeholder: 例如 北京市海淀区
+            - text: Tiananmen, Beijing
+        - generic [ref=e431]:
+          - generic [ref=e432]: 工作/学校地点
+          - textbox "工作/学校地点" [ref=e433]:
+            - /placeholder: 例如 北京市海淀区
+            - text: Peking University, Beijing
+        - generic [ref=e434]:
+          - generic [ref=e435]: 起床时间
+          - textbox "起床时间" [ref=e436]:
+            - /placeholder: 07:30
+            - text: 07:30
+        - generic [ref=e437]:
+          - generic [ref=e438]: 睡觉时间
+          - textbox "睡觉时间" [ref=e439]:
+            - /placeholder: 07:30
+            - text: 23:30
+      - button "保存资料" [ref=e441] [cursor=pointer]
+    - generic [ref=e442]:
+      - generic [ref=e443]:
+        - img [ref=e444]
+        - generic [ref=e446]:
+          - paragraph [ref=e447]: Google Calendar
+          - generic [ref=e449]: 未连接
+      - generic [ref=e450]:
+        - button "连接" [ref=e451] [cursor=pointer]
+        - button "同步" [disabled] [ref=e452]
+    - generic [ref=e453]:
+      - paragraph [ref=e454]: 天气与通勤
+      - generic [ref=e455]:
+        - generic [ref=e456]:
+          - paragraph [ref=e457]: 天气
+          - generic [ref=e458]:
+            - generic [ref=e459]:
+              - generic [ref=e460]: 19°
+              - generic [ref=e461]: 体感 18°
+            - paragraph [ref=e462]: 晴
+            - paragraph [ref=e463]: 116.397463,39.909187 · 湿度 32% · 风力 1
+        - generic [ref=e464]:
+          - paragraph [ref=e465]: 通勤
+          - generic [ref=e466]:
+            - generic [ref=e467]:
+              - generic [ref=e468]: 44.1min
+              - generic [ref=e469]: 20.01 km
+            - paragraph [ref=e470]: 116.397463,39.909187 → 116.310918,39.992873
+            - paragraph [ref=e471]: 方式：driving
+  - navigation [ref=e15]:
+    - button "日历" [ref=e16] [cursor=pointer]:
+      - img [ref=e18]
+      - text: 日历
+    - button "任务" [ref=e20] [cursor=pointer]:
+      - img [ref=e21]
+      - text: 任务
+    - button "助手" [ref=e23] [cursor=pointer]:
+      - img [ref=e24]
+      - text: 助手
+    - button "设置" [active] [ref=e26] [cursor=pointer]:
+      - img [ref=e27]
+      - text: 设置

@@ -1,0 +1,84 @@
+- generic [ref=e3]:
+  - text:  
+  - generic [ref=e4]:
+    - banner [ref=e5]:
+      - generic [ref=e6]:
+        - img [ref=e8]
+        - generic [ref=e10]: 日常工作台
+      - button "EN" [ref=e12] [cursor=pointer]
+    - generic [ref=e474]:
+      - generic [ref=e475]:
+        - generic [ref=e477]:
+          - img [ref=e479]
+          - generic [ref=e481]:
+            - paragraph [ref=e482]: Daily Copilot
+            - paragraph [ref=e483]: 当前会话
+        - generic [ref=e484]:
+          - combobox [ref=e485]:
+            - option "继续任务 review thesis notes · 04/28 11:02" [selected]
+            - option "点上政治课 · 04/28 11:00"
+            - option "我要整理毕设论文 · 04/18 14:44"
+            - option "点我要尝试配置CKN工作流并生成图片进行投稿 · 04/18 09:25"
+            - option "告诉我你现在能调用的工具 · 04/03 17:55"
+            - option "New chat · 03/26 02:02"
+            - option "New chat · 03/25 15:35"
+            - option "New chat · 03/25 15:34"
+            - option "New chat · 03/25 15:33"
+            - option "New chat · 03/25 15:32"
+            - option "New chat · 03/25 15:24"
+          - button "新对话" [ref=e486] [cursor=pointer]
+        - generic [ref=e487]:
+          - button "清空消息" [ref=e488] [cursor=pointer]
+          - button "归档会话" [ref=e489] [cursor=pointer]
+      - generic [ref=e490]:
+        - paragraph [ref=e493]: 继续安排任务 review thesis notes
+        - generic [ref=e494]:
+          - img [ref=e496]
+          - generic [ref=e500]:
+            - paragraph [ref=e501]: 好的，我可以为您安排时间继续“review thesis notes”任务。您希望安排在今天（4月19日）的什么时间？例如，我可以建议：
+            - list [ref=e502]:
+              - listitem [ref=e503]: 09:00–10:00 专注于“review thesis notes”
+        - paragraph [ref=e506]: 继续安排任务 完成邮件测试
+        - generic [ref=e507]:
+          - img [ref=e509]
+          - paragraph [ref=e514]: "你当前最值得继续推进的是“review thesis notes”，已完成 0 分钟，还剩 未知 分钟。 我建议下一步这样排：Nearby break option: 海棠屋：04-28 07:30-08:00；Suggested slot for review thesis notes：04-28 07:30-08:30；Current weather check：04-28 11:01-11:31。"
+        - paragraph [ref=e517]: 按这个安排执行
+        - generic [ref=e518]:
+          - img [ref=e520]
+          - paragraph [ref=e525]: 好的，我已经按刚才确认的计划落成日程。
+        - generic [ref=e526]:
+          - img [ref=e528]
+          - generic [ref=e532]:
+            - paragraph [ref=e533]: Task Follow-up · 22：
+            - list [ref=e534]:
+              - listitem [ref=e535]: Suggested slot for 完成邮件测试：04-28 19:00-20:00
+              - listitem [ref=e536]:
+                - text: 完成邮件测试：Status scheduled. Completed 0 min, remaining n/a min.
+                - text: 你可以直接点操作，或回复“现在进展如何，接下来怎么安排”。
+        - generic [ref=e537]:
+          - img [ref=e539]
+          - generic [ref=e543]:
+            - paragraph [ref=e544]: Task Follow-up · 3：
+            - list [ref=e545]:
+              - listitem [ref=e546]: Suggested slot for review thesis notes：04-28 08:30-09:30
+              - listitem [ref=e547]:
+                - text: review thesis notes：Status scheduled. Completed 0 min, remaining n/a min.
+                - text: 你可以直接点操作，或回复“现在进展如何，接下来怎么安排”。
+      - generic [ref=e548]:
+        - generic [ref=e549]:
+          - textbox "输入你想安排的事情、任务或问题…" [ref=e550]
+          - button "发送" [disabled] [ref=e551]
+        - paragraph [ref=e552]: 按 Ctrl+Enter 发送
+    - navigation [ref=e15]:
+      - button "日历" [ref=e16] [cursor=pointer]:
+        - img [ref=e18]
+        - text: 日历
+      - button "任务" [ref=e20] [cursor=pointer]:
+        - img [ref=e21]
+        - text: 任务
+      - button "助手" [active] [ref=e23] [cursor=pointer]:
+        - img [ref=e24]
+        - text: 助手
+      - button "设置" [ref=e26] [cursor=pointer]:
+        - img [ref=e27]
+        - text: 设置

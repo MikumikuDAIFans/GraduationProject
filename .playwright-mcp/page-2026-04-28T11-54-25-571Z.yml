@@ -1,0 +1,62 @@
+- generic [ref=e3]:
+  - text:  
+  - generic [ref=e4]:
+    - banner [ref=e5]:
+      - generic [ref=e6]:
+        - img [ref=e8]
+        - generic [ref=e10]: 日常工作台
+      - button "EN" [ref=e12] [cursor=pointer]
+    - generic [ref=e605]:
+      - generic [ref=e607]:
+        - heading "任务" [level=2] [ref=e608]
+        - generic [ref=e609]: 4 待处理
+      - generic [ref=e611]:
+        - generic [ref=e613]:
+          - generic [ref=e614]:
+            - generic [ref=e615]:
+              - paragraph [ref=e616]: review thesis notes
+              - generic [ref=e617]: 已安排
+            - generic [ref=e619]: 60 min scheduled
+          - generic [ref=e622]:
+            - button "继续规划" [ref=e623] [cursor=pointer]
+            - button "删除" [ref=e624] [cursor=pointer]
+        - generic [ref=e626]:
+          - generic [ref=e627]:
+            - generic [ref=e628]:
+              - paragraph [ref=e629]: 完成邮件测试
+              - generic [ref=e630]: 已安排
+            - generic [ref=e632]: 60 min scheduled
+          - generic [ref=e635]:
+            - button "继续规划" [ref=e636] [cursor=pointer]
+            - button "删除" [ref=e637] [cursor=pointer]
+        - generic [ref=e639]:
+          - generic [ref=e640]:
+            - generic [ref=e641]:
+              - paragraph [ref=e642]: 一个任务：最终验收链路测试
+              - generic [ref=e643]: pending
+            - generic [ref=e645]: 剩余 30 分钟
+          - generic [ref=e646]:
+            - button "继续规划" [ref=e647] [cursor=pointer]
+            - button "删除" [ref=e648] [cursor=pointer]
+        - generic [ref=e650]:
+          - generic [ref=e651]:
+            - generic [ref=e652]:
+              - paragraph [ref=e653]: 一个任务：最终验收链路测试二
+              - generic [ref=e654]: pending
+            - generic [ref=e656]: 剩余 30 分钟
+          - generic [ref=e657]:
+            - button "继续规划" [ref=e658] [cursor=pointer]
+            - button "删除" [ref=e659] [cursor=pointer]
+    - navigation [ref=e15]:
+      - button "日历" [ref=e16] [cursor=pointer]:
+        - img [ref=e18]
+        - text: 日历
+      - button "任务" [active] [ref=e20] [cursor=pointer]:
+        - img [ref=e21]
+        - text: 任务
+      - button "助手" [ref=e23] [cursor=pointer]:
+        - img [ref=e24]
+        - text: 助手
+      - button "设置" [ref=e26] [cursor=pointer]:
+        - img [ref=e27]
+        - text: 设置

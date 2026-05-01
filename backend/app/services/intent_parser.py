@@ -80,14 +80,18 @@ class EnhancedIntentParser:
         return base_result
 
     async def _basic_parse(self, message: str) -> ParsedIntent:
-        """基础意图解析（无习惯增强）"""
-        # 简化版：基于规则的解析
-        # 实际应用中应该调用 LLM
-        
-        result = ParsedIntent(intent="create_event", confidence=0.6)
+        """基础意图解析，优先走规则，必要时再使用 LLM 兜底。"""
+        rule_result = self._rule_based_parse(message)
+        if rule_result.intent != "unknown":
+            return rule_result
+        if not self.llm:
+            return rule_result
+        return await self._llm_parse(message, fallback=rule_result)
+
+    def _rule_based_parse(self, message: str) -> ParsedIntent:
+        result = ParsedIntent(intent="unknown", confidence=0.0, raw_message=message)
         msg_lower = message.lower()
-        
-        # 活动时间词提取
+
         time_keywords = {
             "早上": ("morning", "09:00"),
             "上午": ("morning", "10:00"),
@@ -97,14 +101,13 @@ class EnhancedIntentParser:
             "傍晚": ("evening", "17:30"),
             "深夜": ("night", "23:00"),
         }
-        
+
         for keyword, (context, default_time) in time_keywords.items():
             if keyword in msg_lower:
                 result.time_context = context
                 result.start_time = default_time
                 break
-        
-        # 活动提取（简化版）
+
         activity_keywords = [
             "做饭", "买菜", "吃饭", "开会", "运动", "跑步", "健身",
             "学习", "阅读", "写作", "购物", "打扫", "洗衣",
@@ -113,23 +116,57 @@ class EnhancedIntentParser:
             if keyword in msg_lower:
                 result.activity = keyword
                 break
-        
-        # 地点提取
-        location_keywords = ["家", "公司", "学校", "超市", "健身房", "公园"]
+
+        location_keywords = ["家", "公司", "学校", "超市", "健身房", "公园", "餐厅"]
         for keyword in location_keywords:
             if keyword in msg_lower:
                 result.location = keyword
                 break
-        
-        # 意图分类
-        if any(w in msg_lower for w in ["提醒", "提醒我", "别忘了"]):
+
+        if any(word in msg_lower for word in ["提醒", "提醒我", "别忘了"]):
             result.intent = "create_reminder"
-        elif any(w in msg_lower for w in ["任务", "待办", "TODO"]):
+            result.confidence = 0.8
+        elif any(word in msg_lower for word in ["任务", "待办", "todo"]):
             result.intent = "create_task"
-        elif any(w in msg_lower for w in ["查询", "查看", "有什么"]):
+            result.confidence = 0.8
+        elif any(word in msg_lower for word in ["查询", "查看", "有什么", "日程", "安排"]):
             result.intent = "query_events"
-        
+            result.confidence = 0.75
+        elif result.activity or result.start_time or result.location:
+            result.intent = "create_event"
+            result.confidence = 0.65
+
         return result
+
+    async def _llm_parse(self, message: str, *, fallback: ParsedIntent) -> ParsedIntent:
+        from app.workflow.prompts import INTENT_DETECTION_TEMPLATE
+        prompt = INTENT_DETECTION_TEMPLATE.format(user_message=message)
+
+        try:
+            response_text = await self.llm.generate_text(prompt)
+            import re
+
+            json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
+            if not json_match:
+                logger.warning(f"Failed to extract JSON from LLM response: {response_text}")
+                return fallback
+
+            data = json.loads(json_match.group(0))
+            slots = data.get("slots", {})
+
+            return ParsedIntent(
+                intent=data.get("intent", "unknown"),
+                activity=slots.get("title") or slots.get("activity"),
+                time_context=slots.get("time_context") or slots.get("start_time"),
+                start_time=slots.get("start_time"),
+                end_time=slots.get("end_time"),
+                location=slots.get("location"),
+                confidence=data.get("confidence", 0.5),
+                raw_message=message,
+            )
+        except Exception as exc:
+            logger.error(f"LLM intent parsing failed: {exc}")
+            return fallback
 
     async def extract_slots(self, message: str, required_slots: list[str]) -> dict:
         """从消息中提取槽位值"""

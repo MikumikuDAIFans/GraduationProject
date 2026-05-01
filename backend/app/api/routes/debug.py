@@ -16,6 +16,9 @@ from loguru import logger
 from app.core.config import get_settings
 from app.core.metrics import metrics_snapshot
 from app.db.session import get_sessionmaker
+from app.repositories.assistant_proposals import ACTIVE_PROPOSAL_STATUSES, AssistantProposalRepository
+from app.repositories.assistant_signals import AssistantSignalRepository
+from app.services.assistant_proposal_manager import AssistantProposalManager
 from app.workflow.visualization import generate_node_responsibility_table, generate_workflow_diagram
 
 router = APIRouter(prefix="/debug", tags=["debug"])
@@ -161,6 +164,65 @@ async def get_workflow_diagram() -> dict[str, str]:
     return {
         "format": "mermaid",
         "diagram": generate_workflow_diagram(include_react=settings.enable_react_subgraph),
+    }
+
+
+@router.get("/assistant/proposals")
+async def get_assistant_proposal_debug(user_id: str | None = None, dedup_key: str | None = None) -> dict[str, Any]:
+    """Return proposal lifecycle diagnostics for the debug console."""
+    session_factory = get_sessionmaker()
+    proposal_repository = AssistantProposalRepository(session_factory)
+    signal_repository = AssistantSignalRepository(session_factory)
+    proposal_manager = AssistantProposalManager(proposal_repository, execute_on_confirm=False)
+
+    expired = await proposal_manager.expire_due_proposals(user_id=user_id, limit=100)
+    status_counts = await proposal_repository.count_by_status(user_id=user_id)
+    active_count = sum(status_counts.get(status, 0) for status in ACTIVE_PROPOSAL_STATUSES)
+    recent = await proposal_repository.list_recent_activity(user_id=user_id, limit=20)
+    failed = await proposal_repository.list_execution_failures(user_id=user_id, limit=20)
+
+    dedup: dict[str, Any] | None = None
+    if dedup_key:
+        proposal_hits = await proposal_repository.list_by_dedup_key(user_id=user_id or "local-user", dedup_key=dedup_key)
+        signal_hit = await signal_repository.get_active_by_dedup_key(user_id=user_id or "local-user", dedup_key=dedup_key)
+        dedup = {
+            "dedup_key": dedup_key,
+            "proposal_ids": [proposal.id for proposal in proposal_hits],
+            "active_signal_id": signal_hit.id if signal_hit else None,
+        }
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "scope": {"user_id": user_id, "dedup_key": dedup_key},
+        "expired_now": len(expired),
+        "status_counts": status_counts,
+        "active_statuses": list(ACTIVE_PROPOSAL_STATUSES),
+        "active_count": active_count,
+        "execution_failed_count": status_counts.get("execution_failed", 0),
+        "recent_transitions": [
+            {
+                "id": proposal.id,
+                "user_id": proposal.user_id,
+                "status": proposal.status,
+                "proposal_type": proposal.proposal_type,
+                "dedup_key": proposal.dedup_key,
+                "summary": proposal.summary,
+                "execution_error": proposal.execution_error,
+                "selected_option_id": proposal.selected_option_id,
+                "updated_at": proposal.updated_at.isoformat() if proposal.updated_at else None,
+            }
+            for proposal in recent
+        ],
+        "recent_execution_failures": [
+            {
+                "id": proposal.id,
+                "summary": proposal.summary,
+                "execution_error": proposal.execution_error,
+                "updated_at": proposal.updated_at.isoformat() if proposal.updated_at else None,
+            }
+            for proposal in failed
+        ],
+        "dedup": dedup,
     }
 
 

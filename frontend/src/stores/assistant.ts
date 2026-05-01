@@ -69,8 +69,58 @@ export interface AssistantSession {
   context_json?: Record<string, unknown> | null;
   created_at?: string | null;
   updated_at?: string | null;
-  messages: AssistantMessage[];
+  messages?: AssistantMessage[];
 }
+
+export interface AssistantProposalOption {
+  option_id: string;
+  title: string;
+  summary?: string | null;
+  actions?: Array<Record<string, unknown>>;
+  rationale?: string | null;
+}
+
+export interface AssistantProposal {
+  id: number;
+  user_id: string;
+  session_id?: number | null;
+  thread_state_id?: number | null;
+  proposal_type: string;
+  trigger_type: string;
+  status: string;
+  dedup_key?: string | null;
+  priority: number;
+  summary: string;
+  payload_json: {
+    options?: AssistantProposalOption[];
+    execution?: Record<string, unknown>;
+    [key: string]: unknown;
+  };
+  recommended_option_id?: string | null;
+  selected_option_id?: string | null;
+  is_time_sensitive: boolean;
+  related_task_id?: number | null;
+  related_event_id?: number | null;
+  source_signal_id?: number | null;
+  supersedes_proposal_id?: number | null;
+  expires_at?: string | null;
+  followup_after?: string | null;
+  confirmed_at?: string | null;
+  execution_started_at?: string | null;
+  execution_error?: string | null;
+  executed_at?: string | null;
+  archived_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+const ACTIVE_PROPOSAL_STATUSES = [
+  "pending",
+  "accepted",
+  "execution_pending",
+  "execution_failed",
+  "executed",
+];
 
 export const useAssistantStore = defineStore("assistant", {
   state: () => ({
@@ -78,10 +128,13 @@ export const useAssistantStore = defineStore("assistant", {
     messages: [] as AssistantMessage[],
     lastAssistantActions: [] as AssistantAction[],
     assistantSessions: [] as AssistantSession[],
+    assistantProposals: [] as AssistantProposal[],
     loadingAssistantSessions: false,
+    loadingAssistantProposals: false,
     creatingAssistantSession: false,
     archivingAssistantSession: false,
     clearingAssistantSession: false,
+    proposalActionBusyId: null as number | null,
     sending: false,
     _cacheTimestamps: {} as Record<string, number>,
   }),
@@ -104,6 +157,32 @@ export const useAssistantStore = defineStore("assistant", {
       return `${wsProtocol}//${httpUrl.host}${path}`;
     },
 
+    upsertAssistantSession(session: AssistantSession) {
+      const next = [...this.assistantSessions];
+      const index = next.findIndex((item) => item.id === session.id);
+      if (index >= 0) {
+        next[index] = { ...next[index], ...session };
+      } else {
+        next.unshift(session);
+      }
+      this.assistantSessions = next;
+    },
+
+    upsertAssistantProposal(proposal: AssistantProposal) {
+      const next = [...this.assistantProposals];
+      const index = next.findIndex((item) => item.id === proposal.id);
+      if (index >= 0) {
+        next[index] = { ...next[index], ...proposal };
+      } else {
+        next.unshift(proposal);
+      }
+      this.assistantProposals = next.sort((left, right) => {
+        const leftTime = Date.parse(left.updated_at ?? left.created_at ?? "") || 0;
+        const rightTime = Date.parse(right.updated_at ?? right.created_at ?? "") || 0;
+        return rightTime - leftTime;
+      });
+    },
+
     async fetchAssistantSessions() {
       this.loadingAssistantSessions = true;
       try {
@@ -123,13 +202,82 @@ export const useAssistantStore = defineStore("assistant", {
           params: { include_inbox: false },
         });
         this.sessionId = response.data.session.id;
-        this.messages = response.data.session.messages;
-        const existing = this.assistantSessions.find((item) => item.id === response.data.session.id);
-        if (!existing) {
-          this.assistantSessions = [response.data.session, ...this.assistantSessions];
-        }
+        this.messages = response.data.session.messages ?? [];
+        this.upsertAssistantSession({
+          ...response.data.session,
+          messages: undefined,
+        });
       } catch (error) {
         console.error("Failed to fetch current assistant session:", error);
+      }
+    },
+
+    async fetchAssistantProposals(statuses = ACTIVE_PROPOSAL_STATUSES) {
+      this.loadingAssistantProposals = true;
+      try {
+        const params = new URLSearchParams();
+        statuses.forEach((status) => params.append("status", status));
+        params.set("limit", "20");
+        const response = await api.get<{ items: AssistantProposal[]; total: number }>("/assistant/proposals", {
+          params,
+        });
+        this.assistantProposals = response.data.items;
+      } catch (error) {
+        console.error("Failed to fetch assistant proposals:", error);
+      } finally {
+        this.loadingAssistantProposals = false;
+      }
+    },
+
+    async confirmAssistantProposal(proposalId: number, optionId: string) {
+      this.proposalActionBusyId = proposalId;
+      try {
+        const response = await api.post<AssistantProposal>(`/assistant/proposals/${proposalId}/confirm`, {
+          option_id: optionId,
+        });
+        this.upsertAssistantProposal(response.data);
+        await this.fetchAssistantProposals();
+        return response.data;
+      } finally {
+        this.proposalActionBusyId = null;
+      }
+    },
+
+    async rejectAssistantProposal(proposalId: number) {
+      this.proposalActionBusyId = proposalId;
+      try {
+        const response = await api.post<AssistantProposal>(`/assistant/proposals/${proposalId}/reject`);
+        this.upsertAssistantProposal(response.data);
+        await this.fetchAssistantProposals();
+        return response.data;
+      } finally {
+        this.proposalActionBusyId = null;
+      }
+    },
+
+    async reviseAssistantProposal(proposalId: number, message: string) {
+      this.proposalActionBusyId = proposalId;
+      try {
+        const response = await api.post<AssistantProposal>(`/assistant/proposals/${proposalId}/revise`, {
+          message,
+        });
+        this.upsertAssistantProposal(response.data);
+        await this.fetchAssistantProposals();
+        return response.data;
+      } finally {
+        this.proposalActionBusyId = null;
+      }
+    },
+
+    async retryAssistantProposal(proposalId: number) {
+      this.proposalActionBusyId = proposalId;
+      try {
+        const response = await api.post<AssistantProposal>(`/assistant/proposals/${proposalId}/retry`);
+        this.upsertAssistantProposal(response.data);
+        await this.fetchAssistantProposals();
+        return response.data;
+      } finally {
+        this.proposalActionBusyId = null;
       }
     },
 
@@ -137,10 +285,11 @@ export const useAssistantStore = defineStore("assistant", {
       try {
         const response = await api.get<AssistantSession>(`/assistant/sessions/${sessionId}`);
         this.sessionId = response.data.id;
-        this.messages = response.data.messages;
-        this.assistantSessions = this.assistantSessions.map((item) =>
-          item.id === response.data.id ? response.data : item,
-        );
+        this.messages = response.data.messages ?? [];
+        this.upsertAssistantSession({
+          ...response.data,
+          messages: undefined,
+        });
       } catch (error) {
         console.error("Failed to fetch session:", error);
       }
@@ -151,8 +300,11 @@ export const useAssistantStore = defineStore("assistant", {
       try {
         const response = await api.post<AssistantSession>("/assistant/sessions", { title });
         this.sessionId = response.data.id;
-        this.messages = response.data.messages;
-        this.assistantSessions = [response.data, ...this.assistantSessions.filter((item) => item.id !== response.data.id)];
+        this.messages = response.data.messages ?? [];
+        this.upsertAssistantSession({
+          ...response.data,
+          messages: undefined,
+        });
         this.lastAssistantActions = [];
       } catch (error) {
         throw error;

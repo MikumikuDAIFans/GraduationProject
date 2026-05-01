@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException, status
 
 from app.api.schemas import EventCreate, EventRead, EventUpdate
+from app.core.config import get_settings
 from app.db.session import get_sessionmaker
 from app.repositories.events import EventRepository
 from app.repositories.profiles import UserProfileRepository
@@ -20,6 +22,8 @@ class EventService:
     """Event CRUD service."""
 
     def __init__(self) -> None:
+        self.settings = get_settings()
+        self.app_timezone = ZoneInfo(self.settings.app_timezone)
         session_factory = get_sessionmaker()
         self.repository = EventRepository(session_factory)
         self.profile_repository = UserProfileRepository(session_factory)
@@ -29,12 +33,16 @@ class EventService:
         self.task_service = TaskService()
 
     async def list_events(self, user_id: str, start=None, end=None) -> list[EventRead]:
+        start_dt = self._normalize_datetime(start)
+        end_dt = self._normalize_datetime(end)
         items = await self.repository.list_events(user_id=user_id)
         filtered = []
         for item in items:
-            if start is not None and item.end_time is not None and item.end_time < start:
+            item_start = self._normalize_datetime(item.start_time)
+            item_end = self._normalize_datetime(item.end_time)
+            if start_dt is not None and item_end is not None and item_end < start_dt:
                 continue
-            if end is not None and item.start_time is not None and item.start_time > end:
+            if end_dt is not None and item_start is not None and item_start > end_dt:
                 continue
             filtered.append(EventRead.model_validate(item))
         return filtered
@@ -70,8 +78,13 @@ class EventService:
     ) -> list[EventRead]:
         """Detect event conflicts, accounting for buffer windows on both sides."""
         all_events = await self.repository.list_events(user_id=user_id)
-        new_effective_start = start_time - timedelta(minutes=buffer_before)
-        new_effective_end = end_time + timedelta(minutes=buffer_after)
+        normalized_start = self._normalize_datetime(start_time)
+        normalized_end = self._normalize_datetime(end_time)
+        if normalized_start is None or normalized_end is None:
+            return []
+
+        new_effective_start = normalized_start - timedelta(minutes=buffer_before)
+        new_effective_end = normalized_end + timedelta(minutes=buffer_after)
 
         conflicts: list[EventRead] = []
         for event in all_events:
@@ -80,8 +93,13 @@ class EventService:
             if event.start_time is None or event.end_time is None:
                 continue
 
-            existing_effective_start = event.start_time - timedelta(minutes=(event.buffer_before or 0))
-            existing_effective_end = event.end_time + timedelta(minutes=(event.buffer_after or 0))
+            existing_start = self._normalize_datetime(event.start_time)
+            existing_end = self._normalize_datetime(event.end_time)
+            if existing_start is None or existing_end is None:
+                continue
+
+            existing_effective_start = existing_start - timedelta(minutes=(event.buffer_before or 0))
+            existing_effective_end = existing_end + timedelta(minutes=(event.buffer_after or 0))
 
             if new_effective_start < existing_effective_end and new_effective_end > existing_effective_start:
                 conflicts.append(EventRead.model_validate(event))
@@ -139,14 +157,13 @@ class EventService:
 
     async def create_event(self, user_id: str, payload: EventCreate) -> EventRead:
         data = await self._enrich_event_payload(user_id=user_id, payload=payload.model_dump())
+        data = self._normalize_event_payload_datetimes(data)
         conflict_events: list[EventRead] = []
         if data.get("start_time") is not None and data.get("end_time") is not None:
-            start_dt = data["start_time"] if isinstance(data["start_time"], datetime) else datetime.fromisoformat(str(data["start_time"]))
-            end_dt = data["end_time"] if isinstance(data["end_time"], datetime) else datetime.fromisoformat(str(data["end_time"]))
             conflict_events = await self.detect_conflicts(
                 user_id=user_id,
-                start_time=start_dt,
-                end_time=end_dt,
+                start_time=data["start_time"],
+                end_time=data["end_time"],
                 buffer_before=data.get("buffer_before") or 0,
                 buffer_after=data.get("buffer_after") or 0,
             )
@@ -212,14 +229,13 @@ class EventService:
         }
         merged.update(payload.model_dump(exclude_none=True))
         merged = await self._enrich_event_payload(user_id=user_id, payload=merged)
+        merged = self._normalize_event_payload_datetimes(merged)
         conflict_events: list[EventRead] = []
         if merged.get("start_time") is not None and merged.get("end_time") is not None:
-            start_dt = merged["start_time"] if isinstance(merged["start_time"], datetime) else datetime.fromisoformat(str(merged["start_time"]))
-            end_dt = merged["end_time"] if isinstance(merged["end_time"], datetime) else datetime.fromisoformat(str(merged["end_time"]))
             conflict_events = await self.detect_conflicts(
                 user_id=user_id,
-                start_time=start_dt,
-                end_time=end_dt,
+                start_time=merged["start_time"],
+                end_time=merged["end_time"],
                 buffer_before=merged.get("buffer_before") or 0,
                 buffer_after=merged.get("buffer_after") or 0,
                 exclude_event_id=event_id,
@@ -320,12 +336,29 @@ class EventService:
         except Exception:
             return payload
 
-        start_dt = start_time if isinstance(start_time, datetime) else datetime.fromisoformat(str(start_time))
+        start_dt = self._normalize_datetime(start_time)
+        if start_dt is None:
+            return payload
         departure_dt = start_dt - timedelta(seconds=travel.duration_seconds)
         enriched["travel_mode"] = travel.mode
         enriched["travel_duration_minutes"] = int(round(travel.duration_minutes))
-        enriched["departure_time"] = departure_dt
+        enriched["departure_time"] = self._normalize_datetime(departure_dt)
         return enriched
+
+    def _normalize_event_payload_datetimes(self, payload: dict) -> dict:
+        normalized = dict(payload)
+        for field in ("start_time", "end_time", "departure_time", "last_synced_at"):
+            if normalized.get(field) is not None:
+                normalized[field] = self._normalize_datetime(normalized[field])
+        return normalized
+
+    def _normalize_datetime(self, value: datetime | str | None) -> datetime | None:
+        if value is None:
+            return None
+        parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=None)
+        return parsed.astimezone(self.app_timezone).replace(tzinfo=None)
 
     async def _maybe_create_task_progress_reminder(self, *, user_id: str, event, previous_status: str | None, task_read) -> None:
         if event.event_type != "focus_block" or event.linked_task_id is None or task_read is None:

@@ -100,26 +100,40 @@ class WorkflowNodes:
                     extracted_slots["activity"] = (assistant.text_runtime._extract_requested_items(user_message) or [None])[0]
                     extracted_slots["time_range"] = "planning_window"
 
-                confidence = 0.85 if intent != "unknown" else 0.35
-                state["intent"] = intent
-                state["extracted_slots"] = extracted_slots
-                state["confidence"] = confidence
-                return state
+                # 如果规则引擎识别出了意图，合并结果
+                if intent != "unknown":
+                    state["intent"] = intent
+                    # 合并槽位，优先保留规则引擎提取的
+                    if "extracted_slots" not in state: state["extracted_slots"] = {}
+                    for k, v in extracted_slots.items():
+                        if v: state["extracted_slots"][k] = v
+                    state["confidence"] = 0.85
+                    return state
 
+            # 规则引擎没识别出来时，再启用增强解析器和 LLM 兜底。
             from app.services.intent_parser import EnhancedIntentParser
 
-            parser = EnhancedIntentParser()
+            parser = EnhancedIntentParser(
+                habit_retriever=getattr(assistant, "habit_retriever", None) if assistant else None,
+                llm_client=getattr(assistant, "gemini", None) if assistant else None,
+            )
             result = await parser.parse_with_context(user_message, user_id)
-            extracted_slots = {
-                "activity": result.activity,
-                "location": result.location,
-                "start_time": result.start_time,
-                "end_time": result.end_time,
-                "time_context": result.time_context,
-            }
             state["intent"] = result.intent
-            state["extracted_slots"] = {k: v for k, v in extracted_slots.items() if v is not None}
+            state["extracted_slots"] = {
+                k: v
+                for k, v in {
+                    "activity": result.activity,
+                    "location": result.location,
+                    "start_time": result.start_time,
+                    "end_time": result.end_time,
+                    "time_context": result.time_context,
+                }.items()
+                if v is not None
+            }
+            if result.intent in {"create_event", "event_context_advice"} and assistant is not None:
+                state["extracted_slots"]["new_event"] = assistant.text_runtime._build_rule_based_event_payload(user_message)
             state["confidence"] = result.confidence
+
         except Exception as exc:
             logger.error("Intent parsing failed: %s", exc)
             state["intent"] = "unknown"

@@ -5,6 +5,9 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.api.routes.assistant import router as assistant_router
+from app.api.routes.assistant_memory import router as assistant_memory_router
+from app.api.routes.assistant_proposals import router as assistant_proposals_router
+from app.api.routes.assistant_signals import router as assistant_signals_router
 from app.api.routes.context import router as context_router
 from app.api.routes.debug import router as debug_router
 from app.api.routes.events import router as events_router
@@ -18,6 +21,9 @@ from app.api.routes.tasks import router as tasks_router
 api_router = APIRouter()
 api_router.include_router(health_router)
 api_router.include_router(assistant_router)
+api_router.include_router(assistant_memory_router)
+api_router.include_router(assistant_proposals_router)
+api_router.include_router(assistant_signals_router)
 api_router.include_router(context_router)
 api_router.include_router(debug_router)
 api_router.include_router(events_router)
