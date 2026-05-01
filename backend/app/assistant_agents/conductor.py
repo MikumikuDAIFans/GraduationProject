@@ -66,6 +66,7 @@ class AssistantConductor:
                 understanding=understanding,
                 trace=trace,
                 mode=mode,
+                metadata=state.metadata,
             )
 
         if understanding.requires_clarification and not understanding.can_propose_without_clarification:
@@ -77,10 +78,21 @@ class AssistantConductor:
                 understanding=understanding,
                 trace=trace,
                 mode=mode,
+                metadata=state.metadata,
             )
 
         if understanding.can_propose_without_clarification:
             state = await self._run_specialist("planning", context, state, trace)
+            if state.clarification_question:
+                state = await self._run_specialist("negotiation", context, state, trace)
+                return ConductorResult(
+                    decision="clarification",
+                    reply=state.reply,
+                    understanding=understanding,
+                    trace=trace,
+                    mode=mode,
+                    metadata=state.metadata,
+                )
             if state.proposals:
                 state = await self._run_specialist("proposal_manager", context, state, trace)
                 state = await self._run_specialist("negotiation", context, state, trace)
@@ -91,6 +103,7 @@ class AssistantConductor:
                     understanding=understanding,
                     trace=trace,
                     mode=mode,
+                    metadata=state.metadata,
                 )
 
         logger.bind(component="assistant.conductor").debug(
@@ -103,6 +116,7 @@ class AssistantConductor:
             trace=trace,
             mode=mode,
             unsupported_reason="no_supported_specialist_output",
+            metadata=state.metadata,
         )
 
     async def _run_specialist(

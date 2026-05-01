@@ -15,6 +15,18 @@ class TaskOrEventClarifierSpecialist:
             return state
 
         if understanding.goal_type == "event":
+            ambiguity_set = set(understanding.ambiguities)
+            if "target_event_ambiguous" in ambiguity_set:
+                candidates = understanding.slots.get("candidate_titles") or []
+                suffix = f"我看到可能相关的是：{'、'.join(candidates)}。" if candidates else ""
+                state.clarification_question = f"我还不能确定你要操作哪一个日程。{suffix}请告诉我更具体的日程名称或时间。"
+                return state
+            if "target_event_not_found" in ambiguity_set:
+                state.clarification_question = "我没有在当前日程里找到你要操作的目标。请告诉我更具体的日程名称、时间或地点。"
+                return state
+            if "reschedule_time_missing" in ambiguity_set:
+                state.clarification_question = "你想调整这个日程，但还缺新的时间。请告诉我希望改到哪天几点，或者给一个可选时间段。"
+                return state
             if "dating_request_too_vague" in understanding.ambiguities:
                 state.clarification_question = (
                     "这更像一个还没成形的日程想法。你希望我把它当成一次性日程来安排，"
@@ -33,6 +45,15 @@ class TaskOrEventClarifierSpecialist:
             return state
 
         if understanding.goal_type == "task":
+            ambiguity_set = set(understanding.ambiguities)
+            if "target_task_ambiguous" in ambiguity_set:
+                candidates = understanding.slots.get("candidate_titles") or []
+                suffix = f"我看到可能相关的是：{'、'.join(candidates)}。" if candidates else ""
+                state.clarification_question = f"我还不能确定你要操作哪一个任务。{suffix}请告诉我更具体的任务名称。"
+                return state
+            if "target_task_not_found" in ambiguity_set:
+                state.clarification_question = "我没有在当前任务里找到你要操作的目标。请告诉我更具体的任务名称或截止时间。"
+                return state
             if "generic_study_task" in understanding.ambiguities:
                 state.clarification_question = (
                     "我会把“复习”当成一个需要拆成日程块跟进的任务处理。"

@@ -44,6 +44,20 @@ def _task(task_id: int) -> SimpleNamespace:
     )
 
 
+def _updated_event(event_id: int, payload: dict, *, linked_task_id: int | None = None) -> SimpleNamespace:
+    event = _event(event_id, linked_task_id=linked_task_id)
+    for key, value in payload.items():
+        setattr(event, key, value)
+    return event
+
+
+def _updated_task(task_id: int, payload: dict) -> SimpleNamespace:
+    task = _task(task_id)
+    for key, value in payload.items():
+        setattr(task, key, value)
+    return task
+
+
 def test_action_executor_creates_event() -> None:
     created_payloads: list[dict] = []
 
@@ -158,3 +172,112 @@ def test_action_executor_creates_task_with_linked_events() -> None:
     assert [item["event_type"] for item in created_events] == ["focus_block", "focus_block"]
     assert result["related_task_id"] == 7
     assert result["related_event_id"] == 31
+
+
+def test_action_executor_reschedules_event() -> None:
+    updates: list[dict] = []
+
+    class FakeEventService:
+        async def update_event(self, *, user_id, event_id, payload):
+            updates.append({"event_id": event_id, "payload": payload.model_dump(exclude_none=True)})
+            return _updated_event(event_id, updates[-1]["payload"])
+
+    executor = AssistantActionExecutor(event_service=FakeEventService(), task_service=SimpleNamespace())
+    result = asyncio.run(
+        executor.execute(
+            user_id="local-user",
+            proposal=_proposal(
+                [
+                    {
+                        "type": "reschedule_event",
+                        "payload": {
+                            "event_id": 42,
+                            "update": {
+                                "start_time": "2026-05-02T17:00:00",
+                                "end_time": "2026-05-02T18:00:00",
+                            },
+                        },
+                    }
+                ]
+            ),
+            option_id="A",
+        )
+    )
+
+    assert updates == [
+        {
+            "event_id": 42,
+            "payload": {
+                "start_time": datetime.fromisoformat("2026-05-02T17:00:00"),
+                "end_time": datetime.fromisoformat("2026-05-02T18:00:00"),
+            },
+        }
+    ]
+    assert result["related_event_id"] == 42
+    assert result["actions"][0]["type"] == "reschedule_event"
+
+
+def test_action_executor_cancels_event_by_status_update() -> None:
+    updates: list[dict] = []
+
+    class FakeEventService:
+        async def update_event(self, *, user_id, event_id, payload):
+            updates.append({"event_id": event_id, "payload": payload.model_dump(exclude_none=True)})
+            return _updated_event(event_id, updates[-1]["payload"])
+
+    executor = AssistantActionExecutor(event_service=FakeEventService(), task_service=SimpleNamespace())
+    result = asyncio.run(
+        executor.execute(
+            user_id="local-user",
+            proposal=_proposal([{"type": "cancel_event", "payload": {"event_id": 43}}]),
+            option_id="A",
+        )
+    )
+
+    assert updates == [{"event_id": 43, "payload": {"status": "canceled"}}]
+    assert result["related_event_id"] == 43
+    assert result["actions"][0]["result"]["event"]["status"] == "canceled"
+
+
+def test_action_executor_marks_event_completed() -> None:
+    updates: list[dict] = []
+
+    class FakeEventService:
+        async def update_event(self, *, user_id, event_id, payload):
+            updates.append({"event_id": event_id, "payload": payload.model_dump(exclude_none=True)})
+            return _updated_event(event_id, updates[-1]["payload"])
+
+    executor = AssistantActionExecutor(event_service=FakeEventService(), task_service=SimpleNamespace())
+    result = asyncio.run(
+        executor.execute(
+            user_id="local-user",
+            proposal=_proposal([{"type": "mark_event_completed", "payload": {"event_id": 44}}]),
+            option_id="A",
+        )
+    )
+
+    assert updates == [{"event_id": 44, "payload": {"status": "completed"}}]
+    assert result["related_event_id"] == 44
+    assert result["actions"][0]["result"]["event"]["status"] == "completed"
+
+
+def test_action_executor_marks_task_completed() -> None:
+    updates: list[dict] = []
+
+    class FakeTaskService:
+        async def update_task(self, *, user_id, task_id, payload):
+            updates.append({"task_id": task_id, "payload": payload.model_dump(exclude_none=True)})
+            return _updated_task(task_id, updates[-1]["payload"])
+
+    executor = AssistantActionExecutor(event_service=SimpleNamespace(), task_service=FakeTaskService())
+    result = asyncio.run(
+        executor.execute(
+            user_id="local-user",
+            proposal=_proposal([{"type": "mark_task_completed", "payload": {"task_id": 45}}]),
+            option_id="A",
+        )
+    )
+
+    assert updates == [{"task_id": 45, "payload": {"status": "done"}}]
+    assert result["related_task_id"] == 45
+    assert result["actions"][0]["result"]["task"]["status"] == "done"

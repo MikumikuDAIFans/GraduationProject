@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.schemas import AssistantProposalCreate
+from app.assistant_agents.action_executor import AssistantActionExecutor
 from app.db.base import Base
 from app.repositories.assistant_proposals import AssistantProposalRepository
 from app.services.assistant_proposal_manager import AssistantProposalManager
@@ -28,6 +29,27 @@ class FakeExecutor:
             "actions": [{"type": "create_event", "result": {"kind": "event", "related_event_id": 10}}],
             "related_event_id": 10,
         }
+
+
+class FakeEventUpdateService:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def update_event(self, *, user_id: str, event_id: int, payload):
+        self.calls.append({"user_id": user_id, "event_id": event_id, "payload": payload.model_dump(exclude_none=True)})
+        return type(
+            "EventSnapshot",
+            (),
+            {
+                "id": event_id,
+                "user_id": user_id,
+                "title": "已完成日程",
+                "start_time": None,
+                "end_time": None,
+                "status": "completed",
+                "linked_task_id": None,
+            },
+        )()
 
 
 async def _make_manager(
@@ -217,6 +239,47 @@ def test_execution_failure_is_recorded_and_retry_executes_again(tmp_path: Path) 
             assert retried.status == "executed"
             assert retried.payload_json["execution"]["retry_count"] == 1
             assert len(executor.calls) == 2
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def test_confirm_update_action_executes_once_through_real_executor(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        event_service = FakeEventUpdateService()
+        executor = AssistantActionExecutor(event_service=event_service, task_service=object())
+        manager, engine = await _make_manager(tmp_path, executor=executor)
+        try:
+            proposal = await manager.create_proposal(
+                user_id="local-user",
+                payload=AssistantProposalCreate(
+                    proposal_type="event_status_update",
+                    summary="确认把日程标记为完成",
+                    payload_json={
+                        "options": [
+                            {
+                                "option_id": "A",
+                                "title": "标记完成",
+                                "actions": [{"type": "mark_event_completed", "payload": {"event_id": 88}}],
+                            }
+                        ]
+                    },
+                    recommended_option_id="A",
+                    related_event_id=88,
+                ),
+            )
+
+            confirmed = await manager.confirm_proposal(user_id="local-user", proposal_id=proposal.id, option_id="A")
+            repeated = await manager.confirm_proposal(user_id="local-user", proposal_id=proposal.id, option_id="A")
+
+            assert confirmed.status == "executed"
+            assert repeated.status == "executed"
+            assert confirmed.related_event_id == 88
+            assert confirmed.payload_json["execution"]["result"]["actions"][0]["type"] == "mark_event_completed"
+            assert event_service.calls == [
+                {"user_id": "local-user", "event_id": 88, "payload": {"status": "completed"}}
+            ]
         finally:
             await engine.dispose()
 

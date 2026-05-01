@@ -4,6 +4,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import type {
   AssistantAction,
+  AssistantMemoryCandidate,
   AssistantMessage,
   AssistantProposal,
   AssistantProposalOption,
@@ -16,23 +17,29 @@ const props = defineProps<{
   sending: boolean;
   lastAssistantActions: AssistantAction[];
   assistantProposals: AssistantProposal[];
+  assistantMemoryCandidates: AssistantMemoryCandidate[];
   assistantSessions: AssistantSession[];
   activeSessionId: number | null;
   loadingProposals: boolean;
+  loadingMemoryCandidates: boolean;
   creatingSession: boolean;
   archivingSession: boolean;
   clearingSession: boolean;
   proposalBusyId: number | null;
+  memoryCandidateBusyId: number | null;
 }>();
 
 const emit = defineEmits<{
   send: [message: string];
   focusTask: [taskId: number];
   fetchProposals: [];
+  fetchMemoryCandidates: [];
   confirmProposal: [proposalId: number, optionId: string];
   rejectProposal: [proposalId: number];
   reviseProposal: [proposalId: number, message: string];
   retryProposal: [proposalId: number];
+  confirmMemoryCandidate: [candidateId: number];
+  rejectMemoryCandidate: [candidateId: number];
   createSession: [];
   switchSession: [sessionId: number];
   archiveSession: [];
@@ -52,6 +59,7 @@ const messageContainer = ref<HTMLElement | null>(null);
 const canSend = computed(() => draft.value.trim().length > 0 && !props.sending);
 const sessionBusy = computed(() => props.creatingSession || props.archivingSession || props.clearingSession);
 const visibleProposals = computed(() => props.assistantProposals.slice(0, 5));
+const visibleMemoryCandidates = computed(() => props.assistantMemoryCandidates.slice(0, 5));
 
 function renderMarkdown(text: string): string {
   return markdown.render(text.replace(/<script.*?>.*?<\/script>/gis, "").trim());
@@ -133,6 +141,28 @@ function proposalExecutionSummary(proposal: AssistantProposal) {
   return execution?.result?.actions ?? [];
 }
 
+function memoryTypeLabel(type: string) {
+  const map: Record<string, string> = {
+    preferences: t("assistantPanel.memoryPreferences"),
+    places: t("assistantPanel.memoryPlaces"),
+    habits: t("assistantPanel.memoryHabits"),
+    glossary: t("assistantPanel.memoryGlossary"),
+  };
+  return map[type] ?? type;
+}
+
+function memoryCandidateTitle(candidate: AssistantMemoryCandidate) {
+  const title = candidate.proposed_change_json?.title;
+  if (typeof title === "string" && title.trim()) return title.trim();
+  return memoryTypeLabel(candidate.memory_type);
+}
+
+function memoryCandidateContent(candidate: AssistantMemoryCandidate) {
+  const content = candidate.proposed_change_json?.content;
+  if (typeof content === "string" && content.trim()) return content.trim();
+  return t("assistantPanel.memoryEmptyContent");
+}
+
 function canConfirmProposal(proposal: AssistantProposal) {
   return proposal.status === "pending" || proposal.status === "accepted";
 }
@@ -173,12 +203,14 @@ watch(
 
 onMounted(() => {
   emit("fetchProposals");
+  emit("fetchMemoryCandidates");
 });
 
 watch(
   () => props.activeSessionId,
   () => {
     emit("fetchProposals");
+    emit("fetchMemoryCandidates");
   },
 );
 </script>
@@ -352,6 +384,54 @@ watch(
               @click="emit('rejectProposal', proposal.id)"
             >
               {{ t("assistantPanel.rejectProposal") }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="visibleMemoryCandidates.length || loadingMemoryCandidates" class="shrink-0 border-b border-border bg-surface-2 px-3 py-3">
+      <div class="mb-2 flex items-center justify-between">
+        <p class="text-xs font-semibold text-ink">{{ t("assistantPanel.memoryCandidates") }}</p>
+        <span v-if="loadingMemoryCandidates" class="text-[10px] text-ink-3">{{ t("common.loading") }}</span>
+      </div>
+
+      <div class="max-h-52 space-y-2 overflow-y-auto">
+        <div
+          v-for="candidate in visibleMemoryCandidates"
+          :key="candidate.id"
+          class="rounded-lg border border-border bg-white px-3 py-2.5 shadow-card"
+        >
+          <div class="flex items-start justify-between gap-2">
+            <div class="min-w-0">
+              <div class="flex flex-wrap items-center gap-1.5">
+                <span class="text-[10px] font-bold uppercase tracking-widest text-accent">M{{ candidate.id }}</span>
+                <span class="rounded-full border border-accent/30 bg-accent-light px-2 py-0.5 text-[10px] font-semibold text-accent">
+                  {{ memoryTypeLabel(candidate.memory_type) }}
+                </span>
+              </div>
+              <p class="mt-1 text-xs font-semibold leading-snug text-ink">{{ memoryCandidateTitle(candidate) }}</p>
+              <p class="mt-0.5 text-[11px] leading-snug text-ink-3">{{ memoryCandidateContent(candidate) }}</p>
+              <p v-if="candidate.reason" class="mt-0.5 text-[11px] leading-snug text-ink-3">{{ candidate.reason }}</p>
+            </div>
+          </div>
+
+          <div class="mt-2 flex gap-2 border-t border-border pt-2">
+            <button
+              type="button"
+              class="rounded-lg bg-positive px-2.5 py-1 text-[11px] font-semibold text-white transition hover:bg-positive-hover disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="memoryCandidateBusyId === candidate.id"
+              @click="emit('confirmMemoryCandidate', candidate.id)"
+            >
+              {{ t("assistantPanel.confirmMemoryCandidate") }}
+            </button>
+            <button
+              type="button"
+              class="rounded-lg border border-danger/20 px-2.5 py-1 text-[11px] font-semibold text-danger transition hover:bg-danger-light disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="memoryCandidateBusyId === candidate.id"
+              @click="emit('rejectMemoryCandidate', candidate.id)"
+            >
+              {{ t("assistantPanel.rejectMemoryCandidate") }}
             </button>
           </div>
         </div>

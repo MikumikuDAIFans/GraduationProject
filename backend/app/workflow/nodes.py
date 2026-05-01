@@ -89,14 +89,31 @@ class WorkflowNodes:
                 extracted_slots: dict[str, Any] = {}
 
                 if intent in {"create_event", "event_context_advice"}:
-                    extracted_slots["new_event"] = assistant.text_runtime._build_rule_based_event_payload(user_message)
-                    extracted_slots["location"] = assistant.text_runtime._extract_location(user_message)
+                    event_payload = assistant.text_runtime._build_rule_based_event_payload(user_message)
+                    event_payload = assistant._apply_place_memory_to_event_payload(
+                        payload=event_payload,
+                        user_message=user_message,
+                        external_context=state.get("external_context", {}),
+                    )
+                    extracted_slots["new_event"] = event_payload
+                    extracted_slots["location"] = event_payload.get("location_coords") or event_payload.get("location_name")
                     extracted_slots["activity"] = assistant.text_runtime._extract_event_topic(user_message)
                 elif intent == "create_task":
                     extracted_slots["task"] = assistant.text_runtime._build_rule_based_task_payload(user_message)
                     extracted_slots["activity"] = assistant.text_runtime._extract_task_content(user_message)
                 elif intent == "schedule_guidance":
-                    extracted_slots["location"] = assistant.text_runtime._extract_location(user_message)
+                    location_name = assistant.text_runtime._extract_location(user_message)
+                    resolved = assistant.memory_service.resolve_place_alias(
+                        user_message=user_message,
+                        location_name=location_name,
+                        memory_context=(state.get("external_context", {}) or {}).get("assistant_memory"),
+                    )
+                    extracted_slots["location"] = (
+                        resolved.get("location_coords")
+                        or resolved.get("location_name")
+                        if resolved
+                        else location_name
+                    )
                     extracted_slots["activity"] = (assistant.text_runtime._extract_requested_items(user_message) or [None])[0]
                     extracted_slots["time_range"] = "planning_window"
 
@@ -131,7 +148,14 @@ class WorkflowNodes:
                 if v is not None
             }
             if result.intent in {"create_event", "event_context_advice"} and assistant is not None:
-                state["extracted_slots"]["new_event"] = assistant.text_runtime._build_rule_based_event_payload(user_message)
+                event_payload = assistant.text_runtime._build_rule_based_event_payload(user_message)
+                event_payload = assistant._apply_place_memory_to_event_payload(
+                    payload=event_payload,
+                    user_message=user_message,
+                    external_context=state.get("external_context", {}),
+                )
+                state["extracted_slots"]["new_event"] = event_payload
+                state["extracted_slots"]["location"] = event_payload.get("location_coords") or event_payload.get("location_name")
             state["confidence"] = result.confidence
 
         except Exception as exc:
@@ -150,6 +174,7 @@ class WorkflowNodes:
         slots = state.get("extracted_slots", {})
         user_message = state.get("user_message", "")
         profile = state.get("profile")
+        existing_external_context = dict(state.get("external_context") or {})
 
         async def _fetch_events():
             if assistant is not None:
@@ -246,6 +271,7 @@ class WorkflowNodes:
         state["weather"] = weather_result
         state["traffic"] = traffic_result
         state["external_context"] = {
+            **existing_external_context,
             "weather_now": weather_result,
             "default_commute": traffic_result,
         }
@@ -318,6 +344,13 @@ class WorkflowNodes:
 
         if intent in {"create_event", "event_context_advice"}:
             event_payload = slots.get("new_event") or assistant.text_runtime._build_rule_based_event_payload(user_message)
+            event_payload = assistant._apply_place_memory_to_event_payload(
+                payload=event_payload,
+                user_message=user_message,
+                external_context=external_context,
+            )
+            slots["new_event"] = event_payload
+            slots["location"] = event_payload.get("location_coords") or event_payload.get("location_name") or slots.get("location")
             start_time = event_payload.get("start_time")
             end_time = event_payload.get("end_time")
 

@@ -137,6 +137,7 @@ class ConductorResult:
     trace: list[SpecialistCall] = field(default_factory=list)
     mode: str = "shadow"
     unsupported_reason: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_log_payload(self) -> dict[str, Any]:
         return {
@@ -150,6 +151,7 @@ class ConductorResult:
                 for item in self.trace
             ],
             "unsupported_reason": self.unsupported_reason,
+            "metadata": dict(self.metadata or {}),
         }
 
 

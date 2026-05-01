@@ -19,6 +19,15 @@ def test_memory_specialist_extracts_explicit_place_candidate() -> None:
     assert candidate["dedup_key"].startswith("memory:places:")
 
 
+def test_memory_specialist_strips_polite_memory_prefix() -> None:
+    specialist = MemorySpecialist()
+    candidate = specialist.extract_candidate("请帮我记住图书馆在中心校区东门旁边")
+
+    assert candidate is not None
+    assert candidate["memory_type"] == "places"
+    assert candidate["proposed_change_json"]["content"] == "图书馆在中心校区东门旁边"
+
+
 def test_memory_specialist_does_not_extract_without_explicit_memory_request() -> None:
     specialist = MemorySpecialist()
 

@@ -22,6 +22,9 @@ import { sendPlatformNotification } from "@/platform/notifications";
 export type { CalendarEvent, TaskItem } from "@/stores/events";
 export type {
   AssistantAction,
+  AssistantMemoryCandidate,
+  AssistantMemoryFileSummary,
+  AssistantMemoryRead,
   AssistantMessage,
   AssistantProposal,
   AssistantProposalOption,
@@ -74,13 +77,17 @@ export const useWorkspaceStore = defineStore("workspace", {
     messages: () => useAssistantStore().messages,
     lastAssistantActions: () => useAssistantStore().lastAssistantActions,
     assistantProposals: () => useAssistantStore().assistantProposals,
+    assistantMemoryCandidates: () => useAssistantStore().assistantMemoryCandidates,
+    assistantMemory: () => useAssistantStore().assistantMemory,
     assistantSessions: () => useAssistantStore().assistantSessions,
     loadingAssistantSessions: () => useAssistantStore().loadingAssistantSessions,
     loadingAssistantProposals: () => useAssistantStore().loadingAssistantProposals,
+    loadingAssistantMemoryCandidates: () => useAssistantStore().loadingAssistantMemoryCandidates,
     creatingAssistantSession: () => useAssistantStore().creatingAssistantSession,
     archivingAssistantSession: () => useAssistantStore().archivingAssistantSession,
     clearingAssistantSession: () => useAssistantStore().clearingAssistantSession,
     proposalActionBusyId: () => useAssistantStore().proposalActionBusyId,
+    memoryCandidateBusyId: () => useAssistantStore().memoryCandidateBusyId,
 
     // Profile proxy
     profile: () => useProfileStore().profile,
@@ -180,6 +187,8 @@ export const useWorkspaceStore = defineStore("workspace", {
     async fetchTasks(force = false) { return useEventsStore().fetchTasks(force); },
     async fetchAssistantSessions() { return useAssistantStore().fetchAssistantSessions(); },
     async fetchAssistantProposals() { return useAssistantStore().fetchAssistantProposals(); },
+    async fetchAssistantMemoryCandidates() { return useAssistantStore().fetchAssistantMemoryCandidates(); },
+    async fetchAssistantMemory() { return useAssistantStore().fetchAssistantMemory(); },
     async fetchCurrentAssistantSession() { return useAssistantStore().fetchCurrentAssistantSession(); },
     async fetchWeatherNow(force = false) { return useContextStore().fetchWeatherNow(force); },
     async fetchTravelEstimate(force = false) { return useContextStore().fetchTravelEstimate(force); },
@@ -275,6 +284,34 @@ export const useWorkspaceStore = defineStore("workspace", {
         throw error;
       }
     },
+    async confirmAssistantMemoryCandidate(candidateId: number) {
+      try {
+        const candidate = await useAssistantStore().confirmAssistantMemoryCandidate(candidateId);
+        this.pushToast(this.locale === "zh-CN" ? "记忆已写入" : "Memory saved", "success");
+        return candidate;
+      } catch (error) {
+        console.error("Failed to confirm memory candidate:", error);
+        this.pushToast(
+          this.locale === "zh-CN" ? "写入记忆失败，请重试" : "Failed to save memory",
+          "danger"
+        );
+        throw error;
+      }
+    },
+    async rejectAssistantMemoryCandidate(candidateId: number) {
+      try {
+        const candidate = await useAssistantStore().rejectAssistantMemoryCandidate(candidateId);
+        this.pushToast(this.locale === "zh-CN" ? "已拒绝记忆" : "Memory rejected", "info");
+        return candidate;
+      } catch (error) {
+        console.error("Failed to reject memory candidate:", error);
+        this.pushToast(
+          this.locale === "zh-CN" ? "拒绝记忆失败，请重试" : "Failed to reject memory",
+          "danger"
+        );
+        throw error;
+      }
+    },
     async sendAssistantMessageStream(message: string) {
       return useAssistantStore().sendAssistantMessageStream(
         message,
@@ -294,6 +331,7 @@ export const useWorkspaceStore = defineStore("workspace", {
       await Promise.allSettled([
         assistantStore.fetchAssistantSessions(),
         assistantStore.fetchAssistantProposals(),
+        assistantStore.fetchAssistantMemoryCandidates(),
       ]);
 
       const notificationSocket = reminderStore.socket;
@@ -317,6 +355,7 @@ export const useWorkspaceStore = defineStore("workspace", {
           eventsStore.fetchTasks(),
           assistantStore.fetchCurrentAssistantSession(),
           assistantStore.fetchAssistantProposals(),
+          assistantStore.fetchAssistantMemoryCandidates(),
         ]);
       } else {
         await Promise.allSettled([

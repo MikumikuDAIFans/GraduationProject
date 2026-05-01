@@ -29,7 +29,7 @@ class MemorySpecialist:
         if not text:
             return None
         lowered = text.lower()
-        explicit = any(marker in text for marker in ("记住", "帮我记", "以后记得", "保存一下"))
+        explicit = any(marker in text for marker in ("记住", "帮我记", "以后记得", "保存一下", "请记"))
         if not explicit and "remember" not in lowered:
             return None
 
@@ -60,7 +60,19 @@ class MemorySpecialist:
         return "preferences"
 
     def _strip_memory_prefix(self, text: str) -> str:
-        prefixes = ("记住", "帮我记住", "帮我记一下", "以后记得", "保存一下")
+        prefixes = (
+            "请帮我记住",
+            "请帮我记一下",
+            "帮我记住",
+            "帮我记一下",
+            "帮我记",
+            "请记住",
+            "请记一下",
+            "记住",
+            "记一下",
+            "以后记得",
+            "保存一下",
+        )
         for prefix in prefixes:
             if text.startswith(prefix):
                 return text[len(prefix) :].strip(" ：:，,。")

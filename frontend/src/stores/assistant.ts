@@ -114,6 +114,43 @@ export interface AssistantProposal {
   updated_at?: string | null;
 }
 
+export interface AssistantMemoryCandidate {
+  id: number;
+  user_id: string;
+  memory_type: "preferences" | "places" | "habits" | "glossary" | string;
+  source_specialist: string;
+  status: "proposed" | "confirmed" | "rejected" | "written" | string;
+  confidence: number;
+  proposed_change_json: {
+    operation?: string;
+    title?: string;
+    content?: string;
+    [key: string]: unknown;
+  };
+  reason?: string | null;
+  dedup_key?: string | null;
+  confirmed_at?: string | null;
+  rejected_at?: string | null;
+  written_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface AssistantMemoryFileSummary {
+  memory_type: string;
+  path: string;
+  exists: boolean;
+  line_count: number;
+  updated_at?: string | null;
+  preview: string[];
+}
+
+export interface AssistantMemoryRead {
+  user_id: string;
+  root: string;
+  files: AssistantMemoryFileSummary[];
+}
+
 const ACTIVE_PROPOSAL_STATUSES = [
   "pending",
   "accepted",
@@ -122,6 +159,8 @@ const ACTIVE_PROPOSAL_STATUSES = [
   "executed",
 ];
 
+const ACTIVE_MEMORY_CANDIDATE_STATUSES = ["proposed"];
+
 export const useAssistantStore = defineStore("assistant", {
   state: () => ({
     sessionId: null as number | null,
@@ -129,12 +168,16 @@ export const useAssistantStore = defineStore("assistant", {
     lastAssistantActions: [] as AssistantAction[],
     assistantSessions: [] as AssistantSession[],
     assistantProposals: [] as AssistantProposal[],
+    assistantMemoryCandidates: [] as AssistantMemoryCandidate[],
+    assistantMemory: null as AssistantMemoryRead | null,
     loadingAssistantSessions: false,
     loadingAssistantProposals: false,
+    loadingAssistantMemoryCandidates: false,
     creatingAssistantSession: false,
     archivingAssistantSession: false,
     clearingAssistantSession: false,
     proposalActionBusyId: null as number | null,
+    memoryCandidateBusyId: null as number | null,
     sending: false,
     _cacheTimestamps: {} as Record<string, number>,
   }),
@@ -177,6 +220,25 @@ export const useAssistantStore = defineStore("assistant", {
         next.unshift(proposal);
       }
       this.assistantProposals = next.sort((left, right) => {
+        const leftTime = Date.parse(left.updated_at ?? left.created_at ?? "") || 0;
+        const rightTime = Date.parse(right.updated_at ?? right.created_at ?? "") || 0;
+        return rightTime - leftTime;
+      });
+    },
+
+    upsertAssistantMemoryCandidate(candidate: AssistantMemoryCandidate) {
+      if (candidate.status !== "proposed") {
+        this.assistantMemoryCandidates = this.assistantMemoryCandidates.filter((item) => item.id !== candidate.id);
+        return;
+      }
+      const next = [...this.assistantMemoryCandidates];
+      const index = next.findIndex((item) => item.id === candidate.id);
+      if (index >= 0) {
+        next[index] = { ...next[index], ...candidate };
+      } else {
+        next.unshift(candidate);
+      }
+      this.assistantMemoryCandidates = next.sort((left, right) => {
         const leftTime = Date.parse(left.updated_at ?? left.created_at ?? "") || 0;
         const rightTime = Date.parse(right.updated_at ?? right.created_at ?? "") || 0;
         return rightTime - leftTime;
@@ -226,6 +288,67 @@ export const useAssistantStore = defineStore("assistant", {
         console.error("Failed to fetch assistant proposals:", error);
       } finally {
         this.loadingAssistantProposals = false;
+      }
+    },
+
+    async fetchAssistantMemoryCandidates(statuses = ACTIVE_MEMORY_CANDIDATE_STATUSES) {
+      this.loadingAssistantMemoryCandidates = true;
+      try {
+        const params = new URLSearchParams();
+        statuses.forEach((status) => params.append("status", status));
+        params.set("limit", "20");
+        params.set("_ts", String(Date.now()));
+        const response = await api.get<{ items: AssistantMemoryCandidate[]; total: number }>(
+          "/assistant/memory/candidates",
+          { params },
+        );
+        this.assistantMemoryCandidates = response.data.items;
+      } catch (error) {
+        console.error("Failed to fetch assistant memory candidates:", error);
+      } finally {
+        this.loadingAssistantMemoryCandidates = false;
+      }
+    },
+
+    async fetchAssistantMemory() {
+      try {
+        const response = await api.get<AssistantMemoryRead>("/assistant/memory", {
+          params: { _ts: Date.now() },
+        });
+        this.assistantMemory = response.data;
+      } catch (error) {
+        console.error("Failed to fetch assistant memory:", error);
+      }
+    },
+
+    async confirmAssistantMemoryCandidate(candidateId: number) {
+      this.memoryCandidateBusyId = candidateId;
+      try {
+        const response = await api.post<AssistantMemoryCandidate>(
+          `/assistant/memory/candidates/${candidateId}/confirm`,
+        );
+        this.upsertAssistantMemoryCandidate(response.data);
+        await Promise.allSettled([
+          this.fetchAssistantMemoryCandidates(),
+          this.fetchAssistantMemory(),
+        ]);
+        return response.data;
+      } finally {
+        this.memoryCandidateBusyId = null;
+      }
+    },
+
+    async rejectAssistantMemoryCandidate(candidateId: number) {
+      this.memoryCandidateBusyId = candidateId;
+      try {
+        const response = await api.post<AssistantMemoryCandidate>(
+          `/assistant/memory/candidates/${candidateId}/reject`,
+        );
+        this.upsertAssistantMemoryCandidate(response.data);
+        await this.fetchAssistantMemoryCandidates();
+        return response.data;
+      } finally {
+        this.memoryCandidateBusyId = null;
       }
     },
 

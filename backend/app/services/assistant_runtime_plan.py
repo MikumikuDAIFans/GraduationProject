@@ -534,7 +534,7 @@ class AssistantPlanRuntime:
     def hydrate_event_payload(self, *, payload: dict[str, Any], user_message: str) -> dict[str, Any]:
         extracted = self.owner.text_runtime._build_rule_based_event_payload(user_message)
         enriched = dict(payload)
-        for key in ("title", "description", "start_time", "end_time", "location_name", "event_type"):
+        for key in ("title", "description", "start_time", "end_time", "location_name", "location_coords", "event_type"):
             if enriched.get(key) in (None, "", "event", "new event", "New event") and extracted.get(key):
                 enriched[key] = extracted[key]
         enriched["title"] = self.owner.text_runtime._normalize_event_title(
@@ -600,6 +600,11 @@ class AssistantPlanRuntime:
 
         if intent == "event_context_advice":
             event_payload = self.owner.text_runtime._build_rule_based_event_payload(user_message)
+            event_payload = self.owner._apply_place_memory_to_event_payload(
+                payload=event_payload,
+                user_message=user_message,
+                external_context=external_context,
+            )
             event_context = await self.owner._build_event_specific_context(
                 payload=event_payload,
                 profile=profile,
@@ -645,6 +650,11 @@ class AssistantPlanRuntime:
             }
 
         event_payload = self.owner.text_runtime._build_rule_based_event_payload(user_message)
+        event_payload = self.owner._apply_place_memory_to_event_payload(
+            payload=event_payload,
+            user_message=user_message,
+            external_context=external_context,
+        )
         if event_payload.get("title") and event_payload.get("start_time") and event_payload.get("end_time"):
             event_context = await self.owner._build_event_specific_context(
                 payload=event_payload,

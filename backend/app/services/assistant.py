@@ -6,12 +6,14 @@ import asyncio
 from datetime import date, datetime, timedelta
 import re
 from typing import Any, AsyncIterator
+from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException, status
 from loguru import logger
 from pydantic import ValidationError
 
-from app.assistant_agents import AssistantAgentContext, AssistantConductor
+from app.assistant_agents import AssistantAgentContext, AssistantConductor, ConductorResult
+from app.assistant_agents.specialists.memory import MemorySpecialist
 from app.api.schemas import (
     AssistantCurrentSessionRead,
     AssistantAction,
@@ -26,6 +28,8 @@ from app.api.schemas import (
     AssistantSessionListRead,
     AssistantSessionRead,
     AssistantSessionSummaryRead,
+    AssistantMemoryCandidateCreate,
+    AssistantProposalCreate,
     EventCreate,
     EventRead,
     TaskCreate,
@@ -40,6 +44,8 @@ from app.repositories.reminders import ReminderRepository
 from app.repositories.tasks import TaskRepository
 from app.services.context import ContextService
 from app.services.events import EventService
+from app.services.assistant_memory import AssistantMemoryService
+from app.services.assistant_proposal_manager import AssistantProposalManager
 from app.services.assistant_response_formatter import AssistantResponseFormatter
 from app.services.assistant_runtime_context import AssistantContextRuntime
 from app.services.assistant_runtime_plan import AssistantPlanRuntime
@@ -85,6 +91,9 @@ class AssistantService:
         self.plan_runtime = AssistantPlanRuntime(self)
         self.session_runtime = AssistantSessionRuntime(self)
         self.text_runtime = AssistantTextRuntime()
+        self.memory_service = AssistantMemoryService()
+        self.memory_specialist = MemorySpecialist()
+        self.proposal_manager = AssistantProposalManager()
         conductor_mode = (self.settings.assistant_conductor_mode or "legacy").lower()
         self.conductor = (
             AssistantConductor.build_default(self.text_runtime)
@@ -116,6 +125,10 @@ class AssistantService:
                 role="user",
                 content=payload.message,
             )
+            memory_candidates = await self._capture_memory_candidates_for_message(
+                user_id=user_id,
+                user_message=payload.message,
+            )
 
             history = await self.repository.list_messages(session.id)
             events = await self.event_repository.list_events(user_id=user_id)
@@ -125,8 +138,12 @@ class AssistantService:
             external_context = await self._build_external_context(
                 profile=profile, user_message=payload.message, intent=intent,
             )
+            external_context = await self._with_assistant_memory_context(
+                user_id=user_id,
+                external_context=external_context,
+            )
             session_context = dict(session.context_json or {})
-            await self._run_conductor_for_message(
+            conductor_result = await self._run_conductor_for_message(
                 user_id=user_id,
                 session_id=session.id,
                 user_message=payload.message,
@@ -136,6 +153,25 @@ class AssistantService:
                 profile=profile,
                 external_context=external_context,
             )
+            if self._should_use_conductor_reply(conductor_result):
+                conductor_reply = self._format_conductor_reply(
+                    conductor_result,
+                    user_message=payload.message,
+                    memory_candidates=memory_candidates,
+                )
+                await self.repository.create_message(
+                    session_id=session.id,
+                    role="assistant",
+                    content=conductor_reply,
+                    tool_calls_json=None,
+                )
+                await self._maybe_autorename_session(
+                    user_id=user_id,
+                    session_id=session.id,
+                    session_title=session.title,
+                    user_message=payload.message,
+                )
+                return AssistantResponse(session_id=session.id, reply=conductor_reply, actions=[])
 
             pending_decision = await self._maybe_handle_pending_action_decision(
                 user_id=user_id,
@@ -167,6 +203,8 @@ class AssistantService:
                     user_message=payload.message,
                     history=history,
                     profile=profile,
+                    memory_candidates=memory_candidates,
+                    external_context=external_context,
                 )
 
             plan = await self._build_plan(
@@ -198,6 +236,11 @@ class AssistantService:
                     external_context=external_context,
                 ),
                 user_message=payload.message,
+            )
+            reply = self._append_memory_candidate_notice(
+                reply,
+                user_message=payload.message,
+                memory_candidates=memory_candidates,
             )
 
             await self._persist_pending_action(
@@ -243,6 +286,10 @@ class AssistantService:
                 role="user",
                 content=payload.message,
             )
+            memory_candidates = await self._capture_memory_candidates_for_message(
+                user_id=user_id,
+                user_message=payload.message,
+            )
 
             history = await self.repository.list_messages(session.id)
             events = await self.event_repository.list_events(user_id=user_id)
@@ -252,8 +299,12 @@ class AssistantService:
             external_context = await self._build_external_context(
                 profile=profile, user_message=payload.message, intent=intent,
             )
+            external_context = await self._with_assistant_memory_context(
+                user_id=user_id,
+                external_context=external_context,
+            )
             session_context = dict(session.context_json or {})
-            await self._run_conductor_for_message(
+            conductor_result = await self._run_conductor_for_message(
                 user_id=user_id,
                 session_id=session.id,
                 user_message=payload.message,
@@ -263,6 +314,29 @@ class AssistantService:
                 profile=profile,
                 external_context=external_context,
             )
+            if self._should_use_conductor_reply(conductor_result):
+                conductor_reply = self._format_conductor_reply(
+                    conductor_result,
+                    user_message=payload.message,
+                    memory_candidates=memory_candidates,
+                )
+                await self.repository.create_message(
+                    session_id=session.id,
+                    role="assistant",
+                    content=conductor_reply,
+                    tool_calls_json=None,
+                )
+                for chunk in self._chunk_text(conductor_reply):
+                    yield {"type": "token", "text": chunk}
+                await self._maybe_autorename_session(
+                    user_id=user_id,
+                    session_id=session.id,
+                    session_title=session.title,
+                    user_message=payload.message,
+                )
+                yield {"type": "actions", "actions": []}
+                yield {"type": "done", "session_id": session.id, "full_reply": conductor_reply}
+                return
 
             pending_decision = await self._maybe_handle_pending_action_decision(
                 user_id=user_id,
@@ -294,6 +368,8 @@ class AssistantService:
                     user_message=payload.message,
                     history=history,
                     profile=profile,
+                    memory_candidates=memory_candidates,
+                    external_context=external_context,
                 ):
                     yield item
                 return
@@ -372,6 +448,11 @@ class AssistantService:
                 )
 
             reply_text = self._format_reply_text(reply_text, user_message=payload.message)
+            reply_text = self._append_memory_candidate_notice(
+                reply_text,
+                user_message=payload.message,
+                memory_candidates=memory_candidates,
+            )
             if not used_streaming or not full_reply.strip():
                 for chunk in self._chunk_text(reply_text):
                     yield {"type": "token", "text": chunk}
@@ -459,6 +540,211 @@ class AssistantService:
             return AssistantAction.model_validate(action)
         raise TypeError(f"Unsupported assistant action type: {type(action)!r}")
 
+    async def _capture_memory_candidates_for_message(
+        self,
+        *,
+        user_id: str,
+        user_message: str,
+    ) -> list[Any]:
+        """Persist explicit long-term memory requests as confirmable candidates only."""
+        candidate_payload = self.memory_specialist.extract_candidate(user_message)
+        if candidate_payload is None:
+            return []
+
+        try:
+            payload = AssistantMemoryCandidateCreate.model_validate(candidate_payload)
+            candidate = await self.memory_service.create_candidate(user_id=user_id, payload=payload)
+            logger.bind(component="assistant.memory").info(
+                "Created assistant memory candidate: {candidate_id}",
+                candidate_id=candidate.id,
+            )
+            return [candidate]
+        except Exception as exc:
+            logger.bind(component="assistant.memory").warning(
+                "Failed to create assistant memory candidate: {error}",
+                error=str(exc),
+            )
+            return []
+
+    def _append_memory_candidate_notice(
+        self,
+        reply: str,
+        *,
+        user_message: str,
+        memory_candidates: list[Any],
+    ) -> str:
+        if not memory_candidates:
+            return reply
+        prefers_chinese = self.text_runtime._prefers_chinese(user_message)
+        count = len(memory_candidates)
+        if prefers_chinese:
+            notice = (
+                "我已经把这条内容放进“待确认记忆”，你确认后我才会写入长期记忆。"
+                if count == 1
+                else f"我已经生成 {count} 条待确认记忆，你确认后我才会写入长期记忆。"
+            )
+        else:
+            notice = (
+                "I added this to pending memories. I will only save it after you confirm."
+                if count == 1
+                else f"I added {count} pending memories. I will only save them after you confirm."
+            )
+        base = (reply or "").strip()
+        return f"{base}\n\n{notice}" if base else notice
+
+    async def _with_assistant_memory_context(
+        self,
+        *,
+        user_id: str,
+        external_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            memory_context = await self.memory_service.build_runtime_context(user_id=user_id)
+        except Exception as exc:
+            logger.bind(component="assistant.memory").warning(
+                "Failed to read assistant memory context: {error}",
+                error=str(exc),
+            )
+            return dict(external_context or {})
+        if not memory_context:
+            return dict(external_context or {})
+        enriched = dict(external_context or {})
+        enriched["assistant_memory"] = memory_context
+        return enriched
+
+    def _apply_place_memory_to_event_payload(
+        self,
+        *,
+        payload: dict[str, Any],
+        user_message: str,
+        external_context: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        assistant_memory = (external_context or {}).get("assistant_memory")
+        resolved = self.memory_service.resolve_place_alias(
+            user_message=user_message,
+            location_name=payload.get("location_name"),
+            memory_context=assistant_memory if isinstance(assistant_memory, dict) else None,
+        )
+        if not resolved:
+            return payload
+        enriched = dict(payload)
+        if resolved.get("location_name"):
+            enriched["location_name"] = resolved["location_name"]
+        if resolved.get("location_coords"):
+            enriched["location_coords"] = resolved["location_coords"]
+        return enriched
+
+    def _should_use_conductor_reply(self, result: ConductorResult | None) -> bool:
+        if result is None:
+            return False
+        mode = (self.settings.assistant_conductor_mode or "legacy").lower()
+        return mode == "proposal" and result.decision in {"proposal", "clarification"}
+
+    def _format_conductor_reply(
+        self,
+        result: ConductorResult,
+        *,
+        user_message: str,
+        memory_candidates: list[Any],
+    ) -> str:
+        reply = result.reply or ""
+        persisted_ids = (result.metadata or {}).get("persisted_proposal_ids") or []
+        if persisted_ids and self.text_runtime._prefers_chinese(user_message):
+            reply = f"{reply}\n\n我已把方案放进“待确认方案”，你确认后我才会执行写入。"
+        elif persisted_ids:
+            reply = f"{reply}\n\nI saved this as a pending proposal and will only execute it after confirmation."
+        return self._append_memory_candidate_notice(
+            reply,
+            user_message=user_message,
+            memory_candidates=memory_candidates,
+        )
+
+    async def _persist_conductor_proposals(
+        self,
+        *,
+        user_id: str,
+        result: ConductorResult,
+        user_message: str,
+        external_context: dict[str, Any],
+    ) -> list[Any]:
+        if result.decision != "proposal":
+            return []
+        create_payloads = (result.metadata or {}).get("proposal_create_payloads") or []
+        if not isinstance(create_payloads, list):
+            return []
+
+        persisted: list[Any] = []
+        for raw_payload in create_payloads:
+            if not isinstance(raw_payload, dict):
+                continue
+            try:
+                raw_payload = self._apply_place_memory_to_proposal_payload(
+                    payload=raw_payload,
+                    user_message=user_message,
+                    external_context=external_context,
+                )
+                payload = AssistantProposalCreate.model_validate(raw_payload)
+                proposal = await self.proposal_manager.create_proposal(user_id=user_id, payload=payload)
+                persisted.append(proposal)
+            except Exception as exc:
+                logger.bind(component="assistant.conductor").warning(
+                    "Failed to persist conductor proposal: {error}",
+                    error=str(exc),
+                )
+        if persisted:
+            result.metadata["persisted_proposal_ids"] = [proposal.id for proposal in persisted if getattr(proposal, "id", None) is not None]
+        return persisted
+
+    def _apply_place_memory_to_proposal_payload(
+        self,
+        *,
+        payload: dict[str, Any],
+        user_message: str,
+        external_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        enriched = dict(payload)
+        payload_json = dict(enriched.get("payload_json") or {})
+        options = payload_json.get("options")
+        if not isinstance(options, list):
+            return enriched
+
+        enriched_options: list[Any] = []
+        changed = False
+        for option in options:
+            if not isinstance(option, dict):
+                enriched_options.append(option)
+                continue
+            option_copy = dict(option)
+            actions = option_copy.get("actions")
+            if not isinstance(actions, list):
+                enriched_options.append(option_copy)
+                continue
+            enriched_actions: list[Any] = []
+            for action in actions:
+                if not isinstance(action, dict) or action.get("type") != "create_event":
+                    enriched_actions.append(action)
+                    continue
+                action_copy = dict(action)
+                action_payload = action_copy.get("payload")
+                if isinstance(action_payload, dict):
+                    enriched_payload = self._apply_place_memory_to_event_payload(
+                        payload=action_payload,
+                        user_message=user_message,
+                        external_context=external_context,
+                    )
+                    if enriched_payload != action_payload:
+                        changed = True
+                    action_copy["payload"] = enriched_payload
+                enriched_actions.append(action_copy)
+            option_copy["actions"] = enriched_actions
+            enriched_options.append(option_copy)
+
+        if not changed:
+            return enriched
+        payload_json["options"] = enriched_options
+        enriched["payload_json"] = payload_json
+        return enriched
+
     async def _run_conductor_for_message(
         self,
         *,
@@ -482,10 +768,6 @@ class AssistantService:
             return None
         if self.conductor is None:
             self.conductor = AssistantConductor.build_default(self.text_runtime)
-        if mode == "proposal":
-            logger.bind(component="assistant.conductor").warning(
-                "ASSISTANT_CONDUCTOR_MODE=proposal requested before Action Executor is enabled; using shadow"
-            )
 
         context = AssistantAgentContext(
             user_id=user_id,
@@ -496,11 +778,19 @@ class AssistantService:
             tasks=list(tasks or []),
             profile=profile,
             external_context=external_context,
+            now=datetime.now(ZoneInfo(self.settings.app_timezone)),
         )
         try:
-            result = await self.conductor.run(context, mode="shadow")
+            result = await self.conductor.run(context, mode=mode)
+            if mode == "proposal":
+                await self._persist_conductor_proposals(
+                    user_id=user_id,
+                    result=result,
+                    user_message=user_message,
+                    external_context=external_context,
+                )
             logger.bind(component="assistant.conductor").info(
-                "Assistant conductor shadow result: {result}",
+                "Assistant conductor result: {result}",
                 result=result.to_log_payload(),
             )
             return result
@@ -519,6 +809,7 @@ class AssistantService:
         user_message: str,
         history,
         profile,
+        external_context: dict[str, Any] | None = None,
     ) -> WorkflowState:
         initial_state: WorkflowState = {
             "user_message": user_message,
@@ -526,7 +817,7 @@ class AssistantService:
             "session_id": str(session_id),
             "history": history,
             "profile": profile,
-            "external_context": {},
+            "external_context": dict(external_context or {}),
             "intent": None,
             "extracted_slots": {},
             "confidence": 0.0,
@@ -559,6 +850,8 @@ class AssistantService:
         user_message: str,
         history,
         profile,
+        memory_candidates: list[Any] | None = None,
+        external_context: dict[str, Any] | None = None,
     ) -> AssistantResponse:
         workflow_state = await self._run_workflow_for_message(
             user_id=user_id,
@@ -566,9 +859,15 @@ class AssistantService:
             user_message=user_message,
             history=history,
             profile=profile,
+            external_context=external_context,
         )
         actions = [self._ensure_assistant_action(action) for action in workflow_state.get("actions", [])]
         reply = self._format_reply_text(workflow_state.get("reply", ""), user_message=user_message)
+        reply = self._append_memory_candidate_notice(
+            reply,
+            user_message=user_message,
+            memory_candidates=memory_candidates or [],
+        )
 
         await self._persist_pending_action(
             user_id=user_id,
@@ -600,6 +899,8 @@ class AssistantService:
         user_message: str,
         history,
         profile,
+        memory_candidates: list[Any] | None = None,
+        external_context: dict[str, Any] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         workflow_state = await self._run_workflow_for_message(
             user_id=user_id,
@@ -607,9 +908,15 @@ class AssistantService:
             user_message=user_message,
             history=history,
             profile=profile,
+            external_context=external_context,
         )
         actions = [self._ensure_assistant_action(action) for action in workflow_state.get("actions", [])]
         reply = self._format_reply_text(workflow_state.get("reply", ""), user_message=user_message)
+        reply = self._append_memory_candidate_notice(
+            reply,
+            user_message=user_message,
+            memory_candidates=memory_candidates or [],
+        )
 
         for chunk in self._chunk_text(reply):
             yield {"type": "token", "text": chunk}
@@ -986,6 +1293,11 @@ class AssistantService:
 
         if intent == "event_context_advice":
             event_payload = self.text_runtime._build_rule_based_event_payload(user_message)
+            event_payload = self._apply_place_memory_to_event_payload(
+                payload=event_payload,
+                user_message=user_message,
+                external_context=external_context,
+            )
             event_context = await self._build_event_specific_context(
                 payload=event_payload,
                 profile=profile,
@@ -1031,6 +1343,11 @@ class AssistantService:
             }
 
         event_payload = self.text_runtime._build_rule_based_event_payload(user_message)
+        event_payload = self._apply_place_memory_to_event_payload(
+            payload=event_payload,
+            user_message=user_message,
+            external_context=external_context,
+        )
         if event_payload.get("title") and event_payload.get("start_time") and event_payload.get("end_time"):
             event_context = await self._build_event_specific_context(
                 payload=event_payload,
@@ -1185,7 +1502,7 @@ class AssistantService:
     def _hydrate_event_payload(self, *, payload: dict[str, Any], user_message: str) -> dict[str, Any]:
         extracted = self.text_runtime._build_rule_based_event_payload(user_message)
         enriched = dict(payload)
-        for key in ("title", "description", "start_time", "end_time", "location_name", "event_type"):
+        for key in ("title", "description", "start_time", "end_time", "location_name", "location_coords", "event_type"):
             if enriched.get(key) in (None, "", "event", "new event", "New event") and extracted.get(key):
                 enriched[key] = extracted[key]
         enriched["title"] = self.text_runtime._normalize_event_title(

@@ -4,7 +4,7 @@
 
 - Plan ID: `ai-assistant-implementation-v1`
 - Version: `v1`
-- Last updated: `2026-05-01 12:14 +08:00`
+- Last updated: `2026-05-02 00:41 +08:00`
 - Canonical progress file: `E:\GraduationProject\docs\development\AI_ASSISTANT_IMPLEMENTATION_TASK_BOOK_V1.md`
 - Related handoff file: `none`
 - Source design file: `E:\GraduationProject\docs\development\AI_ASSISTANT_REDESIGN_PLAN_V1.md`
@@ -1169,6 +1169,270 @@
 - Next recommended action:
   - 继续 Phase 8：把 memory candidates 接入前端/助手待确认区，或先让 Conductor 在安全模式下把显式“记住”请求持久化为 candidate，但仍不自动写 `.md`。
 
+## 进度更新 - 2026-05-01 16:07 +08:00
+
+- Overall progress: Phase 8 第二段已完成：memory candidates 已接入前端助手待确认区，用户可以在助手界面确认写入或拒绝记忆；长期记忆仍保持“候选 -> 用户确认 -> 写入 `.md`”边界。
+- Active phase: Phase 8 - Long-Term Memory And Personalization
+- Execution readiness: executing
+- Phase status:
+  - Phase 0 - Baseline Freeze And Guardrails: done
+  - Phase 1 - Data Foundation And Migration: done
+  - Phase 2 - Proposal API And Manager: done
+  - Phase 3 - Passive Conductor And Specialist Registry: done
+  - Phase 4 - Action Executor And Confirmed Write Path: done
+  - Phase 5 - Frontend Proposal Surface: done
+  - Phase 6 - Phase 1B Stability And Observability: done
+  - Phase 7 - Proactive Signals And Daily Rhythm: done
+  - Phase 8 - Long-Term Memory And Personalization: in progress
+- Change summary:
+  - `frontend/src/stores/assistant.ts` 新增 `AssistantMemoryCandidate` / `AssistantMemoryRead` 类型、候选列表拉取、确认写入、拒绝和 memory summary 拉取动作。
+  - `frontend/src/stores/workspace.ts` 暴露 memory candidate state/actions，并在助手发送后和选择性刷新中同步 pending candidates。
+  - `frontend/src/components/AssistantPanel.vue` 新增“待确认记忆”区域，展示候选类型、标题、内容、原因，并提供“写入记忆 / 不记”操作。
+  - `frontend/src/App.vue` 完成桌面与移动端 props/events 接线。
+  - `frontend/src/i18n/index.ts` 新增中英文长期记忆确认文案。
+  - memory candidates 拉取增加 `_ts` cache-bust，避免浏览器/旧 service worker 缓存导致确认后仍显示旧候选。
+- Validation result:
+  - `pnpm --dir frontend exec vue-tsc --noEmit`: passed。
+  - `pnpm --dir frontend run build`: passed。
+  - 运行态 API smoke：创建 `places` memory candidate -> `status=proposed`；`GET /api/assistant/memory/candidates?status=proposed&limit=20` 可见；拒绝候选 -> `status=rejected`。
+  - Playwright UI smoke：在本地 Vite 页面进入助手 tab 后可见“待确认记忆”和候选内容；点击“不记”后候选从界面消失；后端 proposed 列表回到 `0`。
+  - 验证中发现浏览器曾注册 `127.0.0.1:5173/sw.js` 并缓存旧响应；测试环境注销 service worker 后重测通过，前端也已对候选列表加 `_ts` 防缓存。
+- Decision updates:
+  - Verified facts:
+    - 用户侧现在能看到并处理长期记忆候选；Memory Specialist 仍不会自动写 `.md`。
+    - 前端确认/拒绝只是调用候选 API；实际落盘仍由后端 `confirm_candidate()` 控制。
+    - 助手首屏 hydrate 未新增 memory candidate 请求，候选只在助手面板按需加载和助手刷新时同步。
+  - Locked decisions:
+    - 记忆候选是独立于 proposal 的确认队列，Phase 8 先不把它强行塞进任务/日程 proposal 执行状态机。
+    - pending memory candidates 必须避免缓存旧列表，否则会破坏“确认后消失”的信任感。
+  - Open questions:
+    - 下一步是否先让 `Conductor` 在安全模式下把显式“记住”请求持久化为 candidate，还是先增强记忆文件读取给 Planning/Memory Specialist 使用。
+- Residual risks:
+  - 记忆候选目前只能通过 API 或后续 Conductor 持久化产生；聊天链路尚未自动创建候选。
+  - `.md` 记忆仍是 append-only，尚未支持合并、编辑、删除和冲突整理。
+  - 本地存在旧 service worker 缓存时可能影响开发验证；候选 API 已加 cache-bust，但生产缓存策略后续仍应统一审视。
+- Next recommended action:
+  - 继续 Phase 8：让 Conductor/AssistantService 在安全模式下把显式“记住/保存”类请求持久化为 memory candidate，仍不自动写 `.md`；随后验证用户发消息 -> 前端出现待确认记忆 -> 用户确认/拒绝的完整闭环。
+
+## 进度更新 - 2026-05-01 16:38 +08:00
+
+- Overall progress: Phase 8 第三段已完成：显式“记住/保存”聊天请求现在会自动生成 memory candidate，并在回复中提示用户到“待确认记忆”确认；仍不会直接写入 `.md`。
+- Active phase: Phase 8 - Long-Term Memory And Personalization
+- Execution readiness: executing
+- Phase status:
+  - Phase 0 - Baseline Freeze And Guardrails: done
+  - Phase 1 - Data Foundation And Migration: done
+  - Phase 2 - Proposal API And Manager: done
+  - Phase 3 - Passive Conductor And Specialist Registry: done
+  - Phase 4 - Action Executor And Confirmed Write Path: done
+  - Phase 5 - Frontend Proposal Surface: done
+  - Phase 6 - Phase 1B Stability And Observability: done
+  - Phase 7 - Proactive Signals And Daily Rhythm: done
+  - Phase 8 - Long-Term Memory And Personalization: in progress
+- Change summary:
+  - `AssistantService` 新增 `memory_service` 与 `memory_specialist`，在收到用户消息后先捕获显式长期记忆请求。
+  - 新增 `_capture_memory_candidates_for_message()`，只创建 `AssistantMemoryUpdateCandidate(status=proposed)`，失败时只记录 warning，不打断聊天。
+  - 新增 `_append_memory_candidate_notice()`，在 REST、stream、workflow 回复中提示“已放入待确认记忆，确认后才写入长期记忆”。
+  - `MemorySpecialist` 扩展 “请记住 / 请帮我记住 / 帮我记 / 记一下” 等显式表达，并清理礼貌前缀。
+  - 新增 `backend/tests/test_assistant_memory_capture.py`，覆盖显式聊天请求创建 candidate、非显式请求不创建、回复提示保留确认边界。
+- Validation result:
+  - `docker exec graduation-project-api python -m compileall app`: passed。
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_memory_specialist.py tests/test_assistant_memory_capture.py tests/test_assistant_conductor.py`: `11 passed`。
+  - `docker exec graduation-project-api pytest -q`: `342 passed`。
+  - 运行态 smoke：重启 API 后，`POST /api/assistant/message` 发送“请帮我记住我喜欢上午安排深度任务 ...” -> 生成 `preferences` / `proposed` memory candidate；回复包含“待确认记忆”；随后拒绝 smoke candidate，`GET /api/assistant/memory/candidates?status=proposed` 回到 `0`。
+- Decision updates:
+  - Verified facts:
+    - 聊天入口现在已能把显式记忆请求推进到前端待确认队列。
+    - 记忆候选创建失败不会影响正常助手回复，避免长期记忆子系统拖垮主聊天链路。
+    - workflow 开启时也会附加待确认记忆提示。
+  - Locked decisions:
+    - 只有显式“记住/保存”请求会自动创建 memory candidate；普通“我下午三点去学校”不会被长期记忆捕获。
+    - 自动捕获仍只到 `proposed`，不触发 `.md` 写入。
+  - Open questions:
+    - 下一步是否把已确认 `.md` 记忆读入 Planning/Context/Memory Specialist 的上下文，以提升“学校/图书馆/驾校”等常用地点理解能力。
+- Residual risks:
+  - `.md` 记忆读取尚未进入规划上下文，已确认记忆暂时只被存储和展示，尚不能直接改善排程理解。
+  - 记忆候选仍是规则抽取，后续需要 LLM/结构化抽取增强标题、地点字段和证据。
+  - append-only 记忆文件仍未支持合并、编辑、删除和冲突整理。
+- Next recommended action:
+  - 继续 Phase 8：实现记忆读取侧，把 confirmed `.md` 记忆摘要安全注入 assistant/conductor context，优先服务常用地点和规划偏好；同时保持运行时位置不写入长期记忆的边界。
+
+## 进度更新 - 2026-05-01 17:00 +08:00
+
+- Overall progress: Phase 8 第四段已完成：已确认写入 `.md` 的长期记忆现在会以只读摘要注入 assistant/conductor/workflow 外部上下文，优先服务常用地点、偏好、习惯和术语。
+- Active phase: Phase 8 - Long-Term Memory And Personalization
+- Execution readiness: executing
+- Phase status:
+  - Phase 0 - Baseline Freeze And Guardrails: done
+  - Phase 1 - Data Foundation And Migration: done
+  - Phase 2 - Proposal API And Manager: done
+  - Phase 3 - Passive Conductor And Specialist Registry: done
+  - Phase 4 - Action Executor And Confirmed Write Path: done
+  - Phase 5 - Frontend Proposal Surface: done
+  - Phase 6 - Phase 1B Stability And Observability: done
+  - Phase 7 - Proactive Signals And Daily Rhythm: done
+  - Phase 8 - Long-Term Memory And Personalization: in progress
+- Change summary:
+  - `AssistantMemoryService` 新增 `build_runtime_context()`，从 confirmed Markdown 记忆文件构建运行时只读摘要。
+  - 运行时摘要会过滤 `candidate_id/source/confidence/reason/metadata` 等内部元数据，只保留可供助手理解的标题和正文。
+  - `AssistantService` 新增 `_with_assistant_memory_context()`，将 `assistant_memory` 注入 `external_context`，读取失败只记录 warning，不阻塞聊天。
+  - REST、WebSocket streaming、Conductor shadow/proposal 和 Gemini prompt 均通过统一 `external_context` 获得长期记忆摘要。
+  - workflow `_run_workflow_for_message()` 支持接收外部上下文；`WorkflowNodes.collect_context()` 改为合并已有 external_context，避免天气/通勤采集覆盖 `assistant_memory`。
+  - 新增测试 `test_workflow_memory_context.py`，并扩展 memory service/capture 测试。
+- Validation result:
+  - `docker exec graduation-project-api python -m compileall app`: passed。
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_memory_service.py tests/test_assistant_memory_capture.py tests/test_workflow_memory_context.py tests/test_assistant_memory_specialist.py`: `13 passed`。
+  - `docker exec graduation-project-api pytest -q`: `345 passed`。
+  - 运行态 smoke：重启 API 后，`GET /api/health` -> `ok`；`GET /api/assistant/memory` 返回 4 类 memory file summaries；`GET /api/assistant/memory/candidates?status=proposed` -> `0`。
+- Decision updates:
+  - Verified facts:
+    - confirmed `.md` 记忆现在能进入助手运行上下文，但仍是只读输入。
+    - workflow 的天气/通勤上下文采集不会覆盖已注入的 `assistant_memory`。
+    - 运行时摘要不暴露候选 ID、置信度等内部治理字段。
+  - Locked decisions:
+    - 记忆读取侧不改变写入边界；只有用户确认 candidate 后才会影响后续助手上下文。
+    - 运行时位置、临时上下文、未确认候选都不进入 `assistant_memory`。
+  - Open questions:
+    - 是否在 Phase 8 收口前做一个轻量地点别名解析器，把 `places.md` 中的“学校 = ...”显式用于地点字段补全，而不是仅放入 LLM/context。
+- Residual risks:
+  - `.md` 摘要仍是文本级启发，不是结构化地点/偏好索引；规则链路未必能稳定利用“学校/图书馆/驾校”的具体地址。
+  - append-only 记忆文件仍未支持合并、编辑、删除和冲突整理。
+  - 若用户长期积累大量记忆，runtime summary 需要进一步做 token/条目优先级管理。
+- Next recommended action:
+  - 继续 Phase 8：做轻量地点记忆解析与规则链路接入，让 `places.md` 中常用地点别名能辅助 `_extract_location` / event payload / commute destination；保持解析只读、保守、可回退。
+
+## 进度更新 - 2026-05-02 00:02 +08:00
+
+- Overall progress: `proposal` mode 的真实端到端闭环已经跑通：用户消息经 WebSocket 生成 pending proposal，前端展示待确认方案，用户在 UI 点击确认后由 Action Executor 创建事件，重复确认不重复落库。
+- Active phase: Phase 8 - Long-Term Memory And Personalization
+- Execution readiness: executing
+- Phase status:
+  - Phase 0 - Baseline Freeze And Guardrails: done
+  - Phase 1 - Data Foundation And Migration: done
+  - Phase 2 - Proposal API And Manager: done
+  - Phase 3 - Passive Conductor And Specialist Registry: done
+  - Phase 4 - Action Executor And Confirmed Write Path: done
+  - Phase 5 - Frontend Proposal Surface: done
+  - Phase 6 - Phase 1B Stability And Observability: done
+  - Phase 7 - Proactive Signals And Daily Rhythm: done
+  - Phase 8 - Long-Term Memory And Personalization: in progress
+- Change summary:
+  - 开发环境已用 `ASSISTANT_CONDUCTOR_MODE=proposal`、`ASSISTANT_PROACTIVE_MODE=off` 重启 API，确认 proposal mode 与主动系统关闭状态同时生效。
+  - 后端真实 WS/API 链路验证：`/ws/assistant` 收到清晰日程请求后返回包含“待确认方案”的回复，并持久化 `event_creation` proposal；`POST /api/assistant/proposals/{id}/confirm` 后创建事件；重复 confirm 不创建重复事件。
+  - 前端生产包重建并通过 8888 加载，清理旧 service worker/cache 后确认页面加载 `/assets/index-*.js`，不再使用 5173 Vite 开发资源。
+  - 浏览器 UI 验证：助手页显示“待确认方案”，点击“确认”后 proposal `3` 进入 `executed`，事件 `78` 被创建；验证完成后已删除临时事件，pending proposal 列表为 `0`。
+- Validation result:
+  - `docker exec graduation-project-api pytest -q`: `352 passed`。
+  - 真实后端端到端：`user_id=e2e-proposal-user-*`，proposal `2`，event `78`，WS 消息数 `11`，确认后状态 `executed`，重复确认幂等；临时事件已清理。
+  - 真实前端端到端：`local-user`，proposal `3`，UI 点击确认后创建事件 `78`（“和同学见面”，2026-05-02 17:00-18:00，地点“图书馆”），随后 `DELETE /api/events/78` 清理成功。
+  - 运行态健康检查：`GET /api/health` -> `ok`；`GET /api/assistant/proposals?status=pending&limit=5` -> `0`。
+- Decision updates:
+  - Verified facts:
+    - `proposal` mode 现在不仅能生成和持久化 proposal，也已经通过真实 UI 完成“确认后落库”。
+    - 前端旧 service worker/cache 会导致开发验证误加载 5173 资源；清理缓存并加载 8888 生产包后 proposal surface 正常。
+    - proposal 执行回执使用状态值 `executed`，action 内部结果使用 `succeeded`。
+  - Locked decisions:
+    - `proposal` mode 可作为开发/演示环境的候选默认，但主动系统仍保持 `off`，不得顺手打开。
+    - 端到端验证数据必须在验证后清理真实 event，避免污染用户日历。
+  - Open questions:
+    - 是否将前端缓存清理/版本失效策略做成正式开发文档或构建策略，避免后续验证继续被旧 service worker 干扰。
+- Residual risks:
+  - 浏览器缓存策略仍需统一治理；本次已手工清理，但生产/演示场景最好有明确版本刷新策略。
+  - `create_task_with_events` 暂无全局事务补偿；Phase 6 已补观测，原子性/补偿策略仍需后续处理。
+  - Action Executor 仍只覆盖创建类 action；重排、延期、取消、完成状态修改尚未进入 proposal-confirm-execute 闭环。
+  - 偏好/习惯记忆仍主要作为上下文文本提供，尚未形成可解释的强规则约束。
+- Next recommended action:
+  - Phase 8 可以进入收口段：优先补前端缓存/版本刷新策略与偏好/习惯记忆的规则化消费说明；随后进入下一实施阶段，扩展重排、延期、取消、完成状态修改的 proposal-confirm-execute 闭环。
+
+## 进度更新 - 2026-05-02 00:18 +08:00
+
+- Overall progress: Action Executor 已扩展到“确认后调整状态/时间”的第一批动作：重排事件、取消事件、标记事件完成、标记任务完成均进入 proposal-confirm-execute 闭环。
+- Active phase: Phase 8 - Long-Term Memory And Personalization
+- Execution readiness: executing
+- Phase status:
+  - Phase 0 - Baseline Freeze And Guardrails: done
+  - Phase 1 - Data Foundation And Migration: done
+  - Phase 2 - Proposal API And Manager: done
+  - Phase 3 - Passive Conductor And Specialist Registry: done
+  - Phase 4 - Action Executor And Confirmed Write Path: done
+  - Phase 5 - Frontend Proposal Surface: done
+  - Phase 6 - Phase 1B Stability And Observability: done
+  - Phase 7 - Proactive Signals And Daily Rhythm: done
+  - Phase 8 - Long-Term Memory And Personalization: in progress
+- Change summary:
+  - `AssistantActionExecutor.SUPPORTED_ACTIONS` 新增 `reschedule_event`、`cancel_event`、`mark_event_completed`、`mark_task_completed`。
+  - `reschedule_event` 复用 `EventService.update_event()`，要求 `event_id` 和 update payload。
+  - `cancel_event` 采用 `status="canceled"`，不删除事件，保留历史与任务回算依据。
+  - `mark_event_completed` 采用 `status="completed"`，并继续走事件 service 的任务进度回算。
+  - `mark_task_completed` 采用 `TaskService.update_task(status="done")`。
+  - 新增 update payload 校验和 target id 校验，缺失或非法 id 会返回 400。
+- Validation result:
+  - `docker exec graduation-project-api python -m compileall app`: passed。
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_action_executor.py tests/test_assistant_proposal_manager.py`: `13 passed`。
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_proposal_api.py tests/test_assistant_proposal_revise.py tests/test_assistant_proposal_dedup.py tests/test_assistant_proposal_expiry.py`: `9 passed`。
+  - 运行态 E2E：创建临时事件/任务 -> 通过 Proposal Manager 写入 4 个 pending proposal -> 通过真实 `/api/assistant/proposals/{id}/confirm` 确认 -> 验证事件重排为 `2026-05-03T16:00:00`、事件取消为 `canceled`、事件完成为 `completed`、任务完成为 `done`，重复确认仍为 `executed`；临时事件/任务已清理，pending proposal 为 `0`。
+- Decision updates:
+  - Verified facts:
+    - 更新类 action 现在可由真实 proposal confirm API 执行，并保持重复确认幂等。
+    - 修改 executor 源码后，正在运行的 API 进程必须重启，否则 confirm 端仍会使用旧 action type 集合。
+    - 取消日程当前定义为状态更新，不是物理删除。
+  - Locked decisions:
+    - 状态修改也属于写操作，必须继续走 proposal confirm，不允许绕过确认。
+    - 取消/完成类动作优先保留历史记录，便于睡前复盘、任务回算和后续审计。
+  - Open questions:
+    - 延期任务是否要建独立 `postpone_task` action，还是先用 `reschedule_event` + `TaskUpdate(deadline/preferred_period)` 组合表达。
+- Residual risks:
+  - 还没有把自然语言“推迟/取消/完成”稳定解析成这些新 action；当前只是执行层与确认 API 已经具备能力。
+  - `create_task_with_events` 仍暂无全局事务补偿；多 action proposal 若中途失败仍需要更明确的补偿策略。
+  - “取消任务”尚未定义，是 `status=canceled`、`archived`、还是删除，需要产品语义再锁定。
+- Next recommended action:
+  - 接入理解/规划层：让 Conductor/Planning Specialist 能把“改到明天”“取消这个日程”“这个完成了”生成对应 proposal，并在多候选事件/任务时先澄清目标。
+
+## 进度更新 - 2026-05-02 00:41 +08:00
+
+- Overall progress: 更新类自然语言请求已接入 Conductor/Planning Specialist：用户说“改到明天”“取消某日程”“某任务完成了”时，系统能在唯一匹配目标时生成 proposal；目标不唯一或找不到时先澄清。
+- Active phase: Phase 8 - Long-Term Memory And Personalization
+- Execution readiness: executing
+- Phase status:
+  - Phase 0 - Baseline Freeze And Guardrails: done
+  - Phase 1 - Data Foundation And Migration: done
+  - Phase 2 - Proposal API And Manager: done
+  - Phase 3 - Passive Conductor And Specialist Registry: done
+  - Phase 4 - Action Executor And Confirmed Write Path: done
+  - Phase 5 - Frontend Proposal Surface: done
+  - Phase 6 - Phase 1B Stability And Observability: done
+  - Phase 7 - Proactive Signals And Daily Rhythm: done
+  - Phase 8 - Long-Term Memory And Personalization: in progress
+- Change summary:
+  - `UnderstandingSpecialist` 新增更新类 intent：`reschedule_event`、`cancel_event`、`mark_event_completed`、`mark_task_completed`。
+  - 更新类请求会基于当前 `events/tasks` 做保守目标匹配；标题、地点和事件时间可参与打分；多候选同分时进入澄清。
+  - `PlanningSpecialist` 新增更新类 proposal 生成：`event_reschedule`、`event_cancel`、`event_status_update`、`task_status_update`。
+  - `TaskOrEventClarifierSpecialist` 新增目标不明/多目标/缺新时间的澄清文案。
+  - `AssistantConductor` 支持 planning 阶段返回澄清问题，避免无法生成 proposal 时回落旧链路。
+  - `AssistantService` 向 `AssistantAgentContext.now` 注入应用时区时间，修正容器 UTC 导致“今天/明天”偏移的问题。
+- Validation result:
+  - `docker exec graduation-project-api python -m compileall app`: passed。
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py tests/test_assistant_action_executor.py tests/test_assistant_proposal_manager.py`: `23 passed`。
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_proposal_api.py tests/test_assistant_proposal_revise.py tests/test_assistant_proposal_dedup.py tests/test_assistant_proposal_expiry.py`: `9 passed`。
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_memory_capture.py tests/test_workflow_memory_context.py tests/test_assistant_memory_service.py`: `14 passed`。
+  - 运行态 E2E：真实 HTTP 创建临时日程“E2E自然语言组会” -> 用户消息“把E2E自然语言组会改到明天下午4点” -> 生成 pending `event_reschedule` proposal -> confirm 后事件改到 `2026-05-03T16:00:00-17:30:00` -> 重复 confirm 幂等 -> 临时事件已清理，pending proposal 为 `0`。
+- Decision updates:
+  - Verified facts:
+    - 自然语言更新请求现在可以从 Conductor 生成可确认 proposal，并复用上一段 Action Executor 的确认后执行能力。
+    - “明天”等相对日期必须以应用时区为基准，不能使用容器 UTC `datetime.now()`。
+    - 目标消歧当前采用保守规则；无法唯一确定时不会写入 proposal，而是要求用户补充目标。
+  - Locked decisions:
+    - 更新类请求必须和创建类请求一样遵守 proposal-first + confirmation-before-write。
+    - 缺目标或多目标时先澄清，不能猜测用户要修改哪一个日程/任务。
+  - Open questions:
+    - “这个/刚才那个/下午那个”等指代类目标是否在下一步接入 thread state/session history 做上下文消解。
+- Residual risks:
+  - 目标匹配仍是轻量规则，复杂自然语言和模糊指代需要 thread state 或 LLM 结构化抽取增强。
+  - 当前只接入单目标更新；“推迟今天所有日程”这类批量重排还未实现。
+  - “取消任务”的产品语义仍未锁定，尚未实现对应 action/proposal。
+- Next recommended action:
+  - 继续增强目标消歧：接入 thread state/session history 支持“这个/刚才那个”等指代，并设计批量重排 proposal 的边界与补偿策略。
+
 ## 决策记录
 
 - Verified facts:
@@ -1190,6 +1454,15 @@
   - Phase 5 已完成，前端助手面板可展示和操作已持久化 proposal。
   - Phase 7 已完成，主动 signal、daily rhythm、天气快照、旧 inbox 降级和启用态验证均已通过。
   - Phase 8 第一段已完成，长期记忆候选确认后可写入 `.md` 文件。
+  - Phase 8 第二段已完成，前端助手面板可展示和处理 memory candidates。
+  - Phase 8 第三段已完成，显式“记住/保存”聊天请求可自动生成 proposed memory candidate。
+  - Phase 8 第四段已完成，confirmed `.md` 记忆可作为只读摘要进入 assistant/conductor/workflow context。
+  - Phase 8 第五段已完成，confirmed `places.md` 地点别名可只读解析并进入事件 payload / workflow location 槽位 / 通勤目的地链路。
+  - Conductor proposal mode 安全持久化入口已完成：`ASSISTANT_CONDUCTOR_MODE=proposal` 下 proposal/clarification 会短路旧直接写入链路，proposal draft 会持久化为 `AssistantProposal`。
+  - `proposal` mode 真实端到端已通过：WS 生成 proposal、前端展示待确认方案、UI 确认后创建事件、重复确认幂等、验证事件已清理。
+  - Action Executor 更新类动作已完成第一批：`reschedule_event`、`cancel_event`、`mark_event_completed`、`mark_task_completed` 均通过真实 confirm API 验证。
+  - 更新类自然语言请求已接入 Conductor/Planning Specialist，唯一目标可生成 proposal，多目标/未找到会澄清。
+  - `AssistantAgentContext.now` 已使用应用时区时间，避免“明天”被容器 UTC 日期误算。
 - Active assumptions:
   - Phase 1A 以单用户本地原型边界实现，`local-user` 仍是默认用户。
   - SQLite 仍是近期运行数据库，因此复杂唯一约束优先放 service 层处理。
@@ -1201,6 +1474,9 @@
   - Phase 1A 不新增 `AssistantActionExecution` 表。
   - 主动系统默认仍由 `ASSISTANT_PROACTIVE_MODE=off` 保护，显式启用前不得向用户形成主动协商压力。
   - 长期记忆写入必须走候选确认；Memory Specialist 不允许直接自动写 `.md`。
+  - memory candidates 是独立确认队列，前端不得把它等同于任务/日程 proposal 执行状态机。
+  - 只有显式记忆请求进入 candidate 捕获；运行时位置和普通日程内容不得被自动写入长期记忆候选。
+  - 已确认记忆的读取侧只能作为上下文输入，不改变写入确认边界。
   - Phase 1A 不实现 recurrence engine。
   - 前端交互文本优先，不依赖按钮。
 - Open questions:
@@ -1228,14 +1504,14 @@
   - `E:\GraduationProject\backend\app\jobs\assistant_signals.py`: Proactive signal generation jobs。
   - `E:\GraduationProject\backend\app\assistant_agents\contracts.py`: Conductor/specialist 数据契约。
   - `E:\GraduationProject\backend\app\assistant_agents\registry.py`: Specialist registry。
-  - `E:\GraduationProject\backend\app\assistant_agents\conductor.py`: 被动 Conductor 调度入口。
+  - `E:\GraduationProject\backend\app\assistant_agents\conductor.py`: 被动 Conductor 调度入口，proposal mode 结果携带持久化元数据。
   - `E:\GraduationProject\backend\app\assistant_agents\specialists\understanding.py`: 最小结构化理解 specialist。
   - `E:\GraduationProject\backend\app\assistant_agents\specialists\task_or_event_clarifier.py`: 澄清 specialist。
   - `E:\GraduationProject\backend\app\assistant_agents\specialists\planning.py`: 内存 proposal draft 规划 specialist。
   - `E:\GraduationProject\backend\app\assistant_agents\specialists\proposal_manager.py`: proposal draft 标号与 dedup 准备 specialist。
   - `E:\GraduationProject\backend\app\assistant_agents\specialists\negotiation.py`: 纯文本协商 specialist。
   - `E:\GraduationProject\backend\app\assistant_agents\action_executor.py`: Phase 4 确认后执行器。
-  - `E:\GraduationProject\backend\tests\test_assistant_conductor.py`: Conductor routing 与 service shadow hook tests。
+  - `E:\GraduationProject\backend\tests\test_assistant_conductor.py`: Conductor routing、proposal mode 持久化与短路保护 tests。
   - `E:\GraduationProject\backend\tests\test_assistant_specialists.py`: Specialist registry/planning tests。
   - `E:\GraduationProject\backend\tests\test_assistant_text_protocol.py`: Proposal 文本协议 tests。
   - `E:\GraduationProject\backend\tests\test_assistant_action_executor.py`: Action Executor tests。
@@ -1244,6 +1520,16 @@
   - `E:\GraduationProject\frontend\src\components\AssistantPanel.vue`: Proposal surface。
   - `E:\GraduationProject\frontend\src\App.vue`: Proposal props/events 接入。
   - `E:\GraduationProject\frontend\src\i18n\index.ts`: Proposal 文案。
+  - `E:\GraduationProject\frontend\src\stores\assistant.ts`: Memory candidate API/types 接入。
+  - `E:\GraduationProject\frontend\src\stores\workspace.ts`: Memory candidate state/actions facade。
+  - `E:\GraduationProject\frontend\src\components\AssistantPanel.vue`: Memory candidate 待确认区。
+  - `E:\GraduationProject\backend\app\services\assistant.py`: 显式记忆请求捕获与回复提示。
+  - `E:\GraduationProject\backend\app\services\assistant_memory.py`: 长期记忆 runtime context 摘要与 confirmed 地点别名解析。
+  - `E:\GraduationProject\backend\app\services\assistant_runtime_plan.py`: 规则计划中接入地点记忆富化。
+  - `E:\GraduationProject\backend\app\workflow\nodes.py`: workflow parse/schedule 节点接入地点记忆富化并保留 assistant memory context。
+  - `E:\GraduationProject\backend\app\assistant_agents\specialists\memory.py`: Memory candidate payload 抽取。
+  - `E:\GraduationProject\backend\tests\test_assistant_memory_capture.py`: 显式聊天记忆捕获测试。
+  - `E:\GraduationProject\backend\tests\test_workflow_memory_context.py`: workflow 保留 assistant memory context 测试。
   - `E:\GraduationProject\backend\tests\test_assistant_proposal_manager.py`: Proposal Manager tests。
   - `E:\GraduationProject\backend\tests\test_assistant_proposal_api.py`: Proposal API tests。
   - `E:\GraduationProject\backend\tests\test_assistant_proposals_repository.py`: Proposal/thread repository tests。
@@ -1272,7 +1558,7 @@
 
 ## 进度台账
 
-- Overall progress: Phase 8 第一段已完成长期记忆候选表、`.md` 存储、Memory Specialist 骨架和候选确认/拒绝 API；下一步应决定接前端待确认区还是先接 Conductor 显式记忆请求。
+- Overall progress: Conductor proposal draft 持久化安全入口、真实端到端闭环、更新类 Action Executor 第一批动作、以及更新类自然语言规划入口均已完成；`proposal` mode 下清晰请求会生成 pending proposal，前端可展示并确认，确认后 Action Executor 可创建、重排、取消和完成事项且重复确认幂等，Phase 8 长期记忆仍在收口中。
 - Phase 0 - Baseline Freeze And Guardrails: `done`
 - Phase 1 - Data Foundation And Migration: `done`
 - Phase 2 - Proposal API And Manager: `done`
@@ -1282,14 +1568,15 @@
 - Phase 6 - Phase 1B Stability And Observability: `done`
 - Phase 7 - Proactive Signals And Daily Rhythm: `done`
 - Phase 8 - Long-Term Memory And Personalization: `in progress`
-- Validation status: Phase 0、Phase 1、Phase 2、Phase 3、Phase 4、Phase 5、Phase 6、Phase 7 验证均通过；Phase 8 第一段后端全量回归 `338 passed`，`compileall app` 通过，Alembic head 为 `0008_assistant_memory_candidates`，实际 API 容器中 `/api/health`、`/api/assistant/memory` 均返回 HTTP 200。
+- Validation status: Phase 0、Phase 1、Phase 2、Phase 3、Phase 4、Phase 5、Phase 6、Phase 7 验证均通过；Phase 8 第一段后端全量回归 `338 passed`，`compileall app` 通过，Alembic head 为 `0008_assistant_memory_candidates`，实际 API 容器中 `/api/health`、`/api/assistant/memory` 均返回 HTTP 200；Phase 8 第二段前端 `vue-tsc --noEmit` 和 `pnpm run build` 通过，Playwright 验证 pending memory candidate 可显示并可拒绝后消失；Phase 8 第三段后端全量回归 `342 passed`，运行态聊天 smoke 可生成并清理 proposed memory candidate；Phase 8 第四段后端全量回归 `345 passed`，运行态 smoke 显示 API 健康且 proposed candidate 为 `0`；Phase 8 第五段 `compileall app` 通过，相关回归 `14 passed`、宽 assistant/workflow 回归 `92 passed`、后端全量回归 `350 passed`，API 重启后 `/api/health` 与 `/api/assistant/memory` 均成功；Conductor proposal 持久化段 `compileall app` 通过，目标回归 `18 passed`、组合回归 `74 passed`、后端全量回归 `352 passed`，API 重启后 `/api/health` 与 `/api/assistant/proposals` 均成功；真实 WS/API 端到端与 Playwright 前端 UI 端到端均已通过，验证事件已清理，当前 pending proposals 为 `0`；更新类 action 段 `compileall app` 通过，目标回归 `13 passed`，proposal 外围回归 `9 passed`，真实 confirm API E2E 通过且临时数据已清理；自然语言更新规划段 `compileall app` 通过，目标回归 `23 passed`、proposal 外围回归 `9 passed`、memory/workflow 回归 `14 passed`，真实 HTTP E2E 通过且相对日期按应用时区正确计算。
 - Residual risks:
-  - 聊天链路仍未自动持久化 Conductor proposal draft；Phase 7 前建议先补安全持久化入口或继续保持 `ASSISTANT_CONDUCTOR_MODE=legacy/shadow`。
+  - 浏览器旧 service worker/cache 可能导致开发验证误加载 Vite 5173 资源；本次通过清理缓存恢复生产包，后续应补正式版本刷新策略。
   - `create_task_with_events` 暂无全局事务补偿；Phase 6 已补观测，原子性/补偿策略仍需后续处理。
   - SQLite + API + Celery 共享写入仍可能导致并发抖动，主动系统上线前要重点观察。
   - LLM 结构化抽取失败时必须有澄清/保守 fallback，否则会重现“无法识别简单日程”的体验问题。
-  - Phase 8 长期记忆尚未接前端确认区，也尚未接 Conductor 自动候选持久化。
+  - Phase 8 长期记忆已接前端确认区、显式聊天候选持久化、confirmed `.md` 只读上下文注入和地点别名解析；但偏好/习惯记忆仍主要以上下文文本提供，尚未形成强规则约束。
+  - “这个/刚才那个/下午那个”等指代类目标尚未接入 thread state/session history，复杂消歧仍需要用户补充目标。
 
 ## 下一步动作
 
-继续 `Phase 8 - Long-Term Memory And Personalization`：把 memory candidates 接入前端/助手待确认区，或先让 Conductor 在安全模式下把显式“记住”请求持久化为 candidate，但仍不自动写 `.md`。
+下一步继续增强目标消歧与批量操作：接入 thread state/session history 支持“这个/刚才那个”等指代；设计“推迟今天所有日程”这类批量重排 proposal 的边界、确认文案和失败补偿策略。

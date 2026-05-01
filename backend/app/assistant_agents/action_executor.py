@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import HTTPException, status
 from pydantic import ValidationError
 
-from app.api.schemas import EventCreate, TaskCreate
+from app.api.schemas import EventCreate, EventUpdate, TaskCreate, TaskUpdate
 from app.models import AssistantProposal
 from app.services.events import EventService
 from app.services.tasks import TaskService
@@ -21,7 +21,16 @@ class AssistantActionExecutor:
     authority stays with AssistantProposal.status in AssistantProposalManager.
     """
 
-    SUPPORTED_ACTIONS = {"create_event", "create_task", "create_task_with_events", "acknowledge_signal"}
+    SUPPORTED_ACTIONS = {
+        "create_event",
+        "create_task",
+        "create_task_with_events",
+        "reschedule_event",
+        "cancel_event",
+        "mark_event_completed",
+        "mark_task_completed",
+        "acknowledge_signal",
+    }
 
     def __init__(
         self,
@@ -54,8 +63,16 @@ class AssistantActionExecutor:
                 result = await self._create_event(user_id=user_id, action=action)
             elif action_type == "create_task":
                 result = await self._create_task(user_id=user_id, action=action)
-            else:
+            elif action_type == "create_task_with_events":
                 result = await self._create_task_with_events(user_id=user_id, action=action)
+            elif action_type == "reschedule_event":
+                result = await self._reschedule_event(user_id=user_id, action=action)
+            elif action_type == "cancel_event":
+                result = await self._cancel_event(user_id=user_id, action=action)
+            elif action_type == "mark_event_completed":
+                result = await self._mark_event_completed(user_id=user_id, action=action)
+            else:
+                result = await self._mark_task_completed(user_id=user_id, action=action)
 
             if result.get("related_task_id") is not None and related_task_id is None:
                 related_task_id = int(result["related_task_id"])
@@ -132,17 +149,92 @@ class AssistantActionExecutor:
             "events": event_snapshots,
         }
 
+    async def _reschedule_event(self, *, user_id: str, action: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(action.get("payload") or {})
+        event_id = self._required_int(payload.get("event_id") or action.get("event_id"), field="event_id")
+        update_payload = dict(payload.get("update") or payload)
+        update_payload.pop("event_id", None)
+        if not update_payload:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="reschedule_event requires update payload")
+        event = await self.event_service.update_event(
+            user_id=user_id,
+            event_id=event_id,
+            payload=self._validate_event_update(update_payload),
+        )
+        snapshot = self._snapshot(event)
+        return {"kind": "event", "related_event_id": snapshot.get("id"), "event": snapshot}
+
+    async def _cancel_event(self, *, user_id: str, action: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(action.get("payload") or {})
+        event_id = self._required_int(payload.get("event_id") or action.get("event_id"), field="event_id")
+        update_payload = dict(payload.get("update") or {})
+        update_payload["status"] = "canceled"
+        event = await self.event_service.update_event(
+            user_id=user_id,
+            event_id=event_id,
+            payload=self._validate_event_update(update_payload),
+        )
+        snapshot = self._snapshot(event)
+        return {"kind": "event", "related_event_id": snapshot.get("id"), "event": snapshot}
+
+    async def _mark_event_completed(self, *, user_id: str, action: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(action.get("payload") or {})
+        event_id = self._required_int(payload.get("event_id") or action.get("event_id"), field="event_id")
+        update_payload = dict(payload.get("update") or {})
+        update_payload["status"] = "completed"
+        event = await self.event_service.update_event(
+            user_id=user_id,
+            event_id=event_id,
+            payload=self._validate_event_update(update_payload),
+        )
+        snapshot = self._snapshot(event)
+        return {"kind": "event", "related_event_id": snapshot.get("id"), "event": snapshot}
+
+    async def _mark_task_completed(self, *, user_id: str, action: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(action.get("payload") or {})
+        task_id = self._required_int(payload.get("task_id") or action.get("task_id"), field="task_id")
+        update_payload = dict(payload.get("update") or {})
+        update_payload["status"] = "done"
+        task = await self.task_service.update_task(
+            user_id=user_id,
+            task_id=task_id,
+            payload=self._validate_task_update(update_payload),
+        )
+        snapshot = self._snapshot(task)
+        return {"kind": "task", "related_task_id": snapshot.get("id"), "task": snapshot}
+
     def _validate_event(self, payload: dict[str, Any]) -> EventCreate:
         try:
             return EventCreate.model_validate(payload)
         except ValidationError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"invalid event payload: {exc.errors()}") from exc
 
+    def _validate_event_update(self, payload: dict[str, Any]) -> EventUpdate:
+        try:
+            return EventUpdate.model_validate(payload)
+        except ValidationError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"invalid event update payload: {exc.errors()}") from exc
+
     def _validate_task(self, payload: dict[str, Any]) -> TaskCreate:
         try:
             return TaskCreate.model_validate(payload)
         except ValidationError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"invalid task payload: {exc.errors()}") from exc
+
+    def _validate_task_update(self, payload: dict[str, Any]) -> TaskUpdate:
+        try:
+            return TaskUpdate.model_validate(payload)
+        except ValidationError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"invalid task update payload: {exc.errors()}") from exc
+
+    def _required_int(self, value: Any, *, field: str) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{field} is required") from exc
+        if parsed <= 0:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{field} must be positive")
+        return parsed
 
     def _snapshot(self, item: Any) -> dict[str, Any]:
         if hasattr(item, "model_dump"):
