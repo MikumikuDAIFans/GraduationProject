@@ -58,8 +58,20 @@ const proposalRevisionDrafts = ref<Record<number, string>>({});
 const messageContainer = ref<HTMLElement | null>(null);
 const canSend = computed(() => draft.value.trim().length > 0 && !props.sending);
 const sessionBusy = computed(() => props.creatingSession || props.archivingSession || props.clearingSession);
-const visibleProposals = computed(() => props.assistantProposals.slice(0, 5));
+const visibleProposals = computed(() =>
+  props.assistantProposals
+    .filter((proposal) => ["pending", "accepted", "execution_pending", "execution_failed"].includes(proposal.status))
+    .slice(0, 5),
+);
 const visibleMemoryCandidates = computed(() => props.assistantMemoryCandidates.slice(0, 5));
+const proposalProtocolLabels = computed(() => {
+  const entries = props.assistantProposals
+    .filter((proposal) => proposal.status === "pending")
+    .slice()
+    .sort((left, right) => left.id - right.id)
+    .map((proposal, index) => [proposal.id, `P${index + 1}`] as const);
+  return new Map(entries);
+});
 
 function renderMarkdown(text: string): string {
   return markdown.render(text.replace(/<script.*?>.*?<\/script>/gis, "").trim());
@@ -134,6 +146,10 @@ function proposalStatusClass(status: string) {
     return "border-border bg-surface-2 text-ink-3";
   }
   return "border-warn/30 bg-warn-light text-warn";
+}
+
+function proposalProtocolLabel(proposal: AssistantProposal) {
+  return proposalProtocolLabels.value.get(proposal.id) ?? `#${proposal.id}`;
 }
 
 function proposalExecutionSummary(proposal: AssistantProposal) {
@@ -295,7 +311,9 @@ watch(
           <div class="flex items-start justify-between gap-2">
             <div class="min-w-0">
               <div class="flex flex-wrap items-center gap-1.5">
-                <span class="text-[10px] font-bold uppercase tracking-widest text-accent">P{{ proposal.id }}</span>
+                <span class="text-[10px] font-bold uppercase tracking-widest text-accent">
+                  {{ proposalProtocolLabel(proposal) }}
+                </span>
                 <span
                   class="rounded-full border px-2 py-0.5 text-[10px] font-semibold"
                   :class="proposalStatusClass(proposal.status)"

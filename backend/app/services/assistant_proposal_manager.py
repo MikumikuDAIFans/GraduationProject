@@ -4,16 +4,20 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+import re
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException, status
 from loguru import logger
 
 from app.api.schemas import AssistantProposalCreate
 from app.assistant_agents.action_executor import AssistantActionExecutor
+from app.core.config import get_settings
 from app.db.session import get_sessionmaker
 from app.models import AssistantProposal
 from app.repositories.assistant_proposals import AssistantProposalRepository
+from app.services.assistant_runtime_text import AssistantTextRuntime, TIME_TOKEN_PATTERN
 
 
 TERMINAL_PROPOSAL_STATUSES = {"rejected", "expired", "superseded", "archived"}
@@ -33,6 +37,8 @@ class AssistantProposalManager:
         self.repository = repository or AssistantProposalRepository(get_sessionmaker())
         self.executor = executor
         self.execute_on_confirm = execute_on_confirm
+        self.settings = get_settings()
+        self.text_runtime = AssistantTextRuntime()
 
     async def create_proposal(self, *, user_id: str, payload: AssistantProposalCreate) -> AssistantProposal:
         payload_data = payload.model_dump()
@@ -68,6 +74,7 @@ class AssistantProposalManager:
         self,
         *,
         user_id: str,
+        session_id: int | None = None,
         statuses: list[str] | None = None,
         proposal_type: str | None = None,
         limit: int = 50,
@@ -75,6 +82,7 @@ class AssistantProposalManager:
         await self.expire_due_proposals(user_id=user_id, limit=100)
         return await self.repository.list_proposals(
             user_id=user_id,
+            session_id=session_id,
             statuses=statuses,
             proposal_type=proposal_type,
             limit=limit,
@@ -155,9 +163,10 @@ class AssistantProposalManager:
         if proposal.status in TERMINAL_PROPOSAL_STATUSES:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"proposal is {proposal.status}")
 
-        new_payload = deepcopy(proposal.payload_json or {})
+        new_payload = self._build_revised_payload(proposal=proposal, message=message)
         new_payload["revision_request"] = message
         new_payload["superseded_proposal_id"] = proposal.id
+        summary = self._build_revised_summary(proposal=proposal, payload_json=new_payload)
 
         revised = await self.repository.create_proposal(
             {
@@ -168,7 +177,7 @@ class AssistantProposalManager:
                 "trigger_type": "user_message",
                 "status": "pending",
                 "priority": proposal.priority,
-                "summary": f"{proposal.summary}（修改中）",
+                "summary": summary,
                 "payload_json": new_payload,
                 "recommended_option_id": proposal.recommended_option_id,
                 "is_time_sensitive": proposal.is_time_sensitive,
@@ -184,6 +193,240 @@ class AssistantProposalManager:
         if superseded is not None:
             self._log_transition(proposal, superseded, reason="revise")
         return revised
+
+    def _build_revised_payload(self, *, proposal: AssistantProposal, message: str) -> dict[str, Any]:
+        payload = deepcopy(proposal.payload_json or {})
+        revision = self._extract_event_revision(payload_json=payload, message=message)
+        if revision is None:
+            return payload
+
+        options = payload.get("options")
+        if not isinstance(options, list):
+            return payload
+
+        changed = False
+        revised_options: list[Any] = []
+        for option in options:
+            if not isinstance(option, dict):
+                revised_options.append(option)
+                continue
+            option_copy = deepcopy(option)
+            actions = option_copy.get("actions")
+            if not isinstance(actions, list):
+                revised_options.append(option_copy)
+                continue
+            option_changed = False
+            revised_actions: list[Any] = []
+            for action in actions:
+                if not isinstance(action, dict):
+                    revised_actions.append(action)
+                    continue
+                action_copy = deepcopy(action)
+                action_type = action_copy.get("type")
+                action_payload = action_copy.get("payload")
+                if isinstance(action_payload, dict) and action_type == "create_event":
+                    action_payload = dict(action_payload)
+                    self._apply_event_revision_to_payload(action_payload, revision)
+                    action_copy["payload"] = action_payload
+                    changed = True
+                    option_changed = True
+                elif isinstance(action_payload, dict) and action_type == "reschedule_event":
+                    action_payload = dict(action_payload)
+                    update = dict(action_payload.get("update") or {})
+                    self._apply_event_revision_to_payload(update, revision)
+                    action_payload["update"] = update
+                    action_copy["payload"] = action_payload
+                    changed = True
+                    option_changed = True
+                revised_actions.append(action_copy)
+            if option_changed:
+                option_copy["summary"] = self._replace_time_in_text(option_copy.get("summary"), revision)
+                option_copy["title"] = option_copy.get("title") or "按修改后的方案执行"
+            option_copy["actions"] = revised_actions
+            revised_options.append(option_copy)
+
+        if changed:
+            payload["options"] = revised_options
+            payload["revision"] = {"type": "event_payload_update", **revision}
+        return payload
+
+    def _extract_event_revision(self, *, payload_json: dict[str, Any], message: str) -> dict[str, str] | None:
+        revision: dict[str, str] = {}
+        time_revision = self._extract_revision_event_time(payload_json=payload_json, message=message)
+        if time_revision:
+            revision.update(time_revision)
+        title = self._extract_revision_event_title(message)
+        if title:
+            revision["title"] = title
+        location_name = self._extract_revision_event_location(message)
+        if location_name:
+            revision["location_name"] = location_name
+        return revision or None
+
+    def _apply_event_revision_to_payload(self, payload: dict[str, Any], revision: dict[str, str]) -> None:
+        for key in ("start_time", "end_time", "title", "location_name"):
+            if revision.get(key):
+                payload[key] = revision[key]
+
+    def _extract_revision_event_time(self, *, payload_json: dict[str, Any], message: str) -> dict[str, str] | None:
+        original = self._first_event_timing(payload_json)
+        if original is None:
+            return None
+        old_start, old_end = original
+        reference = self._revision_reference(message=message, old_start=old_start)
+        start_time, end_time = self.text_runtime._extract_time_range(message, reference=reference)
+        start_time = start_time or self._extract_single_time(message, reference=reference)
+        if start_time is None:
+            return None
+        duration = old_end - old_start if old_end > old_start else timedelta(minutes=60)
+        end_time = end_time or start_time + duration
+        return {"start_time": start_time.isoformat(), "end_time": end_time.isoformat()}
+
+    def _extract_revision_event_title(self, message: str) -> str | None:
+        patterns = [
+            r"(?:标题|名称|名字)\s*(?:改成|改为|改叫|设为|叫)\s*[“\"]?(?P<title>[^，。,；;.!！?？“”\"]{2,40})",
+            r"(?:改名为|命名为|叫做|叫)\s*[“\"]?(?P<title>[^，。,；;.!！?？“”\"]{2,40})",
+            r"(?:标题|名称|名字)\s*[：:]\s*[“\"](?P<title>[^”\"]{2,40})[”\"]",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, message)
+            if not match:
+                continue
+            title = self._clean_revision_text(match.group("title"))
+            if title:
+                return title
+        return None
+
+    def _extract_revision_event_location(self, message: str) -> str | None:
+        patterns = [
+            r"(?:地点|位置|地方)\s*(?:改到|改成|改为|换到|设为|在|到)\s*[“\"]?(?P<location>[^，。,；;.!！?？“”\"]{2,40})",
+            r"(?:换到|移到)\s*[“\"]?(?P<location>[^，。,；;.!！?？“”\"]{2,40})",
+            r"(?:改到|挪到)\s*[“\"]?(?P<location>[^，。,；;.!！?？“”\"]{2,40})(?:开会|见面|碰头|集合|讨论|复习|上课|答辩|演示|汇报|参加|$)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, message)
+            if not match:
+                continue
+            location = self._clean_revision_text(match.group("location"))
+            location = re.sub(r"(开会|见面|碰头|集合|讨论|复习|上课|答辩|演示|汇报|参加)$", "", location).strip()
+            if location and not self._looks_like_time_or_date(location):
+                return location
+        return None
+
+    def _clean_revision_text(self, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip(" ，。,；;.!！?？“”\"'")
+        return cleaned or None
+
+    def _looks_like_time_or_date(self, value: str) -> bool:
+        return bool(
+            re.search(
+                r"大后天|后天|明天|今天|今晚|上午|下午|晚上|凌晨|早上|中午|"
+                r"\d{1,2}\s*(?:点|时|月|日|号)|\d{4}-\d{1,2}-\d{1,2}",
+                value,
+            )
+        )
+
+    def _first_event_timing(self, payload_json: dict[str, Any]) -> tuple[datetime, datetime] | None:
+        options = payload_json.get("options")
+        if not isinstance(options, list):
+            return None
+        for option in options:
+            if not isinstance(option, dict):
+                continue
+            actions = option.get("actions")
+            if not isinstance(actions, list):
+                continue
+            for action in actions:
+                if not isinstance(action, dict):
+                    continue
+                payload = action.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                if action.get("type") == "create_event":
+                    start_raw = payload.get("start_time")
+                    end_raw = payload.get("end_time")
+                elif action.get("type") == "reschedule_event":
+                    update = payload.get("update")
+                    if not isinstance(update, dict):
+                        continue
+                    start_raw = update.get("start_time")
+                    end_raw = update.get("end_time")
+                else:
+                    continue
+                if not start_raw or not end_raw:
+                    continue
+                try:
+                    return datetime.fromisoformat(str(start_raw)), datetime.fromisoformat(str(end_raw))
+                except ValueError:
+                    continue
+        return None
+
+    def _revision_reference(self, *, message: str, old_start: datetime) -> datetime:
+        if self._message_has_date_reference(message):
+            return datetime.now(ZoneInfo(self.settings.app_timezone))
+        return old_start
+
+    def _message_has_date_reference(self, message: str) -> bool:
+        return bool(
+            re.search(
+                r"大后天|后天|明天|今天|今晚|明早|明晚|下下周|下周|本周|这周|周[一二三四五六日天末]|星期[一二三四五六日天]|(?:\d{4}[年/-])?\d{1,2}[月/-]\d{1,2}日?",
+                message,
+            )
+        )
+
+    def _extract_single_time(self, message: str, *, reference: datetime) -> datetime | None:
+        base_date = self.text_runtime._extract_target_date(message, reference.date())
+        token_match = TIME_TOKEN_PATTERN.search(message)
+        if token_match:
+            start_time, _period = self.text_runtime._parse_time_token(token_match.group(0), base_date)
+            if start_time:
+                return start_time
+        digit_match = re.search(
+            r"(?P<period>凌晨|早上|上午|中午|下午|傍晚|晚上|今晚|今早|明早|明晚)?\s*"
+            r"(?P<hour>\d{1,2})\s*(?:点|时)(?P<minute>半|\d{1,2}分?)?",
+            message,
+        )
+        if not digit_match:
+            return None
+        hour = int(digit_match.group("hour"))
+        period = digit_match.group("period")
+        minute_raw = digit_match.group("minute") or ""
+        minute = 30 if minute_raw == "半" else int(minute_raw.replace("分", "") or 0)
+        hour = self.text_runtime._apply_period(hour, period)
+        return datetime.combine(base_date, datetime.min.time()).replace(hour=hour, minute=minute)
+
+    def _build_revised_summary(self, *, proposal: AssistantProposal, payload_json: dict[str, Any]) -> str:
+        revision = payload_json.get("revision") if isinstance(payload_json, dict) else None
+        summary_parts: list[str] = []
+        if isinstance(revision, dict) and revision.get("start_time") and revision.get("end_time"):
+            try:
+                start_time = datetime.fromisoformat(str(revision["start_time"]))
+                end_time = datetime.fromisoformat(str(revision["end_time"]))
+                summary_parts.append(f"时间 {start_time.strftime('%m-%d %H:%M')}-{end_time.strftime('%H:%M')}")
+            except ValueError:
+                pass
+        if isinstance(revision, dict) and revision.get("title"):
+            summary_parts.append(f"标题“{revision['title']}”")
+        if isinstance(revision, dict) and revision.get("location_name"):
+            summary_parts.append(f"地点 {revision['location_name']}")
+        if summary_parts:
+            return f"{proposal.summary}（已修改：{'，'.join(summary_parts)}）"
+        return f"{proposal.summary}（修改中）"
+
+    def _replace_time_in_text(self, value: Any, revision: dict[str, str]) -> Any:
+        if not isinstance(value, str):
+            return value
+        try:
+            start_time = datetime.fromisoformat(revision["start_time"])
+            end_time = datetime.fromisoformat(revision["end_time"])
+        except (KeyError, ValueError):
+            return value
+        replacement = f"{start_time.strftime('%m-%d %H:%M')}-{end_time.strftime('%H:%M')}"
+        if re.search(r"\d{2}-\d{2}\s+\d{2}:\d{2}-\d{2}:\d{2}", value):
+            return re.sub(r"\d{2}-\d{2}\s+\d{2}:\d{2}-\d{2}:\d{2}", replacement, value)
+        return f"{value}（改到 {replacement}）"
 
     async def retry_proposal(self, *, user_id: str, proposal_id: int) -> AssistantProposal:
         proposal = await self.get_proposal(user_id=user_id, proposal_id=proposal_id)

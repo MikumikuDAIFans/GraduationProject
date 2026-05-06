@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 import re
 from typing import Any
 
@@ -66,7 +66,11 @@ class UnderstandingSpecialist:
         return self.text_runtime._classify_intent(message)
 
     def _classify_update_intent(self, message: str) -> str | None:
-        if re.search(r"改到|改成|调整到|挪到|推迟到|提前到|延期到|reschedule|move", message, re.I):
+        if re.search(r"改到|改成|调整到|挪到|推到|推迟到|提前到|延期到|顺延到|延后到|reschedule|move", message, re.I):
+            return "reschedule_event"
+        if re.search(r"(推迟|延期|后延|延后|顺延|提前)\s*(?:\d+|[一二两三四五六七八九十半])?\s*(天|日|小时|周)", message):
+            return "reschedule_event"
+        if self._looks_like_batch_event_request(message) and re.search(r"改|调整|挪|移动|推|顺延|延后", message):
             return "reschedule_event"
         if re.search(r"取消|不去了|不用去了|删掉|删除|cancel", message, re.I):
             return "cancel_event"
@@ -186,7 +190,7 @@ class UnderstandingSpecialist:
         context: AssistantAgentContext,
     ) -> UnderstandingResult:
         if intent == "mark_task_completed":
-            target = self._resolve_task_target(message, context.tasks)
+            target = self._resolve_task_target(message, context)
             return self._update_understanding_from_target(
                 intent=intent,
                 goal_type="task",
@@ -194,14 +198,18 @@ class UnderstandingSpecialist:
                 language=language,
             )
 
-        target = self._resolve_event_target(message, context.events)
+        target = self._resolve_batch_event_target(message, context, intent=intent) or self._resolve_event_target(message, context)
         missing_fields: list[str] = []
         ambiguities: list[str] = []
         slots: dict[str, Any] = {
             "action_type": intent,
             "target_kind": "event",
+            "target_scope": target.get("target_scope", "single"),
             "target_id": target.get("target_id"),
             "target_title": target.get("target_title"),
+            "target_ids": target.get("target_ids", []),
+            "target_titles": target.get("target_titles", []),
+            "target_date": target.get("target_date"),
             "candidate_count": target.get("candidate_count"),
             "candidate_titles": target.get("candidate_titles", []),
         }
@@ -211,18 +219,27 @@ class UnderstandingSpecialist:
             ambiguities.append("target_event_not_found")
         elif target.get("status") == "ambiguous":
             missing_fields.append("target_event")
-            ambiguities.append("target_event_ambiguous")
+            ambiguities.extend(target.get("ambiguities") or ["target_event_ambiguous"])
 
         if intent == "reschedule_event":
-            start_time, end_time = self.text_runtime._extract_time_range(message, reference=context.now)
-            start_time = start_time or self._extract_partial_start_time(message, reference=context.now)
-            slots["new_start_time"] = start_time.isoformat() if start_time else None
-            slots["new_end_time"] = end_time.isoformat() if end_time else None
-            if not start_time:
-                missing_fields.append("new_start_time")
-                ambiguities.append("reschedule_time_missing")
+            if target.get("target_scope") == "batch":
+                shift_days = self._extract_batch_shift_days(message)
+                _source_date, destination_date = self._extract_batch_reschedule_dates(message, context)
+                slots["batch_shift_days"] = shift_days
+                slots["batch_destination_date"] = destination_date.isoformat() if destination_date else None
+                if shift_days is None and destination_date is None:
+                    missing_fields.append("batch_shift_days")
+                    ambiguities.append("batch_reschedule_shift_missing")
+            else:
+                start_time, end_time = self.text_runtime._extract_time_range(message, reference=context.now)
+                start_time = start_time or self._extract_partial_start_time(message, reference=context.now)
+                slots["new_start_time"] = start_time.isoformat() if start_time else None
+                slots["new_end_time"] = end_time.isoformat() if end_time else None
+                if not start_time:
+                    missing_fields.append("new_start_time")
+                    ambiguities.append("reschedule_time_missing")
 
-        can_propose = target.get("status") == "unique" and not missing_fields
+        can_propose = target.get("status") in {"unique", "batch"} and not missing_fields
         return UnderstandingResult(
             intent=intent,
             goal_type="event",
@@ -273,22 +290,177 @@ class UnderstandingSpecialist:
             language=language,
         )
 
-    def _resolve_event_target(self, message: str, events: list[Any]) -> dict[str, Any]:
+    def _resolve_event_target(self, message: str, context: AssistantAgentContext) -> dict[str, Any]:
+        events = context.events
         active_events = [event for event in events if (getattr(event, "status", None) or "planned") != "canceled"]
         scored = []
         for event in active_events:
             score = self._score_event_target(message, event)
             if score > 0:
                 scored.append((score, event))
+        if self._has_context_reference(message):
+            contextual = self._resolve_contextual_target(
+                context=context,
+                candidates=active_events,
+                title_attr="title",
+            )
+            if contextual.get("status") == "unique":
+                scored.append((12, contextual["target"]))
+            elif not scored and contextual.get("status") == "ambiguous":
+                return contextual
         return self._target_result(scored, title_attr="title")
 
-    def _resolve_task_target(self, message: str, tasks: list[Any]) -> dict[str, Any]:
+    def _resolve_batch_event_target(
+        self,
+        message: str,
+        context: AssistantAgentContext,
+        *,
+        intent: str,
+    ) -> dict[str, Any] | None:
+        if intent not in {"cancel_event", "reschedule_event"}:
+            return None
+        if not self._looks_like_batch_event_request(message):
+            return None
+        if not self._has_date_reference(message):
+            return {
+                "status": "ambiguous",
+                "target_scope": "batch",
+                "candidate_count": 0,
+                "candidate_titles": [],
+                "ambiguities": ["batch_event_date_missing"],
+            }
+
+        reference_date = (context.now or datetime.now()).date()
+        source_date, _destination_date = self._extract_batch_reschedule_dates(message, context) if intent == "reschedule_event" else (None, None)
+        if intent == "reschedule_event" and _destination_date is not None and source_date is None:
+            return {
+                "status": "ambiguous",
+                "target_scope": "batch",
+                "candidate_count": 0,
+                "candidate_titles": [],
+                "ambiguities": ["batch_event_date_missing"],
+            }
+        target_date = source_date or self.text_runtime._extract_target_date(message, reference_date)
+        active_events = [
+            event
+            for event in context.events
+            if (getattr(event, "status", None) or "planned") != "canceled"
+            and getattr(getattr(event, "start_time", None), "date", lambda: None)() == target_date
+        ]
+        if not active_events:
+            return {
+                "status": "not_found",
+                "target_scope": "batch",
+                "target_date": target_date.isoformat(),
+                "candidate_count": 0,
+                "candidate_titles": [],
+            }
+        if len(active_events) > 8:
+            return {
+                "status": "ambiguous",
+                "target_scope": "batch",
+                "target_date": target_date.isoformat(),
+                "candidate_count": len(active_events),
+                "candidate_titles": [str(getattr(event, "title", "")) for event in active_events[:3]],
+                "ambiguities": ["batch_event_target_too_large"],
+            }
+        return {
+            "status": "batch",
+            "target_scope": "batch",
+            "target_date": target_date.isoformat(),
+            "target_ids": [getattr(event, "id", None) for event in active_events],
+            "target_titles": [str(getattr(event, "title", "")) for event in active_events],
+            "candidate_count": len(active_events),
+            "candidate_titles": [str(getattr(event, "title", "")) for event in active_events[:3]],
+        }
+
+    def _looks_like_batch_event_request(self, message: str) -> bool:
+        return bool(
+            re.search(
+                r"(所有|全部|全都|当天|这天|那天).{0,8}(日程|会议|课|安排|活动)|"
+                r"(日程|会议|课|安排|活动).{0,8}(所有|全部|全都)",
+                message,
+            )
+        )
+
+    def _has_date_reference(self, message: str) -> bool:
+        return bool(
+            re.search(
+                r"今天|明天|后天|大后天|昨天|前天|本周|这周|下周|周[一二三四五六日天]|"
+                r"\d{1,2}\s*月\s*\d{1,2}\s*[日号]?|\d{4}-\d{1,2}-\d{1,2}",
+                message,
+            )
+        )
+
+    def _extract_batch_shift_days(self, message: str) -> int | None:
+        match = re.search(r"(?P<direction>推迟|延期|后延|延后|顺延|提前)\s*(?P<amount>\d+|[一二两三四五六七八九十])?\s*(天|日)", message)
+        if not match:
+            return None
+        amount = self._parse_small_int(match.group("amount")) or 1
+        if match.group("direction") == "提前":
+            return -amount
+        return amount
+
+    def _extract_batch_reschedule_dates(
+        self,
+        message: str,
+        context: AssistantAgentContext,
+    ) -> tuple[date | None, date | None]:
+        delimiter = re.search(r"改到|改成|调整到|挪到|推到|推迟到|提前到|延期到|顺延到|延后到", message)
+        if not delimiter:
+            return None, None
+        source_fragment = message[: delimiter.start()]
+        destination_fragment = message[delimiter.end() :]
+        reference_date = (context.now or datetime.now()).date()
+        source_date = (
+            self.text_runtime._extract_target_date(source_fragment, reference_date)
+            if self._has_date_reference(source_fragment)
+            else None
+        )
+        destination_date = (
+            self.text_runtime._extract_target_date(destination_fragment, reference_date)
+            if self._has_date_reference(destination_fragment)
+            else None
+        )
+        return source_date, destination_date
+
+    def _parse_small_int(self, value: str | None) -> int | None:
+        if not value:
+            return None
+        if value.isdigit():
+            return int(value)
+        digits = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+        if value in digits:
+            return digits[value]
+        if value == "十":
+            return 10
+        if value.startswith("十"):
+            return 10 + digits.get(value[1:], 0)
+        if value.endswith("十"):
+            return digits.get(value[:1], 0) * 10
+        if "十" in value:
+            left, right = value.split("十", 1)
+            return digits.get(left, 1) * 10 + digits.get(right, 0)
+        return None
+
+    def _resolve_task_target(self, message: str, context: AssistantAgentContext) -> dict[str, Any]:
+        tasks = context.tasks
         active_tasks = [task for task in tasks if (getattr(task, "status", None) or "pending") not in {"done", "canceled", "archived"}]
         scored = []
         for task in active_tasks:
             score = self._score_text_target(message, getattr(task, "content", None))
             if score > 0:
                 scored.append((score, task))
+        if self._has_context_reference(message):
+            contextual = self._resolve_contextual_target(
+                context=context,
+                candidates=active_tasks,
+                title_attr="content",
+            )
+            if contextual.get("status") == "unique":
+                scored.append((12, contextual["target"]))
+            elif not scored and contextual.get("status") == "ambiguous":
+                return contextual
         return self._target_result(scored, title_attr="content")
 
     def _score_event_target(self, message: str, event: Any) -> int:
@@ -299,10 +471,6 @@ class UnderstandingSpecialist:
             hour = int(start_time.hour)
             if re.search(rf"{hour}\s*(点|时)", message):
                 score += 4
-            if hour >= 12 and "下午" in message:
-                score += 1
-            if hour < 12 and ("上午" in message or "早上" in message):
-                score += 1
         return score
 
     def _score_text_target(self, message: str, value: str | None) -> int:
@@ -329,10 +497,98 @@ class UnderstandingSpecialist:
             tokens.append(text)
         return list(dict.fromkeys(tokens))
 
+    def _has_context_reference(self, message: str) -> bool:
+        return bool(re.search(r"这个|那个|这条|那条|它|刚才|刚刚|上一个|前面那个|刚说的", message))
+
+    def _resolve_contextual_target(
+        self,
+        *,
+        context: AssistantAgentContext,
+        candidates: list[Any],
+        title_attr: str,
+    ) -> dict[str, Any]:
+        if not candidates:
+            return {"status": "not_found", "candidate_count": 0, "candidate_titles": []}
+
+        active = self._resolve_active_target(context=context, candidates=candidates, title_attr=title_attr)
+        if active.get("status") == "unique":
+            return active
+
+        recent_text = self._recent_history_text(context.history)
+        if recent_text:
+            mentioned = [
+                candidate
+                for candidate in candidates
+                if self._is_exact_target_mentioned(recent_text, getattr(candidate, title_attr, None))
+            ]
+            if len(mentioned) == 1:
+                return {"status": "unique", "target": mentioned[0]}
+            if len(mentioned) > 1:
+                return {
+                    "status": "ambiguous",
+                    "candidate_count": len(mentioned),
+                    "candidate_titles": [str(getattr(candidate, title_attr, "")) for candidate in mentioned[:3]],
+                }
+
+        if len(candidates) == 1:
+            return {"status": "unique", "target": candidates[0]}
+        return {
+            "status": "ambiguous",
+            "candidate_count": len(candidates),
+            "candidate_titles": [str(getattr(candidate, title_attr, "")) for candidate in candidates[:3]],
+        }
+
+    def _resolve_active_target(
+        self,
+        *,
+        context: AssistantAgentContext,
+        candidates: list[Any],
+        title_attr: str,
+    ) -> dict[str, Any]:
+        active_target = (context.external_context or {}).get("active_target")
+        if not isinstance(active_target, dict):
+            return {"status": "not_found"}
+        target_id = active_target.get("event_id") if title_attr == "title" else active_target.get("task_id")
+        if target_id is None:
+            return {"status": "not_found"}
+        try:
+            target_id_int = int(target_id)
+        except (TypeError, ValueError):
+            return {"status": "not_found"}
+        matched = [candidate for candidate in candidates if getattr(candidate, "id", None) == target_id_int]
+        if len(matched) != 1:
+            return {"status": "not_found"}
+        target = matched[0]
+        return {
+            "status": "unique",
+            "target": target,
+            "target_id": getattr(target, "id", None),
+            "target_title": getattr(target, title_attr, None),
+            "candidate_count": 1,
+            "candidate_titles": [str(getattr(target, title_attr, ""))],
+        }
+
+    def _is_exact_target_mentioned(self, text: str, value: str | None) -> bool:
+        if not value:
+            return False
+        target = str(value).strip()
+        return bool(target and target in text)
+
+    def _recent_history_text(self, history: list[Any]) -> str:
+        chunks: list[str] = []
+        for message in reversed(history[-6:]):
+            content = getattr(message, "content", None)
+            if content is None and isinstance(message, dict):
+                content = message.get("content")
+            if content:
+                chunks.append(str(content))
+        return "\n".join(chunks)
+
     def _target_result(self, scored: list[tuple[int, Any]], *, title_attr: str) -> dict[str, Any]:
         if not scored:
             return {"status": "not_found", "candidate_count": 0, "candidate_titles": []}
         scored.sort(key=lambda item: item[0], reverse=True)
+        scored = self._dedupe_scored_targets(scored)
         best_score = scored[0][0]
         best = [item for item in scored if item[0] == best_score]
         candidate_titles = [str(getattr(item[1], title_attr, "")) for item in scored[:3]]
@@ -350,6 +606,17 @@ class UnderstandingSpecialist:
             "candidate_count": len(scored),
             "candidate_titles": candidate_titles,
         }
+
+    def _dedupe_scored_targets(self, scored: list[tuple[int, Any]]) -> list[tuple[int, Any]]:
+        deduped: list[tuple[int, Any]] = []
+        seen: set[Any] = set()
+        for score, target in scored:
+            key = getattr(target, "id", id(target))
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append((score, target))
+        return deduped
 
     def _extract_partial_start_time(self, message: str, *, reference: datetime | None = None) -> datetime | None:
         base_date = self.text_runtime._extract_target_date(message, (reference or datetime.now()).date())

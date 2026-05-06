@@ -38,6 +38,7 @@ from app.core.config import get_settings
 from app.core.error_handler import AssistantError
 from app.db.session import get_sessionmaker
 from app.repositories.assistant import AssistantRepository
+from app.repositories.assistant_thread_states import AssistantThreadStateRepository
 from app.repositories.events import EventRepository
 from app.repositories.profiles import UserProfileRepository
 from app.repositories.reminders import ReminderRepository
@@ -80,6 +81,7 @@ class AssistantService:
         self.settings = get_settings()
         session_factory = get_sessionmaker()
         self.repository = AssistantRepository(session_factory)
+        self.thread_state_repository = AssistantThreadStateRepository(session_factory)
         self.event_repository = EventRepository(session_factory)
         self.profile_repository = UserProfileRepository(session_factory)
         self.reminder_repository = ReminderRepository(session_factory)
@@ -129,6 +131,24 @@ class AssistantService:
                 user_id=user_id,
                 user_message=payload.message,
             )
+            memory_only_reply = self._build_memory_only_reply(
+                user_message=payload.message,
+                memory_candidates=memory_candidates,
+            )
+            if memory_only_reply is not None:
+                await self.repository.create_message(
+                    session_id=session.id,
+                    role="assistant",
+                    content=memory_only_reply,
+                    tool_calls_json=None,
+                )
+                await self._maybe_autorename_session(
+                    user_id=user_id,
+                    session_id=session.id,
+                    session_title=session.title,
+                    user_message=payload.message,
+                )
+                return AssistantResponse(session_id=session.id, reply=memory_only_reply, actions=[])
 
             history = await self.repository.list_messages(session.id)
             events = await self.event_repository.list_events(user_id=user_id)
@@ -142,7 +162,32 @@ class AssistantService:
                 user_id=user_id,
                 external_context=external_context,
             )
+            external_context = await self._with_active_target_context(
+                user_id=user_id,
+                session_id=session.id,
+                external_context=external_context,
+            )
             session_context = dict(session.context_json or {})
+            proposal_protocol_reply = await self._maybe_handle_proposal_text_protocol(
+                user_id=user_id,
+                session_id=session.id,
+                user_message=payload.message,
+                external_context=external_context,
+            )
+            if proposal_protocol_reply is not None:
+                await self.repository.create_message(
+                    session_id=session.id,
+                    role="assistant",
+                    content=proposal_protocol_reply,
+                    tool_calls_json=None,
+                )
+                await self._maybe_autorename_session(
+                    user_id=user_id,
+                    session_id=session.id,
+                    session_title=session.title,
+                    user_message=payload.message,
+                )
+                return AssistantResponse(session_id=session.id, reply=proposal_protocol_reply, actions=[])
             conductor_result = await self._run_conductor_for_message(
                 user_id=user_id,
                 session_id=session.id,
@@ -290,6 +335,28 @@ class AssistantService:
                 user_id=user_id,
                 user_message=payload.message,
             )
+            memory_only_reply = self._build_memory_only_reply(
+                user_message=payload.message,
+                memory_candidates=memory_candidates,
+            )
+            if memory_only_reply is not None:
+                await self.repository.create_message(
+                    session_id=session.id,
+                    role="assistant",
+                    content=memory_only_reply,
+                    tool_calls_json=None,
+                )
+                for chunk in self._chunk_text(memory_only_reply):
+                    yield {"type": "token", "text": chunk}
+                await self._maybe_autorename_session(
+                    user_id=user_id,
+                    session_id=session.id,
+                    session_title=session.title,
+                    user_message=payload.message,
+                )
+                yield {"type": "actions", "actions": []}
+                yield {"type": "done", "session_id": session.id, "full_reply": memory_only_reply}
+                return
 
             history = await self.repository.list_messages(session.id)
             events = await self.event_repository.list_events(user_id=user_id)
@@ -303,7 +370,36 @@ class AssistantService:
                 user_id=user_id,
                 external_context=external_context,
             )
+            external_context = await self._with_active_target_context(
+                user_id=user_id,
+                session_id=session.id,
+                external_context=external_context,
+            )
             session_context = dict(session.context_json or {})
+            proposal_protocol_reply = await self._maybe_handle_proposal_text_protocol(
+                user_id=user_id,
+                session_id=session.id,
+                user_message=payload.message,
+                external_context=external_context,
+            )
+            if proposal_protocol_reply is not None:
+                await self.repository.create_message(
+                    session_id=session.id,
+                    role="assistant",
+                    content=proposal_protocol_reply,
+                    tool_calls_json=None,
+                )
+                for chunk in self._chunk_text(proposal_protocol_reply):
+                    yield {"type": "token", "text": chunk}
+                await self._maybe_autorename_session(
+                    user_id=user_id,
+                    session_id=session.id,
+                    session_title=session.title,
+                    user_message=payload.message,
+                )
+                yield {"type": "actions", "actions": []}
+                yield {"type": "done", "session_id": session.id, "full_reply": proposal_protocol_reply}
+                return
             conductor_result = await self._run_conductor_for_message(
                 user_id=user_id,
                 session_id=session.id,
@@ -566,6 +662,24 @@ class AssistantService:
             )
             return []
 
+    def _build_memory_only_reply(
+        self,
+        *,
+        user_message: str,
+        memory_candidates: list[Any],
+    ) -> str | None:
+        if not memory_candidates or not self.memory_specialist.is_explicit_memory_request(user_message):
+            return None
+        if self.text_runtime._prefers_chinese(user_message):
+            reply = "我已经理解这是一个长期记忆请求，这次不会创建任务或日程。"
+        else:
+            reply = "I understood this as a long-term memory request, so I will not create a task or event from it."
+        return self._append_memory_candidate_notice(
+            reply,
+            user_message=user_message,
+            memory_candidates=memory_candidates,
+        )
+
     def _append_memory_candidate_notice(
         self,
         reply: str,
@@ -611,6 +725,204 @@ class AssistantService:
         enriched = dict(external_context or {})
         enriched["assistant_memory"] = memory_context
         return enriched
+
+    async def _with_active_target_context(
+        self,
+        *,
+        user_id: str,
+        session_id: int,
+        external_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        enriched = dict(external_context or {})
+        try:
+            thread_state = await self.thread_state_repository.get_active_target_state(
+                user_id=user_id,
+                session_id=session_id,
+            )
+        except Exception as exc:
+            logger.bind(component="assistant.thread_state").warning(
+                "Failed to read active target thread state: {error}",
+                error=str(exc),
+            )
+            return enriched
+        if thread_state is None:
+            return enriched
+        state_json = thread_state.state_json or {}
+        active_target = state_json.get("active_target") if isinstance(state_json, dict) else None
+        if not isinstance(active_target, dict):
+            return enriched
+        enriched["active_target"] = {
+            **active_target,
+            "thread_state_id": thread_state.id,
+            "thread_state_updated_at": thread_state.updated_at.isoformat() if thread_state.updated_at else None,
+        }
+        return enriched
+
+    async def _maybe_handle_proposal_text_protocol(
+        self,
+        *,
+        user_id: str,
+        session_id: int,
+        user_message: str,
+        external_context: dict[str, Any],
+    ) -> str | None:
+        intent = self._classify_proposal_text_protocol(user_message)
+        if intent is None:
+            return None
+        proposal = await self._resolve_text_protocol_proposal(
+            user_id=user_id,
+            session_id=session_id,
+            user_message=user_message,
+            external_context=external_context,
+        )
+        if proposal == "ambiguous":
+            return self._build_proposal_protocol_clarification(user_message)
+        if proposal is None:
+            return None
+
+        if intent == "revise":
+            revised = await self.proposal_manager.revise_proposal(
+                user_id=user_id,
+                proposal_id=int(proposal.id),
+                message=user_message,
+            )
+            await self._persist_active_target_for_proposal(
+                user_id=user_id,
+                session_id=session_id,
+                proposal=revised,
+                user_message=user_message,
+            )
+            if self.text_runtime._prefers_chinese(user_message):
+                return "我已根据你的修改生成新的待确认方案，旧方案不会再执行。"
+            return "I created a revised pending proposal and superseded the previous one."
+
+        try:
+            option_id = proposal.recommended_option_id or self._first_proposal_option_id(proposal.payload_json or {})
+            if not option_id:
+                return None
+            confirmed = await self.proposal_manager.confirm_proposal(
+                user_id=user_id,
+                proposal_id=int(proposal.id),
+                option_id=option_id,
+            )
+            await self._persist_active_target_for_proposal(
+                user_id=user_id,
+                session_id=session_id,
+                proposal=confirmed,
+                user_message=user_message,
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.bind(component="assistant.thread_state").warning(
+                "Failed to confirm active proposal from text: {error}",
+                error=str(exc),
+            )
+            return None
+
+        if self.text_runtime._prefers_chinese(user_message):
+            return "已按这个方案确认并执行。"
+        return "Confirmed and executed this proposal."
+
+    async def _maybe_confirm_active_proposal_from_text(
+        self,
+        *,
+        user_id: str,
+        session_id: int,
+        user_message: str,
+        external_context: dict[str, Any],
+    ) -> str | None:
+        return await self._maybe_handle_proposal_text_protocol(
+            user_id=user_id,
+            session_id=session_id,
+            user_message=user_message,
+            external_context=external_context,
+        )
+
+    def _classify_proposal_text_protocol(self, user_message: str) -> str | None:
+        if self._looks_like_proposal_revision(user_message):
+            return "revise"
+        if self._looks_like_active_proposal_confirmation(user_message):
+            return "confirm"
+        return None
+
+    def _looks_like_active_proposal_confirmation(self, user_message: str) -> bool:
+        message = user_message.strip()
+        return bool(
+            re.fullmatch(r"(就)?按\s*(这个|这条|刚才那个|上一个|P\d+)(方案|建议)?(来|执行|确认)?[。！!]*", message, re.I)
+            or re.fullmatch(r"(确认|执行)\s*(这个|这条|刚才那个|上一个|P\d+)(方案|建议)?[。！!]*", message, re.I)
+            or re.fullmatch(r"(同意|可以|好|好的|行|行吧|没问题)[。！!]*", message, re.I)
+        )
+
+    def _looks_like_proposal_revision(self, user_message: str) -> bool:
+        message = user_message.strip()
+        if not re.search(
+            r"P\d+|proposal|option|"
+            r"(?:这个|这条|刚才那个|上一个)\s*(?:方案|建议)|"
+            r"(?:方案|建议)",
+            message,
+            re.I,
+        ):
+            return False
+        return bool(re.search(r"改一下|修改|改成|改到|调整|换成|revise|change", message, re.I))
+
+    async def _resolve_text_protocol_proposal(
+        self,
+        *,
+        user_id: str,
+        session_id: int,
+        user_message: str,
+        external_context: dict[str, Any],
+    ) -> Any | str | None:
+        active = await self.proposal_manager.list_proposals(
+            user_id=user_id,
+            session_id=session_id,
+            statuses=["pending"],
+            limit=10,
+        )
+        active = sorted(active, key=lambda item: getattr(item, "id", 0) or 0)
+        explicit_index = self._extract_proposal_display_index(user_message)
+        if explicit_index is not None:
+            if 0 <= explicit_index < len(active):
+                return active[explicit_index]
+            return "ambiguous"
+
+        active_target = (external_context or {}).get("active_target")
+        proposal_id = active_target.get("proposal_id") if isinstance(active_target, dict) else None
+        if proposal_id is not None:
+            try:
+                proposal_id_int = int(proposal_id)
+            except (TypeError, ValueError):
+                proposal_id_int = None
+            for proposal in active:
+                if proposal_id_int is not None and getattr(proposal, "id", None) == proposal_id_int:
+                    return proposal
+
+        if len(active) == 1:
+            return active[0]
+        if len(active) > 1:
+            return "ambiguous"
+        return None
+
+    def _extract_proposal_display_index(self, user_message: str) -> int | None:
+        match = re.search(r"(?<![A-Za-z0-9])P(?P<index>\d+)(?![A-Za-z0-9])", user_message, re.I)
+        if not match:
+            return None
+        return int(match.group("index")) - 1
+
+    def _build_proposal_protocol_clarification(self, user_message: str) -> str:
+        if self.text_runtime._prefers_chinese(user_message):
+            return "我不确定你指的是哪个待确认方案。请直接说“按 P1”或“把 P2 改到明天上午”。"
+        return "I am not sure which pending proposal you mean. Please refer to it as P1 or P2."
+
+    def _first_proposal_option_id(self, payload_json: dict[str, Any]) -> str | None:
+        options = payload_json.get("options") if isinstance(payload_json, dict) else None
+        if not isinstance(options, list):
+            return None
+        for option in options:
+            if isinstance(option, dict) and option.get("option_id"):
+                return str(option["option_id"])
+        return None
 
     def _apply_place_memory_to_event_payload(
         self,
@@ -663,6 +975,7 @@ class AssistantService:
         self,
         *,
         user_id: str,
+        session_id: int,
         result: ConductorResult,
         user_message: str,
         external_context: dict[str, Any],
@@ -693,7 +1006,81 @@ class AssistantService:
                 )
         if persisted:
             result.metadata["persisted_proposal_ids"] = [proposal.id for proposal in persisted if getattr(proposal, "id", None) is not None]
+            for proposal in persisted:
+                await self._persist_active_target_for_proposal(
+                    user_id=user_id,
+                    session_id=getattr(proposal, "session_id", None) or session_id,
+                    proposal=proposal,
+                    user_message=user_message,
+                )
         return persisted
+
+    async def _persist_active_target_for_proposal(
+        self,
+        *,
+        user_id: str,
+        session_id: int,
+        proposal: Any,
+        user_message: str,
+    ) -> None:
+        if not session_id:
+            return
+        active_target = self._active_target_from_proposal(proposal)
+        if not active_target:
+            return
+        active_target["source"] = "conductor_proposal"
+        active_target["last_user_message"] = user_message
+        payload = {
+            "status": "active",
+            "related_task_id": active_target.get("task_id"),
+            "related_event_id": active_target.get("event_id"),
+            "active_proposal_id": active_target.get("proposal_id"),
+            "state_json": {"active_target": active_target},
+            "is_waiting_user": getattr(proposal, "status", None) == "pending",
+            "last_specialist": "proposal_manager",
+            "last_user_message_at": datetime.now(ZoneInfo(self.settings.app_timezone)),
+            "last_system_message_at": datetime.now(ZoneInfo(self.settings.app_timezone)),
+        }
+        try:
+            await self.thread_state_repository.upsert_active_target_state(
+                user_id=user_id,
+                session_id=session_id,
+                payload=payload,
+            )
+        except Exception as exc:
+            logger.bind(component="assistant.thread_state").warning(
+                "Failed to persist active target thread state: {error}",
+                error=str(exc),
+            )
+
+    def _active_target_from_proposal(self, proposal: Any) -> dict[str, Any] | None:
+        proposal_id = getattr(proposal, "id", None)
+        event_id = getattr(proposal, "related_event_id", None)
+        task_id = getattr(proposal, "related_task_id", None)
+        payload_json = getattr(proposal, "payload_json", None) or {}
+        if isinstance(payload_json, dict):
+            execution_result = ((payload_json.get("execution") or {}).get("result") or {})
+            if event_id is None:
+                event_id = execution_result.get("related_event_id")
+            if task_id is None:
+                task_id = execution_result.get("related_task_id")
+        kind = "proposal"
+        if event_id is not None:
+            kind = "event"
+        elif task_id is not None:
+            kind = "task"
+        if proposal_id is None and event_id is None and task_id is None:
+            return None
+        return {
+            "kind": kind,
+            "proposal_id": proposal_id,
+            "proposal_type": getattr(proposal, "proposal_type", None),
+            "proposal_status": getattr(proposal, "status", None),
+            "summary": getattr(proposal, "summary", None),
+            "event_id": event_id,
+            "task_id": task_id,
+            "target_title": (payload_json.get("target_title") if isinstance(payload_json, dict) else None),
+        }
 
     def _apply_place_memory_to_proposal_payload(
         self,
@@ -785,6 +1172,7 @@ class AssistantService:
             if mode == "proposal":
                 await self._persist_conductor_proposals(
                     user_id=user_id,
+                    session_id=session_id,
                     result=result,
                     user_message=user_message,
                     external_context=external_context,

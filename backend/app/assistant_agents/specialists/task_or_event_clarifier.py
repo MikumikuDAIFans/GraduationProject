@@ -16,6 +16,15 @@ class TaskOrEventClarifierSpecialist:
 
         if understanding.goal_type == "event":
             ambiguity_set = set(understanding.ambiguities)
+            if "batch_event_date_missing" in ambiguity_set:
+                state.clarification_question = "你想批量操作日程，但还缺日期范围。请告诉我是今天、明天，还是某个具体日期。"
+                return state
+            if "batch_event_target_too_large" in ambiguity_set:
+                state.clarification_question = "这批日程数量有点多。请把范围缩小到某一天、某类日程，或分批确认。"
+                return state
+            if "batch_reschedule_shift_missing" in ambiguity_set:
+                state.clarification_question = "我可以批量移动这些日程，但需要一个明确的移动规则，比如“整体推迟一天”或“提前两天”。"
+                return state
             if "target_event_ambiguous" in ambiguity_set:
                 candidates = understanding.slots.get("candidate_titles") or []
                 suffix = f"我看到可能相关的是：{'、'.join(candidates)}。" if candidates else ""

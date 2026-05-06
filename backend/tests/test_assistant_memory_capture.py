@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+from app.api.schemas import AssistantMessageCreate
 from app.services.assistant import AssistantService
 
 
@@ -118,3 +119,44 @@ def test_assistant_service_applies_confirmed_place_memory_to_event_payload() -> 
 
     assert enriched["location_name"] == "北京大学东门"
     assert enriched["location_coords"] == "116.310918,39.992873"
+
+
+def test_assistant_service_short_circuits_explicit_memory_message_before_planning() -> None:
+    async def scenario() -> None:
+        service = AssistantService()
+        fake_memory = FakeMemoryService()
+        service.memory_service = fake_memory
+        messages = []
+
+        class FakeRepository:
+            async def create_message(self, **kwargs):
+                messages.append(kwargs)
+                return SimpleNamespace(id=len(messages), **kwargs)
+
+            async def list_messages(self, session_id):
+                raise AssertionError("memory-only requests should short-circuit before loading history")
+
+        async def fake_resolve_session(**_kwargs):
+            return SimpleNamespace(id=1, title="Chat", context_json={})
+
+        async def noop_autorename(**_kwargs):
+            return None
+
+        service.repository = FakeRepository()  # type: ignore[assignment]
+        service._resolve_session = fake_resolve_session  # type: ignore[method-assign]
+        service._maybe_autorename_session = noop_autorename  # type: ignore[method-assign]
+
+        response = await service.send_message(
+            user_id="local-user",
+            payload=AssistantMessageCreate(
+                session_id=1,
+                message="请帮我记住：我喜欢周五下午集中处理行政事务",
+            ),
+        )
+
+        assert "长期记忆请求" in response.reply
+        assert "待确认记忆" in response.reply
+        assert len(fake_memory.payloads) == 1
+        assert messages[-1]["role"] == "assistant"
+
+    asyncio.run(scenario())

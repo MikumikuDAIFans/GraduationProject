@@ -34,6 +34,14 @@ def test_memory_specialist_does_not_extract_without_explicit_memory_request() ->
     assert specialist.extract_candidate("我下午三点去学校") is None
 
 
+def test_memory_specialist_detects_explicit_memory_request() -> None:
+    specialist = MemorySpecialist()
+
+    assert specialist.is_explicit_memory_request("请帮我记住我喜欢周五下午集中处理行政事务") is True
+    assert specialist.is_explicit_memory_request("remember that I prefer Fridays for admin work") is True
+    assert specialist.is_explicit_memory_request("我周五下午要去学校") is False
+
+
 def test_memory_specialist_runs_through_registry() -> None:
     async def scenario() -> None:
         registry = SpecialistRegistry()

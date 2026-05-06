@@ -25,6 +25,7 @@ def get_proposal_manager() -> AssistantProposalManager:
 @router.get("", response_model=AssistantProposalListRead)
 async def list_proposals(
     statuses: list[str] | None = Query(default=None, alias="status"),
+    session_id: int | None = Query(default=None, ge=1),
     proposal_type: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=100),
     user_id: str = Depends(get_current_user_id),
@@ -32,6 +33,7 @@ async def list_proposals(
 ) -> AssistantProposalListRead:
     items = await manager.list_proposals(
         user_id=user_id,
+        session_id=session_id,
         statuses=statuses,
         proposal_type=proposal_type,
         limit=limit,

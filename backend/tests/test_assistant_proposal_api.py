@@ -48,8 +48,8 @@ class FakeProposalManager:
         self.item = _proposal()
         self.confirmed_with: str | None = None
 
-    async def list_proposals(self, *, user_id: str, statuses=None, proposal_type=None, limit: int = 50):
-        del user_id, statuses, proposal_type, limit
+    async def list_proposals(self, *, user_id: str, session_id=None, statuses=None, proposal_type=None, limit: int = 50):
+        del user_id, session_id, statuses, proposal_type, limit
         return [self.item]
 
     async def get_proposal(self, *, user_id: str, proposal_id: int):

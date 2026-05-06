@@ -27,6 +27,16 @@ def test_extract_event_title_from_message() -> None:
     assert title == "mock defense"
 
 
+def test_extract_event_title_from_colon_delimited_mixed_text_message() -> None:
+    service = AssistantService()
+
+    title = service._extract_event_title(
+        "请帮我安排一个测试日程：CODEx E2E Smoke 20260506152311，5月7日晚上11点到11点30，在测试地点。"
+    )
+
+    assert title == "CODEx E2E Smoke 20260506152311"
+
+
 def test_find_event_conflicts() -> None:
     service = AssistantService()
     existing_events = [

@@ -66,6 +66,16 @@ class EventService:
             snapshot[field] = val
         return snapshot
 
+    @staticmethod
+    def _dump_update_payload(payload: EventUpdate) -> dict:
+        try:
+            return payload.model_dump(exclude_unset=True)
+        except TypeError:
+            try:
+                return payload.model_dump(exclude_none=True)
+            except TypeError:
+                return payload.model_dump()
+
     async def detect_conflicts(
         self,
         *,
@@ -227,7 +237,7 @@ class EventService:
             "sync_status": existing.sync_status,
             "last_synced_at": existing.last_synced_at,
         }
-        merged.update(payload.model_dump(exclude_none=True))
+        merged.update(self._dump_update_payload(payload))
         merged = await self._enrich_event_payload(user_id=user_id, payload=merged)
         merged = self._normalize_event_payload_datetimes(merged)
         conflict_events: list[EventRead] = []

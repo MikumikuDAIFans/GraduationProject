@@ -34,11 +34,21 @@ class TaskService:
         linked_events = await self.event_repository.list_events_for_task_ids(user_id=user_id, task_ids=[task.id])
         return self._build_task_read(task, linked_events)
 
+    @staticmethod
+    def _dump_update_payload(payload: TaskUpdate) -> dict:
+        try:
+            return payload.model_dump(exclude_unset=True)
+        except TypeError:
+            try:
+                return payload.model_dump(exclude_none=True)
+            except TypeError:
+                return payload.model_dump()
+
     async def update_task(self, user_id: str, task_id: int, payload: TaskUpdate) -> TaskRead:
         task = await self.repository.update_task(
             task_id,
             user_id=user_id,
-            payload=payload.model_dump(exclude_none=True),
+            payload=self._dump_update_payload(payload),
         )
         if task is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task not found")

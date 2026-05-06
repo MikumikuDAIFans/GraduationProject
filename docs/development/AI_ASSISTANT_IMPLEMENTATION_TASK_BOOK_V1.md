@@ -4,13 +4,13 @@
 
 - Plan ID: `ai-assistant-implementation-v1`
 - Version: `v1`
-- Last updated: `2026-05-02 00:41 +08:00`
+- Last updated: `2026-05-06 17:11 +08:00`
 - Canonical progress file: `E:\GraduationProject\docs\development\AI_ASSISTANT_IMPLEMENTATION_TASK_BOOK_V1.md`
 - Related handoff file: `none`
 - Source design file: `E:\GraduationProject\docs\development\AI_ASSISTANT_REDESIGN_PLAN_V1.md`
 - Current branch: `codex/v4-completion`
-- Current active phase: `Phase 8 - Long-Term Memory And Personalization`
-- Execution readiness: `executing`
+- Current active phase: `Phase 9 - Model-Driven Orchestration Refactor`
+- Execution readiness: `re-planning`
 
 ## 目标
 
@@ -66,6 +66,7 @@
 | Phase 6 | Phase 5 | 被动闭环端到端可用 | dedup / revise / expiry / debug 可观测 |
 | Phase 7 | Phase 6 | 被动闭环稳定，失败可恢复 | 主动 signal 受 cooldown + dedup 管控，不绕过确认 |
 | Phase 8 | Phase 6 或 Phase 7 | proposal 基础稳定，Memory Specialist 边界明确 | `.md` 长期记忆可控读写，候选更新可确认/拒绝 |
+| Phase 9 | Phase 8 | Phase 8 收口完成；系统进入架构级复审 | 主控默认走模型主导语义编排；旧规则链路降级为 fallback；任务 continuation / task schedule plan 成为一等 proposal 能力 |
 
 ### Go / No-Go 规则
 
@@ -1433,6 +1434,267 @@
 - Next recommended action:
   - 继续增强目标消歧：接入 thread state/session history 支持“这个/刚才那个”等指代，并设计批量重排 proposal 的边界与补偿策略。
 
+## 进度更新 - 2026-05-05 23:20 +08:00
+
+- Overall progress: 指代类目标消歧已完成第一段：用户说“这个/那个/刚才那个/它”时，系统会优先使用最近会话文本中精确提到的唯一日程/任务；如果上下文仍不唯一，则继续澄清，不猜测执行。
+- Active phase: Phase 8 - Long-Term Memory And Personalization
+- Execution readiness: executing
+- Phase status:
+  - Phase 0 - Baseline Freeze And Guardrails: done
+  - Phase 1 - Data Foundation And Migration: done
+  - Phase 2 - Proposal API And Manager: done
+  - Phase 3 - Passive Conductor And Specialist Registry: done
+  - Phase 4 - Action Executor And Confirmed Write Path: done
+  - Phase 5 - Frontend Proposal Surface: done
+  - Phase 6 - Phase 1B Stability And Observability: done
+  - Phase 7 - Proactive Signals And Daily Rhythm: done
+  - Phase 8 - Long-Term Memory And Personalization: in progress
+- Change summary:
+  - `UnderstandingSpecialist` 的事件/任务目标解析支持最近 `history` 文本指代消解。
+  - 新增保守触发词：`这个`、`那个`、`这条`、`那条`、`它`、`刚才`、`刚刚`、`上一个`、`前面那个`、`刚说的`。
+  - 指代解析只接受最近会话里对候选标题/content 的精确提及；不再用“组会”这类片段从历史里猜目标。
+  - 移除了“下午/上午”这种弱时间段对旧目标的打分，避免把“改到明天下午4点”误当成目标原时间线索。
+  - 如果没有唯一历史指代，但当前 active event/task 只有一个，允许作为唯一目标；多个候选时继续澄清。
+- Validation result:
+  - `docker exec graduation-project-api python -m compileall app`: passed。
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py`: `13 passed`。
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_action_executor.py`: `7 passed`。
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_proposal_manager.py -vv`: `6 passed`。
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_proposal_api.py tests/test_assistant_proposal_revise.py tests/test_assistant_proposal_dedup.py tests/test_assistant_proposal_expiry.py`: `9 passed`。
+  - 运行态 E2E：同一会话内先发送“取消论文组会”生成 `event_cancel` proposal，再发送“把这个改到明天下午4点”生成 `event_reschedule` proposal；确认后只把“论文组会”改到 `2026-05-06T16:00:00-17:30:00`，“项目组会”保持 `2026-05-06T09:00:00`；临时事件已删除，pending proposal 为 `0`。
+- Decision updates:
+  - Verified facts:
+    - “这个/刚才那个”现在可通过最近会话精确标题提及解析到唯一 event/task。
+    - 弱时间段不能作为目标消歧依据；它只适合表达新时间，不适合识别旧目标。
+    - 已执行 proposal 不能再 expire，测试清理时出现 409 属于预期状态边界；临时真实 event 已清理。
+  - Locked decisions:
+    - 指代消歧宁可澄清，不使用片段匹配或弱时间段强行猜目标。
+    - 批量操作暂不混入单目标消歧，避免把“今天所有日程”误解释成单个日程。
+  - Open questions:
+    - 是否建立正式 `active_target` thread state，保存最近被讨论的 event/task/proposal，而不是每次从历史文本回推。
+- Residual risks:
+  - 当前指代消解依赖历史文本精确标题；如果助手回复没有包含完整标题，仍会回到澄清。
+  - 尚未支持用户直接确认/修改 pending proposal 的文本协议升级，例如“就按这个”指向当前唯一 pending proposal。
+  - 批量重排、批量取消和多 action 补偿策略仍未实现。
+- Next recommended action:
+  - 设计并落地 `active_target` thread state：当 Conductor 生成或持久化 proposal 时记录最近相关 event/task/proposal，后续“这个/就按这个/改一下这个方案”优先走显式 thread state，而不是只扫历史文本。
+
+## 进度更新 - 2026-05-05 23:53 +08:00
+
+- Overall progress: `active_target` thread state 第一段已落地：Conductor proposal mode 持久化 proposal 后会把最近 proposal/event/task 写入 `AssistantThreadState(thread_type="active_target")`，后续指代类请求会优先读取结构化上下文，再回退到最近 history 精确文本匹配。
+- Active phase: Phase 8 - Long-Term Memory And Personalization
+- Execution readiness: executing
+- Phase status:
+  - Phase 0 - Baseline Freeze And Guardrails: done
+  - Phase 1 - Data Foundation And Migration: done
+  - Phase 2 - Proposal API And Manager: done
+  - Phase 3 - Passive Conductor And Specialist Registry: done
+  - Phase 4 - Action Executor And Confirmed Write Path: done
+  - Phase 5 - Frontend Proposal Surface: done
+  - Phase 6 - Phase 1B Stability And Observability: done
+  - Phase 7 - Proactive Signals And Daily Rhythm: done
+  - Phase 8 - Long-Term Memory And Personalization: in progress
+- Change summary:
+  - `AssistantThreadStateRepository` 新增按 `thread_type` 过滤、读取和 upsert `active_target` 的入口。
+  - `AssistantService` 在构建 Conductor context 前注入 `external_context["active_target"]`。
+  - `AssistantService` 在 proposal 持久化后回写 active target，保存 `proposal_id`、`proposal_type`、`proposal_status`、`event_id`、`task_id`、`summary`、`target_title` 等结构化信息。
+  - `UnderstandingSpecialist` 在“这个/那个/刚才那个”等上下文指代出现时，优先用 `active_target.event_id/task_id` 解析目标；无可验证目标时再退回 history 精确标题匹配和唯一候选规则。
+  - 文本协议新增保守确认入口：当前 session 有 active proposal 时，“就按这个/按这个方案”等会调用既有 `confirm_proposal` 状态机；执行资格仍由 `AssistantProposal.status` 控制。
+- Validation result:
+  - `docker exec graduation-project-api python -m compileall app`: passed。
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py`: `15 passed`。
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_proposals_repository.py`: `2 passed`。
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_action_executor.py`: `7 passed`。
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_proposal_manager.py -vv`: `6 passed`。
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_proposal_api.py tests/test_assistant_proposal_revise.py tests/test_assistant_proposal_dedup.py tests/test_assistant_proposal_expiry.py`: `9 passed`。
+  - `docker-compose up -d --force-recreate api`: completed。
+  - `/api/health`: returned `ok` after API recreate。
+- Decision updates:
+  - `active_target` is context only; it does not make a proposal executable and does not bypass confirmation.
+  - Active target lookup validates the referenced event/task against current candidate lists before using it, so stale IDs fall back to safer clarification/history behavior.
+  - Text confirmation only targets the active proposal id in thread state and still routes through `AssistantProposalManager.confirm_proposal`.
+- Residual risks:
+  - 当前只维护每个 session 最新 active target；多 proposal 并列讨论时仍需要更完整的 active set / P 编号协议。
+  - “改一下这个方案”目前主要通过 active proposal/event target 解决目标指向，尚未实现真正根据修改文本重写 proposal option 的智能 revise。
+  - 本轮未跑全量后端 `pytest -q`，也未重跑前端构建。
+- Next recommended action:
+  - 继续扩展 pending proposal 文本协议：支持按 `P1/P2` 明确选择、对 active proposal 进行自然语言 revise，并在多个 active proposal 时强制澄清。
+
+## 进度更新 - 2026-05-06 00:08 +08:00
+
+- Overall progress: pending proposal 文本协议第一段已完成：用户可以用 `P1/P2` 明确选择待确认方案，也可以在唯一 pending proposal 或 active proposal 上说“就按这个”；多个 pending 且未明确编号时会澄清，不猜测执行。
+- Active phase: Phase 8 - Long-Term Memory And Personalization
+- Execution readiness: executing
+- Phase status:
+  - Phase 0 - Baseline Freeze And Guardrails: done
+  - Phase 1 - Data Foundation And Migration: done
+  - Phase 2 - Proposal API And Manager: done
+  - Phase 3 - Passive Conductor And Specialist Registry: done
+  - Phase 4 - Action Executor And Confirmed Write Path: done
+  - Phase 5 - Frontend Proposal Surface: done
+  - Phase 6 - Phase 1B Stability And Observability: done
+  - Phase 7 - Proactive Signals And Daily Rhythm: done
+  - Phase 8 - Long-Term Memory And Personalization: in progress
+- Change summary:
+  - `AssistantProposalRepository.list_proposals` 和 `AssistantProposalManager.list_proposals` 支持按 `session_id` 过滤 pending proposal。
+  - `AssistantService` 将 active proposal 文本确认扩展为统一 proposal 文本协议处理器。
+  - 支持文本确认：
+    - `按P2`
+    - `确认P1`
+    - `就按这个`
+  - 支持文本 revise：
+    - `把P2改到明天下午4点`
+    - `改一下这个方案`
+  - revise 当前复用既有 `AssistantProposalManager.revise_proposal`：生成新的 pending proposal、旧 proposal 标记 `superseded`、把 revision request 记录进 payload，并回写 active target。
+  - 多个 pending proposal 且用户只说“这个/这个方案”时，返回澄清，提示用 `P1/P2`。
+- Validation result:
+  - `docker exec graduation-project-api python -m compileall app`: passed。
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py`: `18 passed`。
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_proposals_repository.py`: `2 passed`。
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_action_executor.py`: `7 passed`。
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_proposal_manager.py -vv`: `6 passed`。
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_proposal_api.py tests/test_assistant_proposal_revise.py tests/test_assistant_proposal_dedup.py tests/test_assistant_proposal_expiry.py`: `9 passed`。
+  - `docker-compose up -d --force-recreate api`: completed。
+  - `/api/health`: returned `ok` after API recreate。
+- Decision updates:
+  - `P1/P2` 映射只在当前 session 的 pending proposals 中生效，按 proposal id 升序形成稳定编号。
+  - 单 pending proposal 可以容错“就按这个”；多个 pending proposal 必须明确编号。
+  - 文本确认和文本 revise 都不绕过 `AssistantProposalManager`，执行资格继续由 proposal status 控制。
+- Residual risks:
+  - revise 目前仍是结构化 lifecycle revise，不是智能重写 option/action payload；真正“把方案时间改成新时间”的 option 重规划仍待实现。
+  - `P1/P2` 编号是服务端文本协议映射，前端 pending proposal 展示若未同步显示同样编号，用户可能仍主要依赖“这个”。
+  - 本轮未跑全量后端 `pytest -q`，也未重跑前端构建。
+- Next recommended action:
+  - 实现 proposal revise 的真实 option/action 重规划，尤其是 event creation / reschedule 的新时间覆盖；然后把前端 pending proposal 列表同步显示 `P1/P2` 编号。
+
+## 进度更新 - 2026-05-06 00:30 +08:00
+
+- Overall progress: proposal revise 的真实时间重规划已完成第一段，前端 pending proposal 列表也已同步显示 session 内 `P1/P2` 编号。
+- Active phase: Phase 8 - Long-Term Memory And Personalization
+- Execution readiness: executing
+- Phase status:
+  - Phase 0 - Baseline Freeze And Guardrails: done
+  - Phase 1 - Data Foundation And Migration: done
+  - Phase 2 - Proposal API And Manager: done
+  - Phase 3 - Passive Conductor And Specialist Registry: done
+  - Phase 4 - Action Executor And Confirmed Write Path: done
+  - Phase 5 - Frontend Proposal Surface: done
+  - Phase 6 - Phase 1B Stability And Observability: done
+  - Phase 7 - Proactive Signals And Daily Rhythm: done
+  - Phase 8 - Long-Term Memory And Personalization: in progress
+- Change summary:
+  - `AssistantProposalManager.revise_proposal` 现在会对 `event_creation` 的 `create_event` action 和 `event_reschedule` 的 `reschedule_event.update` action 进行时间重规划。
+  - revise 会从原 action 提取旧 start/end，解析用户修改文本的新时间，保留原时长，覆盖新 proposal 的 action payload。
+  - 支持只改时间不改日期的表达，例如“改到下午4点”：保留原 proposal 日期。
+  - 支持带日期表达，例如“改到5月8日下午4点”：按新日期和时间覆盖。
+  - revised proposal 的 summary 和 option summary 会反映新时间，并在 payload 中记录 `revision.type = event_time_update`。
+  - proposal list API 支持 `session_id` 过滤；前端 `fetchAssistantProposals` 会传当前 session id。
+  - 前端 pending proposal 列表按当前 session 内 pending proposal id 升序显示 `P1/P2`；非 pending proposal 使用 `#id`，避免误导文本确认。
+- Validation result:
+  - `docker exec graduation-project-api python -m compileall app`: passed。
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_proposal_revise.py`: `4 passed`。
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_proposal_revise.py tests/test_assistant_proposal_api.py tests/test_assistant_conductor.py`: `24 passed`。
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_proposal_manager.py -vv`: `6 passed`。
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_action_executor.py`: `7 passed`。
+  - `cd frontend; pnpm exec vue-tsc --noEmit`: passed。
+  - `cd frontend; pnpm run build`: passed。
+  - `docker-compose up -d --force-recreate api`: completed。
+  - `/api/health`: first request during startup ended prematurely, retry returned `ok`。
+- Decision updates:
+  - revise 仍复用 proposal lifecycle：旧 proposal -> `superseded`，新 proposal -> `pending`，确认后才执行。
+  - 当前只对事件创建/重排的时间字段做真实重规划；不在这一段混入地点、标题、任务拆分等更广义修改。
+  - 前端展示的 `P1/P2` 只对 pending proposal 生效，和后端文本协议保持一致。
+- Residual risks:
+  - 复杂 revise（改地点、改标题、改任务拆分、改多 action proposal）仍只是 lifecycle revise 或后续需要专门规划。
+  - 批量重排/批量取消 proposal 尚未实现。
+  - 本轮未跑全量后端 `pytest -q`。
+- Next recommended action:
+  - 进入批量重排/批量取消 proposal 的边界设计与实现，明确确认文案、目标列表展示和部分失败补偿策略。
+
+## 进度更新 - 2026-05-06 01:43 +08:00
+
+- Overall progress: 批量取消 proposal 与批量“整体推迟/提前 N 天”重排 proposal 已完成第一版，继续保持 proposal 优先与确认后执行。
+- Active phase: Phase 8 - Long-Term Memory And Personalization
+- Execution readiness: executing
+- Phase status:
+  - Phase 0 - Baseline Freeze And Guardrails: done
+  - Phase 1 - Data Foundation And Migration: done
+  - Phase 2 - Proposal API And Manager: done
+  - Phase 3 - Passive Conductor And Specialist Registry: done
+  - Phase 4 - Action Executor And Confirmed Write Path: done
+  - Phase 5 - Frontend Proposal Surface: done
+  - Phase 6 - Phase 1B Stability And Observability: done
+  - Phase 7 - Proactive Signals And Daily Rhythm: done
+  - Phase 8 - Long-Term Memory And Personalization: in progress
+- Change summary:
+  - `UnderstandingSpecialist` 新增受限批量 event target 解析：只有包含“所有/全部/当天/这天”等批量语义并带明确日期引用时，才会选中某一天的 active events。
+  - 批量取消支持“取消明天所有日程”一类表达；无日期范围会澄清，不会猜测全局取消。
+  - 批量重排第一版支持“把明天所有日程推迟一天/提前两天”一类整体平移语义，保留每个日程原本开始时间、结束时间和时长。
+  - `PlanningSpecialist` 新增 `event_batch_cancel` 与 `event_batch_reschedule` proposal，单个 proposal option 内包含多个既有 executor action。
+  - `TaskOrEventClarifier` 新增批量日期缺失、批量过大、批量重排缺少移动规则的澄清文案。
+  - `tests/test_assistant_conductor.py` 增加批量取消、无日期澄清、批量整体顺延、缺少 shift rule 澄清测试。
+- Validation result:
+  - `docker exec graduation-project-api python -m compileall app`: passed.
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py`: passed，`22 passed`.
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_action_executor.py`: passed，`7 passed`.
+  - `docker-compose up -d --force-recreate api`: completed；`curl.exe http://localhost:8000/api/health`: HTTP 200，`status=ok`.
+- Decision updates:
+  - Verified facts:
+    - 当前批量 proposal 复用既有 Action Executor 的逐 action 执行能力，不新增未确认写入路径。
+  - Locked decisions:
+    - 批量重排第一版只支持“整体推迟/提前 N 天”，暂不把“明天所有日程改到后天”解释为精确批量改期，避免目标日期/原日期解析歧义。
+    - 批量目标上限暂定 8 个，超过则澄清要求缩小范围。
+  - Open questions:
+    - 批量 action 的部分失败补偿策略仍未定稿。
+- Residual risks:
+  - 批量 proposal confirm 仍是逐 action 顺序执行；若中途失败，前面 action 可能已经生效，尚无全局事务补偿。
+  - “把明天所有日程改到后天”这类精确批量改期尚未支持，需要后续专门解析 source date 与 destination date。
+  - 本轮未跑全量后端 `pytest -q`，也未重跑前端构建。
+- Next recommended action:
+  - 继续做批量 action 的部分失败补偿/回滚策略，或先补精确批量改期（source date -> destination date）的解析与测试。
+
+## 进度更新 - 2026-05-06 04:14 +08:00
+
+- Overall progress: 更新类 action 的部分失败补偿底座已完成第一版；多 action proposal 中若后续 action 失败，已成功的 event/task 更新 action 会按反序尝试恢复。
+- Active phase: Phase 8 - Long-Term Memory And Personalization
+- Execution readiness: executing
+- Phase status:
+  - Phase 0 - Baseline Freeze And Guardrails: done
+  - Phase 1 - Data Foundation And Migration: done
+  - Phase 2 - Proposal API And Manager: done
+  - Phase 3 - Passive Conductor And Specialist Registry: done
+  - Phase 4 - Action Executor And Confirmed Write Path: done
+  - Phase 5 - Frontend Proposal Surface: done
+  - Phase 6 - Phase 1B Stability And Observability: done
+  - Phase 7 - Proactive Signals And Daily Rhythm: done
+  - Phase 8 - Long-Term Memory And Personalization: in progress
+- Change summary:
+  - `AssistantActionExecutor.execute` 新增 rollback stack：每个可补偿更新 action 成功后记录 compensation，后续 action 失败时反序回滚。
+  - `reschedule_event`、`cancel_event`、`mark_event_completed`、`mark_task_completed` 在服务支持 `get_event/get_task` 时会读取更新前快照，并在结果中携带 `compensation`。
+  - 回滚失败不会吞掉原始失败；原始 `HTTPException.detail` 会附带 `failed_action_index` 与 `rollback` 明细，便于 proposal execution 失败观测。
+  - 创建类 action 暂不自动删除/回滚，避免在无明确事务边界时误删用户数据。
+  - `tests/test_assistant_action_executor.py` 新增后续 action 失败时回滚已成功 reschedule 的测试。
+- Validation result:
+  - `docker exec graduation-project-api python -m compileall app`: passed.
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_action_executor.py`: passed，`8 passed`.
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_proposal_manager.py -vv`: passed，`6 passed`.
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py`: passed，`22 passed`.
+  - `docker-compose up -d --force-recreate api`: completed；`curl.exe http://localhost:8000/api/health`: HTTP 200，`status=ok`.
+- Decision updates:
+  - Verified facts:
+    - 更新类 action 的局部回滚可以在 executor 层完成，不需要改变 proposal confirm 的确认前置约束。
+  - Locked decisions:
+    - 第一版补偿只覆盖可安全恢复旧字段的更新类 action；创建类 action 与 `create_task_with_events` 全局事务补偿继续单独处理。
+  - Open questions:
+    - 是否要为创建类 action 引入显式 `compensation_policy`，例如只删除本 proposal 创建且没有后续用户编辑的对象。
+- Residual risks:
+  - 回滚依赖 service 的 `get_event/get_task` 可用；若注入的 fake/外部服务没有读取接口，executor 会执行但不登记该 action 的自动补偿。
+  - 回滚仍可能因数据库/服务异常失败；当前只记录 `rollback_failed`，不重试。
+  - `create_task_with_events` 仍无全局事务补偿。
+  - 本轮未跑全量后端 `pytest -q`，也未重跑前端构建。
+- Next recommended action:
+  - 补精确批量改期（source date -> destination date）的解析与测试，或继续细化创建类 action / `create_task_with_events` 的显式补偿策略。
+
 ## 决策记录
 
 - Verified facts:
@@ -1463,6 +1725,9 @@
   - Action Executor 更新类动作已完成第一批：`reschedule_event`、`cancel_event`、`mark_event_completed`、`mark_task_completed` 均通过真实 confirm API 验证。
   - 更新类自然语言请求已接入 Conductor/Planning Specialist，唯一目标可生成 proposal，多目标/未找到会澄清。
   - `AssistantAgentContext.now` 已使用应用时区时间，避免“明天”被容器 UTC 日期误算。
+  - 指代类目标消歧已接入最近会话历史，且只接受精确标题/content 提及或唯一候选。
+  - 批量取消与批量整体顺延 proposal 第一版已完成：要求明确日期范围，批量重排仅支持“整体推迟/提前 N 天”，确认后复用既有 executor action。
+  - 更新类 action 的部分失败补偿第一版已完成：后续 action 失败时，已成功的 event/task 更新 action 会按反序尝试恢复旧快照。
 - Active assumptions:
   - Phase 1A 以单用户本地原型边界实现，`local-user` 仍是默认用户。
   - SQLite 仍是近期运行数据库，因此复杂唯一约束优先放 service 层处理。
@@ -1558,7 +1823,7 @@
 
 ## 进度台账
 
-- Overall progress: Conductor proposal draft 持久化安全入口、真实端到端闭环、更新类 Action Executor 第一批动作、以及更新类自然语言规划入口均已完成；`proposal` mode 下清晰请求会生成 pending proposal，前端可展示并确认，确认后 Action Executor 可创建、重排、取消和完成事项且重复确认幂等，Phase 8 长期记忆仍在收口中。
+- Overall progress: Conductor proposal draft 持久化安全入口、真实端到端闭环、更新类 Action Executor 第一批动作、更新类自然语言规划入口、指代类目标消歧第一段、`active_target` thread state 第一段、pending proposal 文本协议第一段、proposal revise 时间/标题/地点重规划第一段、前端 `P1/P2` 编号显示、批量取消 proposal 第一版、批量整体顺延 proposal 第一版、精确批量改期（source date -> destination date）第一版、更新类 action 部分失败补偿第一版、创建类 action / `create_task_with_events` 显式补偿第一版、以及前端缓存/版本刷新策略第一版均已完成；`proposal` mode 下清晰请求会生成 pending proposal，前端可展示并确认，确认后 Action Executor 可创建、重排、取消和完成事项且重复确认幂等，Phase 8 收口验证已通过。
 - Phase 0 - Baseline Freeze And Guardrails: `done`
 - Phase 1 - Data Foundation And Migration: `done`
 - Phase 2 - Proposal API And Manager: `done`
@@ -1567,16 +1832,219 @@
 - Phase 5 - Frontend Proposal Surface: `done`
 - Phase 6 - Phase 1B Stability And Observability: `done`
 - Phase 7 - Proactive Signals And Daily Rhythm: `done`
-- Phase 8 - Long-Term Memory And Personalization: `in progress`
-- Validation status: Phase 0、Phase 1、Phase 2、Phase 3、Phase 4、Phase 5、Phase 6、Phase 7 验证均通过；Phase 8 第一段后端全量回归 `338 passed`，`compileall app` 通过，Alembic head 为 `0008_assistant_memory_candidates`，实际 API 容器中 `/api/health`、`/api/assistant/memory` 均返回 HTTP 200；Phase 8 第二段前端 `vue-tsc --noEmit` 和 `pnpm run build` 通过，Playwright 验证 pending memory candidate 可显示并可拒绝后消失；Phase 8 第三段后端全量回归 `342 passed`，运行态聊天 smoke 可生成并清理 proposed memory candidate；Phase 8 第四段后端全量回归 `345 passed`，运行态 smoke 显示 API 健康且 proposed candidate 为 `0`；Phase 8 第五段 `compileall app` 通过，相关回归 `14 passed`、宽 assistant/workflow 回归 `92 passed`、后端全量回归 `350 passed`，API 重启后 `/api/health` 与 `/api/assistant/memory` 均成功；Conductor proposal 持久化段 `compileall app` 通过，目标回归 `18 passed`、组合回归 `74 passed`、后端全量回归 `352 passed`，API 重启后 `/api/health` 与 `/api/assistant/proposals` 均成功；真实 WS/API 端到端与 Playwright 前端 UI 端到端均已通过，验证事件已清理，当前 pending proposals 为 `0`；更新类 action 段 `compileall app` 通过，目标回归 `13 passed`，proposal 外围回归 `9 passed`，真实 confirm API E2E 通过且临时数据已清理；自然语言更新规划段 `compileall app` 通过，目标回归 `23 passed`、proposal 外围回归 `9 passed`、memory/workflow 回归 `14 passed`，真实 HTTP E2E 通过且相对日期按应用时区正确计算。
+- Phase 8 - Long-Term Memory And Personalization: `done`
+- Validation status: Phase 0、Phase 1、Phase 2、Phase 3、Phase 4、Phase 5、Phase 6、Phase 7 验证均通过；Phase 8 第一段后端全量回归 `338 passed`，`compileall app` 通过，Alembic head 为 `0008_assistant_memory_candidates`，实际 API 容器中 `/api/health`、`/api/assistant/memory` 均返回 HTTP 200；Phase 8 第二段前端 `vue-tsc --noEmit` 和 `pnpm run build` 通过，Playwright 验证 pending memory candidate 可显示并可拒绝后消失；Phase 8 第三段后端全量回归 `342 passed`，运行态聊天 smoke 可生成并清理 proposed memory candidate；Phase 8 第四段后端全量回归 `345 passed`，运行态 smoke 显示 API 健康且 proposed candidate 为 `0`；Phase 8 第五段 `compileall app` 通过，相关回归 `14 passed`、宽 assistant/workflow 回归 `92 passed`、后端全量回归 `350 passed`，API 重启后 `/api/health` 与 `/api/assistant/memory` 均成功；Conductor proposal 持久化段 `compileall app` 通过，目标回归 `18 passed`、组合回归 `74 passed`、后端全量回归 `352 passed`，API 重启后 `/api/health` 与 `/api/assistant/proposals` 均成功；真实 WS/API 端到端与 Playwright 前端 UI 端到端均已通过，验证事件已清理，当前 pending proposals 为 `0`；更新类 action 段 `compileall app` 通过，目标回归 `13 passed`，proposal 外围回归 `9 passed`，真实 confirm API E2E 通过且临时数据已清理；自然语言更新规划段 `compileall app` 通过，目标回归 `23 passed`、proposal 外围回归 `9 passed`、memory/workflow 回归 `14 passed`，真实 HTTP E2E 通过且相对日期按应用时区正确计算；指代消歧段 `compileall app` 通过，conductor 回归 `13 passed`、executor 回归 `7 passed`、proposal manager 回归 `6 passed`、proposal 外围 `9 passed`，真实会话 E2E 通过且临时数据已清理；active_target 段 `compileall app` 通过，conductor 回归 `15 passed`、thread repository `2 passed`、executor `7 passed`、proposal manager `6 passed`、proposal 外围 `9 passed`，API recreate 后 `/api/health` 返回 `ok`；proposal 文本协议段 `compileall app` 通过，conductor/protocol 回归 `18 passed`、thread/proposal repository `2 passed`、executor `7 passed`、proposal manager `6 passed`、proposal 外围 `9 passed`，API recreate 后 `/api/health` 返回 `ok`；proposal revise 时间重规划段 `compileall app` 通过，revise/API/conductor 组合 `24 passed`、proposal manager `6 passed`、executor `7 passed`、前端 `vue-tsc --noEmit` 与 `pnpm run build` 均通过，API recreate 后 `/api/health` 重试返回 `ok`；批量 proposal 第一版 `compileall app` 通过，conductor 回归 `22 passed`，executor 回归 `7 passed`；更新类部分失败补偿段 `compileall app` 通过，executor 回归 `8 passed`，proposal manager 回归 `6 passed`，conductor 回归 `22 passed`；精确批量改期段 `compileall app` 通过，conductor 回归 `24 passed`，executor 回归 `8 passed`，proposal manager 回归 `6 passed`；创建类 action / `create_task_with_events` 显式补偿段 `compileall app` 通过，executor 回归 `10 passed`，proposal manager 回归 `6 passed`，conductor 回归 `24 passed`；前端缓存/版本刷新策略段 `pnpm exec vue-tsc --noEmit` 与 `pnpm run build` 均通过；proposal revise 标题/地点重规划段 `compileall app` 通过，revise 专项 `6 passed`，proposal manager `6 passed`，proposal API + conductor `26 passed`，API recreate 后 `/api/health` 返回 `ok`；Phase 8 收口验证：后端全量 `docker exec graduation-project-api pytest -q` -> `382 passed`，前端 `pnpm exec vue-tsc --noEmit` 与 `pnpm run build` 均通过。
 - Residual risks:
-  - 浏览器旧 service worker/cache 可能导致开发验证误加载 Vite 5173 资源；本次通过清理缓存恢复生产包，后续应补正式版本刷新策略。
-  - `create_task_with_events` 暂无全局事务补偿；Phase 6 已补观测，原子性/补偿策略仍需后续处理。
+  - 前端缓存/版本刷新策略已补第一版：开发环境会注销旧 service worker 并删除 `ma-ipaas-*` cache；生产 service worker 使用 network-first，不缓存 `/api/` 与 `/ws`，并在新版本激活后刷新页面。
+  - 创建类 action / `create_task_with_events` 已有显式补偿第一版：只删除本 proposal 刚创建出的对象；若删除本身失败会记录 rollback failure，不会误碰既有用户数据。
   - SQLite + API + Celery 共享写入仍可能导致并发抖动，主动系统上线前要重点观察。
   - LLM 结构化抽取失败时必须有澄清/保守 fallback，否则会重现“无法识别简单日程”的体验问题。
   - Phase 8 长期记忆已接前端确认区、显式聊天候选持久化、confirmed `.md` 只读上下文注入和地点别名解析；但偏好/习惯记忆仍主要以上下文文本提供，尚未形成强规则约束。
-  - “这个/刚才那个/下午那个”等指代类目标尚未接入 thread state/session history，复杂消歧仍需要用户补充目标。
+  - `active_target` thread state 已接入最近 proposal/event/task，`P1/P2` 文本选择和基础自然语言 revise 协议已接入；event creation/reschedule 的时间/标题/地点 revise 已能真实重规划 option/action payload，但任务拆分类和更复杂多 action revise 仍待增强。
+  - 批量 proposal 已覆盖带日期范围的批量取消、整体推迟/提前 N 天、以及“把明天所有日程改到后天”这类 source date -> destination date 精确改期；更复杂的批量筛选条件（按地点/标题/类别）仍待后续增强。更新类 action 与创建类 action 均已有部分失败补偿第一版，但底层数据库级事务原子性仍未引入。
 
 ## 下一步动作
 
-下一步继续增强目标消歧与批量操作：接入 thread state/session history 支持“这个/刚才那个”等指代；设计“推迟今天所有日程”这类批量重排 proposal 的边界、确认文案和失败补偿策略。
+下一步不再建议沿“补关键词 / 补路由 / 补模板澄清”方向继续增强。当前最优先动作应切换为 `Phase 9 - Model-Driven Orchestration Refactor`：先完成架构重审、定义模型主导的统一主控中间态，再逐步退役旧规则链路。
+
+## 进度更新 - 2026-05-06 05:08 +08:00
+
+- Overall progress: 精确批量改期（source date -> destination date）第一版已完成；“把明天所有日程改到后天”会使用明天作为源日期筛选当天 event，使用后天作为目标日期，生成 `event_batch_reschedule` proposal，确认前不会写入。
+- Active phase: Phase 8 - Long-Term Memory And Personalization
+- Phase status:
+  - Phase 0 - Baseline Freeze And Guardrails: done
+  - Phase 1 - Data Foundation And Migration: done
+  - Phase 2 - Proposal API And Manager: done
+  - Phase 3 - Passive Conductor And Specialist Registry: done
+  - Phase 4 - Action Executor And Confirmed Write Path: done
+  - Phase 5 - Frontend Proposal Surface: done
+  - Phase 6 - Phase 1B Stability And Observability: done
+  - Phase 7 - Proactive Signals And Daily Rhythm: done
+  - Phase 8 - Long-Term Memory And Personalization: in progress
+- Files changed in this step:
+  - `E:\GraduationProject\backend\app\assistant_agents\specialists\understanding.py`
+    - 批量 reschedule now extracts explicit source/destination dates around `改到/改成/调整到/挪到/推迟到/提前到/延期到`.
+    - 批量“改/调整/挪/移动”类请求会进入 update 意图；缺少目标日期或整体移动规则时继续澄清，不猜测。
+    - 只有目标日期但没有源日期的“把所有日程改到后天”会澄清日期范围，不会把目标日期误当成源日期筛选。
+  - `E:\GraduationProject\backend\app\assistant_agents\specialists\planning.py`
+    - `event_batch_reschedule` can now rebuild each action by preserving original time/duration and replacing the date with `batch_destination_date`.
+  - `E:\GraduationProject\backend\tests\test_assistant_conductor.py`
+    - 新增/更新精确批量改期 proposal 测试，并保留缺移动规则时的澄清测试。
+- Validation:
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py` -> `24 passed`
+  - `docker exec graduation-project-api python -m compileall app` -> passed
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_action_executor.py` -> `8 passed`
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_proposal_manager.py -vv` -> `6 passed`
+  - `docker-compose up -d --force-recreate api` -> completed
+  - `curl.exe -v http://127.0.0.1:8000/api/health` -> HTTP 200, `status=ok`
+- Open risks / remaining work:
+  - 复杂 proposal revise 仍只完成时间重规划第一段，地点/标题/任务拆分/多 action revise 还没增强。
+  - `create_task_with_events` 仍无全局事务补偿；创建类 action 的补偿边界需要明确策略。
+  - 前端缓存/service worker/版本刷新策略仍未正式补。
+  - 本轮未跑后端全量 `pytest -q`，也未重新跑前端 `vue-tsc` / build。
+- Next recommended action:
+  - 优先实现 `create_task_with_events` / 创建类 action 的显式补偿策略与测试，或先补前端缓存/版本刷新策略。
+
+## 进度更新 - 2026-05-06 05:42 +08:00
+
+- Overall progress: 创建类 action / `create_task_with_events` 显式补偿第一版已完成；后续 action 失败时会反序删除本 proposal 刚创建出的 event/task，`create_task_with_events` 内部 event 创建失败时也会即时清理已创建的 event 和 task。
+- Active phase: Phase 8 - Long-Term Memory And Personalization
+- Phase status:
+  - Phase 0 - Baseline Freeze And Guardrails: done
+  - Phase 1 - Data Foundation And Migration: done
+  - Phase 2 - Proposal API And Manager: done
+  - Phase 3 - Passive Conductor And Specialist Registry: done
+  - Phase 4 - Action Executor And Confirmed Write Path: done
+  - Phase 5 - Frontend Proposal Surface: done
+  - Phase 6 - Phase 1B Stability And Observability: done
+  - Phase 7 - Proactive Signals And Daily Rhythm: done
+  - Phase 8 - Long-Term Memory And Personalization: in progress
+- Files changed in this step:
+  - `E:\GraduationProject\backend\app\assistant_agents\action_executor.py`
+    - `create_event` / `create_task` 成功后登记 `delete_event` / `delete_task` compensation。
+    - `create_task_with_events` 成功后登记 composite compensation，删除顺序为 event -> task。
+    - `create_task_with_events` 内部失败时会立即执行 composite rollback，并在 `HTTPException.detail` 中带回 rollback 结果。
+  - `E:\GraduationProject\backend\tests\test_assistant_action_executor.py`
+    - 新增内部 event 创建失败回滚测试。
+    - 新增 `create_task_with_events` 成功后后续 action 失败时的统一 rollback stack 测试。
+- Validation:
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_action_executor.py` -> `10 passed`
+  - `docker exec graduation-project-api python -m compileall app` -> passed
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_proposal_manager.py -vv` -> `6 passed`
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py` -> `24 passed`
+  - `docker-compose up -d --force-recreate api` -> completed
+  - `curl.exe -v http://127.0.0.1:8000/api/health` -> HTTP 200, `status=ok`
+- Open risks / remaining work:
+  - 补偿仍是服务层 best-effort，不是数据库事务；若删除补偿本身失败，会记录 rollback failure，需要人工/后续重试处理。
+  - 复杂 proposal revise 仍只完成时间重规划第一段，地点/标题/任务拆分/多 action revise 还没增强。
+  - 前端缓存/service worker/版本刷新策略仍未正式补。
+  - 本轮未跑后端全量 `pytest -q`，也未重新跑前端 `vue-tsc` / build。
+- Next recommended action:
+  - 优先补前端缓存/版本刷新策略，或继续增强复杂 proposal revise。
+
+## 进度更新 - 2026-05-06 06:08 +08:00
+
+- Overall progress: 前端缓存/版本刷新策略第一版已完成；旧 service worker/cache 导致 8888 页面误加载 5173 Vite 资源的风险已被正式收口。
+- Active phase: Phase 8 - Long-Term Memory And Personalization
+- Phase status:
+  - Phase 0 - Baseline Freeze And Guardrails: done
+  - Phase 1 - Data Foundation And Migration: done
+  - Phase 2 - Proposal API And Manager: done
+  - Phase 3 - Passive Conductor And Specialist Registry: done
+  - Phase 4 - Action Executor And Confirmed Write Path: done
+  - Phase 5 - Frontend Proposal Surface: done
+  - Phase 6 - Phase 1B Stability And Observability: done
+  - Phase 7 - Proactive Signals And Daily Rhythm: done
+  - Phase 8 - Long-Term Memory And Personalization: in progress
+- Files changed in this step:
+  - `E:\GraduationProject\frontend\src\platform\pwa.ts`
+    - 开发环境不再注册 SW，并会在 load 后注销既有 SW、删除 `ma-ipaas-*` cache。
+    - 生产环境注册 SW 后会主动 `update()`；检测到新 SW installed 后发送 `SKIP_WAITING`，`controllerchange` 时刷新页面。
+  - `E:\GraduationProject\frontend\public\sw.js`
+    - cache name 升级为 `ma-ipaas-v2`，激活时清理旧 `ma-ipaas-*` cache。
+    - fetch 策略改为 network-first；不拦截跨源、`/api/`、`/ws` 请求，避免缓存接口响应和开发资源。
+- Validation:
+  - `pnpm exec vue-tsc --noEmit` -> passed
+  - `pnpm run build` -> passed
+- Open risks / remaining work:
+  - 复杂 proposal revise 仍只完成时间重规划第一段，地点/标题/任务拆分/多 action revise 还没增强。
+  - 本轮未跑后端全量 `pytest -q`。
+- Next recommended action:
+  - 继续增强复杂 proposal revise，优先从 event location/title revise 或 multi-action revise 里选一个保守子集。
+
+## 进度更新 - 2026-05-06 06:54 +08:00
+
+- Overall progress: 复杂 proposal revise 第一段已扩展到 event 标题/地点修改；event creation 与 event reschedule 的 revise 现在可组合改时间、标题、地点，并继续生成新的 pending proposal，确认前不写入。
+- Active phase: Phase 8 - Long-Term Memory And Personalization
+- Phase status:
+  - Phase 0 - Baseline Freeze And Guardrails: done
+  - Phase 1 - Data Foundation And Migration: done
+  - Phase 2 - Proposal API And Manager: done
+  - Phase 3 - Passive Conductor And Specialist Registry: done
+  - Phase 4 - Action Executor And Confirmed Write Path: done
+  - Phase 5 - Frontend Proposal Surface: done
+  - Phase 6 - Phase 1B Stability And Observability: done
+  - Phase 7 - Proactive Signals And Daily Rhythm: done
+  - Phase 8 - Long-Term Memory And Personalization: in progress / ready to close after broader regression
+- Files changed in this step:
+  - `E:\GraduationProject\backend\app\services\assistant_proposal_manager.py`
+    - `_build_revised_payload` now collects event revision fields instead of only time.
+    - `create_event` payload and `reschedule_event.update` can receive revised `start_time` / `end_time` / `title` / `location_name`.
+    - Summary builder now reports modified time/title/location in one concise suffix.
+    - Location extraction avoids treating obvious date/time phrases like “下午4点” as a location.
+  - `E:\GraduationProject\backend\tests\test_assistant_proposal_revise.py`
+    - Updated time revise assertion for `event_payload_update`.
+    - Added event creation title/location revise test.
+    - Added event reschedule time + location revise test.
+- Validation:
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_proposal_revise.py` -> `6 passed`
+  - `docker exec graduation-project-api python -m compileall app` -> passed
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_proposal_manager.py -vv` -> `6 passed`
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_proposal_api.py tests/test_assistant_conductor.py` -> `26 passed`
+  - `docker-compose up -d --force-recreate api` -> completed
+  - `curl.exe -v http://127.0.0.1:8000/api/health` -> HTTP 200, `status=ok`
+- Open risks / remaining work:
+  - 任务拆分类 proposal revise 与更复杂多 action proposal revise 还没做深度重规划。
+  - 本轮未跑后端全量 `pytest -q`，也未重新跑前端 build。
+- Next recommended action:
+  - 做 Phase 8 收口验证：至少串行跑后端全量 `pytest -q`，再跑前端 `vue-tsc` / build；若通过，可把 Phase 8 标记为 done 或 ready-for-final-review。
+
+## 进度更新 - 2026-05-06 07:12 +08:00
+
+- Overall progress: Phase 8 收口验证已完成并通过；Phase 8 - Long-Term Memory And Personalization 标记为 `done`。
+- Active phase: Phase 8 - Long-Term Memory And Personalization
+- Phase status:
+  - Phase 0 - Baseline Freeze And Guardrails: done
+  - Phase 1 - Data Foundation And Migration: done
+  - Phase 2 - Proposal API And Manager: done
+  - Phase 3 - Passive Conductor And Specialist Registry: done
+  - Phase 4 - Action Executor And Confirmed Write Path: done
+  - Phase 5 - Frontend Proposal Surface: done
+  - Phase 6 - Phase 1B Stability And Observability: done
+  - Phase 7 - Proactive Signals And Daily Rhythm: done
+  - Phase 8 - Long-Term Memory And Personalization: done
+- Validation:
+  - `docker exec graduation-project-api pytest -q` -> `382 passed`
+  - `pnpm exec vue-tsc --noEmit` -> passed
+  - `pnpm run build` -> passed
+- Remaining enhancement backlog:
+  - 任务拆分类 proposal revise 与更复杂多 action proposal revise 仍可继续增强，但不阻塞 Phase 8 收口。
+  - 更新类/创建类补偿目前是 service-level best-effort，不是数据库事务；失败会记录 rollback failure。
+  - 更复杂批量筛选条件（按地点/标题/类别）仍可作为后续阶段增强。
+- Next recommended action:
+  - 进入后续阶段规划或最终集成审查；如果继续实现功能增强，优先从任务拆分类 / 更复杂多 action proposal revise 选一个保守子集。
+
+## 进度更新 - 2026-05-06 17:11 +08:00
+
+- Overall progress: Phase 8 收口后已完成一次架构级复审；结论是当前系统虽然具备 proposal-first、confirm-before-write、基础执行器和长期记忆候选，但主控理解与协商权仍被多套规则链路和 legacy fallback 分裂控制，不能再继续沿“补关键词/补路由”方向演进。下一阶段正式切换为 `Phase 9 - Model-Driven Orchestration Refactor`。
+- Active phase: Phase 9 - Model-Driven Orchestration Refactor
+- Phase status:
+  - Phase 0 - Baseline Freeze And Guardrails: done
+  - Phase 1 - Data Foundation And Migration: done
+  - Phase 2 - Proposal API And Manager: done
+  - Phase 3 - Passive Conductor And Specialist Registry: done
+  - Phase 4 - Action Executor And Confirmed Write Path: done
+  - Phase 5 - Frontend Proposal Surface: done
+  - Phase 6 - Phase 1B Stability And Observability: done
+  - Phase 7 - Proactive Signals And Daily Rhythm: done
+  - Phase 8 - Long-Term Memory And Personalization: done
+  - Phase 9 - Model-Driven Orchestration Refactor: in progress
+- Files changed in this step:
+  - `E:\GraduationProject\docs\development\AI_ASSISTANT_MODEL_DRIVEN_REFACTOR_REVIEW_V1.md`
+    - 新增模型主导重构审查书，明确当前系统的 4 个结构性问题：决策权分裂、理解层硬路由、proposal schema 无法承载任务 continuation、澄清/协商模板化。
+    - 给出“模型先整理语义，规则后置校验”的目标架构原则。
+    - 给出 Phase 9A-9D 迁移路线：模型主导理解层、proposal shape 扩展、模型生成澄清、legacy path 退役。
+  - `E:\GraduationProject\docs\development\AI_ASSISTANT_IMPLEMENTATION_TASK_BOOK_V1.md`
+    - 更新当前 active phase / execution readiness。
+    - 在阶段依赖表中新增 `Phase 9 - Model-Driven Orchestration Refactor`。
+    - 将“下一步动作”从局部功能增强切换为架构级重构。
+- Validation:
+  - 本轮是架构复审与规划文档更新，不引入运行时代码改动，因此未新增代码级验证命令。
+  - 复审证据来自真实 transcript 失败样本、已有运行态 smoke、以及对 `assistant.py` / `understanding.py` / `planning.py` / `task_or_event_clarifier.py` / `negotiation.py` / `assistant_runtime_plan.py` 的结构审查。
+- Open risks / remaining work:
+  - 只要 `send_message()` 仍允许 conductor 失败后默认掉回 legacy build_plan/workflow，主控人格分裂问题就会持续存在。
+  - 只要 `UnderstandingSpecialist` 仍以 regex intent 分类为主，口语化 continuation 与任务继续规划就仍会高频跑偏。
+  - 只要 proposal schema 仍缺少 `task_continuation_plan` / `task_schedule_plan` / `task_split_plan`，系统就无法稳定表达“围绕已有任务继续规划”。
+  - 当前固定澄清模板仍会在误路由后放大 chatbot 感，必须降级为最后兜底，而不是默认主回复机制。
+- Next recommended action:
+  - 先定义新的 model-driven orchestration schema 和 `send_message()` 单一路径迁移图，再补 8-12 条真实 transcript 回归测试，最后开始执行 Phase 9A 的代码重构。

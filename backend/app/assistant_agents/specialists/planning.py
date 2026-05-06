@@ -109,6 +109,9 @@ class PlanningSpecialist:
 
     def _build_event_update_proposal(self, context: AssistantAgentContext, slots: dict) -> ProposalDraft | None:
         action_type = slots.get("action_type")
+        if slots.get("target_scope") == "batch":
+            return self._build_batch_event_update_proposal(context, slots)
+
         event_id = slots.get("target_id")
         title = slots.get("target_title") or "这个日程"
         if not action_type or not event_id:
@@ -185,6 +188,126 @@ class PlanningSpecialist:
                         summary=summary,
                         actions=[{"type": "mark_event_completed", "payload": {"event_id": int(event_id)}}],
                         rationale="确认后会更新完成状态，并触发关联任务进度回算。",
+                    )
+                ],
+            )
+        return None
+
+    def _build_batch_event_update_proposal(self, context: AssistantAgentContext, slots: dict) -> ProposalDraft | None:
+        action_type = slots.get("action_type")
+        target_ids = [int(event_id) for event_id in slots.get("target_ids", []) if event_id is not None]
+        if not action_type or not target_ids:
+            return None
+        target_titles = [str(title) for title in slots.get("target_titles", []) if title]
+        count = len(target_ids)
+        target_date = slots.get("target_date")
+        title_preview = "、".join(target_titles[:3])
+        if len(target_titles) > 3:
+            title_preview += "等"
+
+        if action_type == "cancel_event":
+            summary = f"建议取消 {target_date} 的 {count} 个日程"
+            if title_preview:
+                summary += f"：{title_preview}"
+            return ProposalDraft(
+                proposal_type="event_batch_cancel",
+                summary=summary,
+                recommended_option_id="A",
+                is_time_sensitive=True,
+                payload_json={
+                    "source": "conductor_v1",
+                    "target_scope": "batch",
+                    "target_date": target_date,
+                    "target_event_ids": target_ids,
+                    "target_titles": target_titles,
+                    "batch_action_count": count,
+                },
+                options=[
+                    ProposalOptionDraft(
+                        option_id="A",
+                        title="取消这批日程",
+                        summary=summary,
+                        actions=[{"type": "cancel_event", "payload": {"event_id": event_id}} for event_id in target_ids],
+                        rationale="确认后会逐个取消这些日程；取消会保留历史记录，不会物理删除。",
+                    )
+                ],
+            )
+
+        if action_type == "reschedule_event":
+            shift_days = slots.get("batch_shift_days")
+            destination_date_raw = slots.get("batch_destination_date")
+            if shift_days is None and not destination_date_raw:
+                return None
+            try:
+                shift_days_int = int(shift_days) if shift_days is not None else None
+                destination_date = datetime.fromisoformat(destination_date_raw).date() if destination_date_raw else None
+            except (TypeError, ValueError):
+                return None
+            events_by_id = {getattr(event, "id", None): event for event in context.events}
+            actions: list[dict] = []
+            for event_id in target_ids:
+                event = events_by_id.get(event_id)
+                if event is None:
+                    return None
+                old_start = getattr(event, "start_time", None)
+                old_end = getattr(event, "end_time", None)
+                if old_start is None or old_end is None:
+                    return None
+                if destination_date is not None:
+                    new_start = datetime.combine(destination_date, old_start.timetz()).replace(tzinfo=old_start.tzinfo)
+                    new_end = new_start + (old_end - old_start)
+                elif shift_days_int is not None:
+                    new_start = old_start + timedelta(days=shift_days_int)
+                    new_end = old_end + timedelta(days=shift_days_int)
+                else:
+                    return None
+                actions.append(
+                    {
+                        "type": "reschedule_event",
+                        "payload": {
+                            "event_id": event_id,
+                            "update": {
+                                "start_time": new_start.isoformat(),
+                                "end_time": new_end.isoformat(),
+                            },
+                        },
+                    }
+                )
+            if destination_date is not None:
+                summary = f"建议把 {target_date} 的 {count} 个日程整体改到 {destination_date.isoformat()}"
+                option_title = "改期这批日程"
+            else:
+                direction = "推迟" if shift_days_int and shift_days_int > 0 else "提前"
+                day_count = abs(shift_days_int or 0)
+                summary = f"建议把 {target_date} 的 {count} 个日程整体{direction} {day_count} 天"
+                option_title = "整体顺延这批日程"
+            if title_preview:
+                summary += f"：{title_preview}"
+            payload_json = {
+                "source": "conductor_v1",
+                "target_scope": "batch",
+                "target_date": target_date,
+                "target_event_ids": target_ids,
+                "target_titles": target_titles,
+                "batch_action_count": count,
+            }
+            if shift_days_int is not None:
+                payload_json["batch_shift_days"] = shift_days_int
+            if destination_date is not None:
+                payload_json["batch_destination_date"] = destination_date.isoformat()
+            return ProposalDraft(
+                proposal_type="event_batch_reschedule",
+                summary=summary,
+                recommended_option_id="A",
+                is_time_sensitive=True,
+                payload_json=payload_json,
+                options=[
+                    ProposalOptionDraft(
+                        option_id="A",
+                        title=option_title,
+                        summary=summary,
+                        actions=actions,
+                        rationale="确认后会逐个保留原时间段，只移动日期。",
                     )
                 ],
             )

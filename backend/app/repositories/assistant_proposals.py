@@ -30,6 +30,7 @@ class AssistantProposalRepository(AsyncRepository[AssistantProposal]):
         self,
         *,
         user_id: str,
+        session_id: int | None = None,
         statuses: Sequence[str] | None = None,
         proposal_type: str | None = None,
         limit: int = 50,
@@ -37,6 +38,8 @@ class AssistantProposalRepository(AsyncRepository[AssistantProposal]):
     ) -> list[AssistantProposal]:
         await self.get_or_create_user(user_id)
         stmt = select(AssistantProposal).where(AssistantProposal.user_id == user_id)
+        if session_id is not None:
+            stmt = stmt.where(AssistantProposal.session_id == session_id)
         if statuses:
             stmt = stmt.where(AssistantProposal.status.in_(list(statuses)))
         if proposal_type:

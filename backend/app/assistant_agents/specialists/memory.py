@@ -24,13 +24,18 @@ class MemorySpecialist:
         state.metadata.setdefault("memory_candidate_create_payloads", []).append(candidate)
         return state
 
+    def is_explicit_memory_request(self, message: str) -> bool:
+        text = message.strip()
+        if not text:
+            return False
+        lowered = text.lower()
+        return any(marker in text for marker in ("记住", "帮我记", "以后记得", "保存一下", "请记")) or "remember" in lowered
+
     def extract_candidate(self, message: str) -> dict | None:
         text = message.strip()
         if not text:
             return None
-        lowered = text.lower()
-        explicit = any(marker in text for marker in ("记住", "帮我记", "以后记得", "保存一下", "请记"))
-        if not explicit and "remember" not in lowered:
+        if not self.is_explicit_memory_request(text):
             return None
 
         memory_type = self._classify_memory_type(text)

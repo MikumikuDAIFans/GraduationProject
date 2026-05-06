@@ -54,6 +54,256 @@ def test_revise_creates_child_and_supersedes_original(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
+def test_revise_event_creation_rewrites_action_time(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        manager, engine = await _make_manager(tmp_path)
+        try:
+            original = await manager.create_proposal(
+                user_id="local-user",
+                payload=AssistantProposalCreate(
+                    proposal_type="event_creation",
+                    summary="建议创建日程“论文组会”：05-07 15:00-16:30",
+                    payload_json={
+                        "options": [
+                            {
+                                "option_id": "A",
+                                "title": "按建议创建日程",
+                                "summary": "建议创建日程“论文组会”：05-07 15:00-16:30",
+                                "actions": [
+                                    {
+                                        "type": "create_event",
+                                        "payload": {
+                                            "title": "论文组会",
+                                            "start_time": "2026-05-07T15:00:00",
+                                            "end_time": "2026-05-07T16:30:00",
+                                            "location_name": "学校",
+                                        },
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                ),
+            )
+
+            revised = await manager.revise_proposal(
+                user_id="local-user",
+                proposal_id=original.id,
+                message="改到5月8日下午4点",
+            )
+
+            action = revised.payload_json["options"][0]["actions"][0]
+            assert revised.payload_json["revision"]["type"] == "event_payload_update"
+            assert action["payload"]["start_time"] == "2026-05-08T16:00:00"
+            assert action["payload"]["end_time"] == "2026-05-08T17:30:00"
+            assert "05-08 16:00-17:30" in revised.summary
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def test_revise_event_creation_rewrites_title_and_location(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        manager, engine = await _make_manager(tmp_path)
+        try:
+            original = await manager.create_proposal(
+                user_id="local-user",
+                payload=AssistantProposalCreate(
+                    proposal_type="event_creation",
+                    summary="建议创建日程“论文组会”：05-07 15:00-16:30",
+                    payload_json={
+                        "options": [
+                            {
+                                "option_id": "A",
+                                "title": "按建议创建日程",
+                                "summary": "建议创建日程“论文组会”：05-07 15:00-16:30",
+                                "actions": [
+                                    {
+                                        "type": "create_event",
+                                        "payload": {
+                                            "title": "论文组会",
+                                            "start_time": "2026-05-07T15:00:00",
+                                            "end_time": "2026-05-07T16:30:00",
+                                            "location_name": "学校",
+                                        },
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                ),
+            )
+
+            revised = await manager.revise_proposal(
+                user_id="local-user",
+                proposal_id=original.id,
+                message="标题改成毕业论文讨论，地点改到图书馆三楼",
+            )
+
+            payload = revised.payload_json["options"][0]["actions"][0]["payload"]
+            assert revised.payload_json["revision"]["title"] == "毕业论文讨论"
+            assert revised.payload_json["revision"]["location_name"] == "图书馆三楼"
+            assert payload["title"] == "毕业论文讨论"
+            assert payload["location_name"] == "图书馆三楼"
+            assert "标题“毕业论文讨论”" in revised.summary
+            assert "地点 图书馆三楼" in revised.summary
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def test_revise_event_creation_does_not_mistake_quoted_location_for_title(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        manager, engine = await _make_manager(tmp_path)
+        try:
+            original = await manager.create_proposal(
+                user_id="local-user",
+                payload=AssistantProposalCreate(
+                    proposal_type="event_creation",
+                    summary="建议创建日程“论文组会”：05-07 15:00-16:30",
+                    payload_json={
+                        "options": [
+                            {
+                                "option_id": "A",
+                                "title": "按建议创建日程",
+                                "summary": "建议创建日程“论文组会”：05-07 15:00-16:30",
+                                "actions": [
+                                    {
+                                        "type": "create_event",
+                                        "payload": {
+                                            "title": "论文组会",
+                                            "start_time": "2026-05-07T15:00:00",
+                                            "end_time": "2026-05-07T16:30:00",
+                                            "location_name": "学校",
+                                        },
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                ),
+            )
+
+            revised = await manager.revise_proposal(
+                user_id="local-user",
+                proposal_id=original.id,
+                message="地点改到“图书馆三楼”",
+            )
+
+            payload = revised.payload_json["options"][0]["actions"][0]["payload"]
+            assert "title" not in revised.payload_json["revision"]
+            assert revised.payload_json["revision"]["location_name"] == "图书馆三楼"
+            assert payload["title"] == "论文组会"
+            assert payload["location_name"] == "图书馆三楼"
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def test_revise_event_reschedule_rewrites_update_location_without_mistaking_time_for_location(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        manager, engine = await _make_manager(tmp_path)
+        try:
+            original = await manager.create_proposal(
+                user_id="local-user",
+                payload=AssistantProposalCreate(
+                    proposal_type="event_reschedule",
+                    summary="建议把日程“论文组会”改到 05-07 15:00-16:30",
+                    related_event_id=12,
+                    payload_json={
+                        "options": [
+                            {
+                                "option_id": "A",
+                                "title": "按建议重排日程",
+                                "summary": "建议把日程“论文组会”改到 05-07 15:00-16:30",
+                                "actions": [
+                                    {
+                                        "type": "reschedule_event",
+                                        "payload": {
+                                            "event_id": 12,
+                                            "update": {
+                                                "start_time": "2026-05-07T15:00:00",
+                                                "end_time": "2026-05-07T16:30:00",
+                                            },
+                                        },
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                ),
+            )
+
+            revised = await manager.revise_proposal(
+                user_id="local-user",
+                proposal_id=original.id,
+                message="改到下午4点，地点改到图书馆",
+            )
+
+            update = revised.payload_json["options"][0]["actions"][0]["payload"]["update"]
+            assert update["start_time"] == "2026-05-07T16:00:00"
+            assert update["end_time"] == "2026-05-07T17:30:00"
+            assert update["location_name"] == "图书馆"
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def test_revise_event_reschedule_rewrites_update_time(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        manager, engine = await _make_manager(tmp_path)
+        try:
+            original = await manager.create_proposal(
+                user_id="local-user",
+                payload=AssistantProposalCreate(
+                    proposal_type="event_reschedule",
+                    summary="建议把日程“论文组会”改到 05-07 15:00-16:30",
+                    related_event_id=12,
+                    payload_json={
+                        "options": [
+                            {
+                                "option_id": "A",
+                                "title": "按建议重排日程",
+                                "summary": "建议把日程“论文组会”改到 05-07 15:00-16:30",
+                                "actions": [
+                                    {
+                                        "type": "reschedule_event",
+                                        "payload": {
+                                            "event_id": 12,
+                                            "update": {
+                                                "start_time": "2026-05-07T15:00:00",
+                                                "end_time": "2026-05-07T16:30:00",
+                                            },
+                                        },
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                ),
+            )
+
+            revised = await manager.revise_proposal(
+                user_id="local-user",
+                proposal_id=original.id,
+                message="改到下午4点",
+            )
+
+            action = revised.payload_json["options"][0]["actions"][0]
+            update = action["payload"]["update"]
+            assert update["start_time"] == "2026-05-07T16:00:00"
+            assert update["end_time"] == "2026-05-07T17:30:00"
+            assert revised.related_event_id == 12
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+
 def test_revise_expired_proposal_is_rejected(tmp_path: Path) -> None:
     async def scenario() -> None:
         manager, engine = await _make_manager(tmp_path)

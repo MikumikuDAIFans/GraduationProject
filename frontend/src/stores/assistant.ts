@@ -156,7 +156,6 @@ const ACTIVE_PROPOSAL_STATUSES = [
   "accepted",
   "execution_pending",
   "execution_failed",
-  "executed",
 ];
 
 const ACTIVE_MEMORY_CANDIDATE_STATUSES = ["proposed"];
@@ -280,6 +279,9 @@ export const useAssistantStore = defineStore("assistant", {
         const params = new URLSearchParams();
         statuses.forEach((status) => params.append("status", status));
         params.set("limit", "20");
+        if (this.sessionId != null) {
+          params.set("session_id", String(this.sessionId));
+        }
         const response = await api.get<{ items: AssistantProposal[]; total: number }>("/assistant/proposals", {
           params,
         });
