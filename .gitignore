@@ -52,11 +52,19 @@ android/build/
 
 # Logs
 *.log
+*.out
+*.err
 logs/
+
+# Browser/debug run artifacts
+.playwright-mcp/
+browser_network_requests_before.txt
+p1-*.png
 
 # OS / Editor
 .DS_Store
 Thumbs.db
+~$*
 .idea/
 .vscode/
 

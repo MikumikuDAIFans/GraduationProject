@@ -5,12 +5,25 @@ from types import SimpleNamespace
 
 from app.api.schemas import AssistantMessageCreate
 from app.services.assistant import AssistantService
+from app.services.assistant_memory import AssistantMemoryService
 
 
 class FakeMemoryService:
     def __init__(self) -> None:
         self.payloads = []
         self.runtime_context = {}
+        self.candidates = [
+            SimpleNamespace(
+                id=1,
+                status="proposed",
+                memory_type="places",
+                proposed_change_json={
+                    "operation": "append_entry",
+                    "title": "学校",
+                    "content": "学校 = 南京大学仙林校区",
+                },
+            )
+        ]
 
     async def create_candidate(self, *, user_id: str, payload):
         self.payloads.append((user_id, payload))
@@ -21,9 +34,28 @@ class FakeMemoryService:
             proposed_change_json=payload.proposed_change_json,
         )
 
+    async def list_candidates(self, *, user_id: str, statuses=None, memory_type=None, limit: int = 50):
+        del user_id, statuses, memory_type, limit
+        return list(self.candidates)
+
+    async def confirm_candidate(self, *, user_id: str, candidate_id: int):
+        del user_id, candidate_id
+        candidate = self.candidates[0]
+        self.candidates = [SimpleNamespace(**{**candidate.__dict__, "status": "written"})]
+        return self.candidates[0]
+
+    async def reject_candidate(self, *, user_id: str, candidate_id: int):
+        del user_id, candidate_id
+        candidate = self.candidates[0]
+        self.candidates = [SimpleNamespace(**{**candidate.__dict__, "status": "rejected"})]
+        return self.candidates[0]
+
     async def build_runtime_context(self, *, user_id: str):
         assert user_id == "local-user"
         return self.runtime_context
+
+    def extract_place_aliases(self, memory_context):
+        return AssistantMemoryService().extract_place_aliases(memory_context)
 
 
 def test_assistant_service_captures_explicit_memory_candidate_without_writing() -> None:
@@ -46,6 +78,27 @@ def test_assistant_service_captures_explicit_memory_candidate_without_writing() 
         assert payload.status == "proposed"
         assert payload.proposed_change_json["operation"] == "append_entry"
         assert payload.proposed_change_json["content"] == "学校在北京大学东门"
+
+    asyncio.run(scenario())
+
+
+def test_assistant_service_captures_explicit_place_alias_candidate_without_writing() -> None:
+    async def scenario() -> None:
+        service = AssistantService()
+        fake_memory = FakeMemoryService()
+        service.memory_service = fake_memory
+
+        candidates = await service._capture_memory_candidates_for_message(
+            user_id="local-user",
+            user_message="以后把学校理解为南京大学仙林校区",
+        )
+
+        assert len(candidates) == 1
+        user_id, payload = fake_memory.payloads[0]
+        assert user_id == "local-user"
+        assert payload.memory_type == "places"
+        assert payload.proposed_change_json["title"] == "学校"
+        assert payload.proposed_change_json["content"] == "学校 = 南京大学仙林校区"
 
     asyncio.run(scenario())
 
@@ -78,6 +131,149 @@ def test_memory_candidate_notice_keeps_confirmation_boundary_visible() -> None:
 
     assert "待确认记忆" in reply
     assert "确认后" in reply
+
+
+def test_memory_text_protocol_confirms_single_pending_candidate() -> None:
+    async def scenario() -> None:
+        service = AssistantService()
+        fake_memory = FakeMemoryService()
+        service.memory_service = fake_memory
+
+        reply = await service._maybe_handle_memory_candidate_text_protocol(
+            user_id="local-user",
+            user_message="记住",
+        )
+
+        assert reply is not None
+        assert "已确认并写入长期记忆" in reply
+        assert "学校" in reply
+        assert fake_memory.candidates[0].status == "written"
+
+    asyncio.run(scenario())
+
+
+def test_memory_text_protocol_rejects_single_pending_candidate() -> None:
+    async def scenario() -> None:
+        service = AssistantService()
+        fake_memory = FakeMemoryService()
+        service.memory_service = fake_memory
+
+        reply = await service._maybe_handle_memory_candidate_text_protocol(
+            user_id="local-user",
+            user_message="不要记",
+        )
+
+        assert reply is not None
+        assert "已拒绝这条待确认记忆" in reply
+        assert fake_memory.candidates[0].status == "rejected"
+
+    asyncio.run(scenario())
+
+
+def test_memory_text_protocol_stream_ends_with_done_frame() -> None:
+    async def scenario() -> None:
+        service = AssistantService()
+        fake_memory = FakeMemoryService()
+        messages = []
+
+        class FakeRepository:
+            async def create_message(self, **kwargs):
+                messages.append(kwargs)
+                return SimpleNamespace(id=len(messages), **kwargs)
+
+        async def fake_resolve_session(**_kwargs):
+            return SimpleNamespace(id=1, title="Chat", context_json={})
+
+        async def noop_autorename(**_kwargs):
+            return None
+
+        service.memory_service = fake_memory
+        service.repository = FakeRepository()  # type: ignore[assignment]
+        service._resolve_session = fake_resolve_session  # type: ignore[method-assign]
+        service._maybe_autorename_session = noop_autorename  # type: ignore[method-assign]
+
+        chunks = [
+            chunk
+            async for chunk in service.send_message_stream(
+                user_id="local-user",
+                payload=AssistantMessageCreate(session_id=1, message="不要记"),
+            )
+        ]
+
+        assert chunks[-1]["type"] == "done"
+        assert "已拒绝这条待确认记忆" in chunks[-1]["full_reply"]
+        assert fake_memory.candidates[0].status == "rejected"
+        assert messages[-1]["role"] == "assistant"
+
+    asyncio.run(scenario())
+
+
+def test_memory_conflict_reply_mentions_old_and_new_place_values() -> None:
+    async def scenario() -> None:
+        service = AssistantService()
+        fake_memory = FakeMemoryService()
+        fake_memory.runtime_context = {
+            "source": "confirmed_long_term_memory",
+            "places": ["学校: 学校 = 南京大学仙林校区"],
+        }
+        service.memory_service = fake_memory
+
+        reply = await service._maybe_handle_memory_conflict_message(
+            user_id="local-user",
+            user_message="以后学校指的是B地址",
+        )
+
+        assert reply is not None
+        assert "学校" in reply
+        assert "南京大学仙林校区" in reply
+        assert "B地址" in reply
+        assert "替换" in reply
+        assert fake_memory.payloads == []
+
+    asyncio.run(scenario())
+
+
+def test_memory_conflict_stream_ends_with_done_frame() -> None:
+    async def scenario() -> None:
+        service = AssistantService()
+        fake_memory = FakeMemoryService()
+        fake_memory.runtime_context = {
+            "source": "confirmed_long_term_memory",
+            "places": ["学校: 学校 = 南京大学仙林校区"],
+        }
+        messages = []
+
+        class FakeRepository:
+            async def create_message(self, **kwargs):
+                messages.append(kwargs)
+                return SimpleNamespace(id=len(messages), **kwargs)
+
+        async def fake_resolve_session(**_kwargs):
+            return SimpleNamespace(id=1, title="Chat", context_json={})
+
+        async def noop_autorename(**_kwargs):
+            return None
+
+        service.memory_service = fake_memory
+        service.repository = FakeRepository()  # type: ignore[assignment]
+        service._resolve_session = fake_resolve_session  # type: ignore[method-assign]
+        service._maybe_autorename_session = noop_autorename  # type: ignore[method-assign]
+
+        chunks = [
+            chunk
+            async for chunk in service.send_message_stream(
+                user_id="local-user",
+                payload=AssistantMessageCreate(session_id=1, message="以后学校指的是B地址"),
+            )
+        ]
+
+        assert chunks[-1]["type"] == "done"
+        assert "南京大学仙林校区" in chunks[-1]["full_reply"]
+        assert "B地址" in chunks[-1]["full_reply"]
+        assert fake_memory.payloads == []
+        assert messages[-1]["role"] == "assistant"
+
+    asyncio.run(scenario())
 
 
 def test_assistant_service_injects_confirmed_memory_into_external_context() -> None:

@@ -19,7 +19,6 @@ from app.db.session import get_sessionmaker
 from app.repositories.assistant_proposals import ACTIVE_PROPOSAL_STATUSES, AssistantProposalRepository
 from app.repositories.assistant_signals import AssistantSignalRepository
 from app.services.assistant_proposal_manager import AssistantProposalManager
-from app.workflow.visualization import generate_node_responsibility_table, generate_workflow_diagram
 
 router = APIRouter(prefix="/debug", tags=["debug"])
 
@@ -141,29 +140,6 @@ async def get_system_info() -> dict[str, Any]:
         "platform": platform.platform(),
         "uptime": time.time(),
         "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-
-
-@router.get("/workflow/summary")
-async def get_workflow_summary() -> dict[str, Any]:
-    """Return workflow configuration and node summary for the V7 debug view."""
-    settings = get_settings()
-    return {
-        "workflow_enabled": settings.enable_workflow,
-        "react_enabled": settings.enable_react_subgraph,
-        "route_confidence_threshold": settings.route_confidence_threshold,
-        "metrics": metrics_snapshot(),
-        "nodes": generate_node_responsibility_table(),
-    }
-
-
-@router.get("/workflow/diagram")
-async def get_workflow_diagram() -> dict[str, str]:
-    """Return the Mermaid diagram for the current workflow shape."""
-    settings = get_settings()
-    return {
-        "format": "mermaid",
-        "diagram": generate_workflow_diagram(include_react=settings.enable_react_subgraph),
     }
 
 

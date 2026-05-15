@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from loguru import logger
 
 from app.assistant_agents.contracts import (
@@ -31,10 +33,14 @@ class AssistantConductor:
         self.registry = registry
 
     @classmethod
-    def build_default(cls, text_runtime: AssistantTextRuntime | None = None) -> "AssistantConductor":
+    def build_default(
+        cls,
+        text_runtime: AssistantTextRuntime | None = None,
+        semantic_extractor: Any | None = None,
+    ) -> "AssistantConductor":
         runtime = text_runtime or AssistantTextRuntime()
         registry = SpecialistRegistry()
-        registry.register(UnderstandingSpecialist(runtime))
+        registry.register(UnderstandingSpecialist(runtime, semantic_extractor=semantic_extractor))
         registry.register(TaskOrEventClarifierSpecialist())
         registry.register(PlanningSpecialist())
         registry.register(ProposalManagerSpecialist())
@@ -56,6 +62,8 @@ class AssistantConductor:
                 mode=mode,
                 unsupported_reason="understanding_missing",
             )
+        if understanding.orchestration is not None:
+            state.metadata["orchestration"] = understanding.orchestration.to_payload()
 
         if understanding.goal_type == "unknown":
             state = await self._run_specialist("task_or_event_clarifier", context, state, trace)

@@ -1,0 +1,23 @@
+{
+  "run_id": "20260514200313",
+  "api_base": "http://127.0.0.1:18741/api",
+  "web_url": "http://127.0.0.1:8894",
+  "db_path": "E:\\GraduationProject\\backend\\data\\browser_full_acceptance_20260514200313.db",
+  "memory_path": "E:\\GraduationProject\\backend\\data\\browser_full_acceptance_memory_20260514200313",
+  "summary": {
+    "total": 1,
+    "pass": 0,
+    "fail": 1,
+    "tracked": 0
+  },
+  "results": [
+    {
+      "id": "BAI-P0-001",
+      "title": "明确日程创建必须先提案",
+      "status": "FAIL",
+      "duration_ms": 33244,
+      "evidence": [],
+      "error": "locator.click: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByText('助手', { exact: true }).first()\u001b[22m\n\u001b[2m    - locator resolved to <button type=\"button\" class=\"relative flex flex-1 flex-col items-center justify-center gap-0.5 text-[10px] font-semibold transition-colors text-ink-3\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not visible\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    58 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m       - element is not visible\u001b[22m\n\u001b[2m     - retrying click action\u001b[22m\n\u001b[2m       - waiting 500ms\u001b[22m\n\n    at clickAssistantTab (E:\\GraduationProject\\scripts\\assistant_browser_full_acceptance.mjs:275:24)\n    at async gotoApp (E:\\GraduationProject\\scripts\\assistant_browser_full_acceptance.mjs:269:3)\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:324:7\n    at async withTimeout (E:\\GraduationProject\\scripts\\assistant_browser_full_acceptance.mjs:340:10)\n    at async record (E:\\GraduationProject\\scripts\\assistant_browser_full_acceptance.mjs:322:5)\n    at async runScenarios (E:\\GraduationProject\\scripts\\assistant_browser_full_acceptance.mjs:468:3)\n    at async main (E:\\GraduationProject\\scripts\\assistant_browser_full_acceptance.mjs:425:3)"
+    }
+  ]
+}

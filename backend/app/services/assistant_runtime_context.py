@@ -36,7 +36,14 @@ class AssistantContextRuntime:
             except Exception:
                 destination_coords = None
 
-        origin_name, origin_value = self.select_commute_origin(profile=profile, user_message=user_message)
+        explicit_origin = self._extract_explicit_origin(user_message)
+        asks_departure = bool(re.search(r"几点出发|多久出发|要提前多久|什么时候出发|什么时候走", user_message, re.I))
+        if asks_departure and explicit_origin is None:
+            context["origin_ambiguity"] = True
+            context["origin_clarification"] = "请补充出发地，例如从家、从学校或从当前位置出发。"
+            origin_name, origin_value = "出发地待确认", None
+        else:
+            origin_name, origin_value = self.select_commute_origin(profile=profile, user_message=user_message)
         weather_location = destination_coords or getattr(profile, "home_location_coords", None)
 
         async def _fetch_commute():
@@ -106,6 +113,15 @@ class AssistantContextRuntime:
             context["advice_summary"] = " ".join(advice_parts)
 
         return context
+
+    @staticmethod
+    def _extract_explicit_origin(message: str | None) -> str | None:
+        if not message:
+            return None
+        match = re.search(r"从\s*([\u4e00-\u9fa5A-Za-z0-9]{1,12})\s*(?:出发)?(?:去|到)", message)
+        if not match:
+            return None
+        return match.group(1).strip()
 
     def select_commute_origin(self, *, profile, user_message: str) -> tuple[str, str | None]:
         if re.search(r"从学校|下课后|从办公室|从实验室|下班后", user_message):

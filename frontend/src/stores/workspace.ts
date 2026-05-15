@@ -28,6 +28,7 @@ export type {
   AssistantMessage,
   AssistantProposal,
   AssistantProposalOption,
+  AssistantSignal,
   AssistantSession,
 } from "@/stores/assistant";
 export type { ToastItem } from "@/stores/reminder";
@@ -77,11 +78,13 @@ export const useWorkspaceStore = defineStore("workspace", {
     messages: () => useAssistantStore().messages,
     lastAssistantActions: () => useAssistantStore().lastAssistantActions,
     assistantProposals: () => useAssistantStore().assistantProposals,
+    assistantSignals: () => useAssistantStore().assistantSignals,
     assistantMemoryCandidates: () => useAssistantStore().assistantMemoryCandidates,
     assistantMemory: () => useAssistantStore().assistantMemory,
     assistantSessions: () => useAssistantStore().assistantSessions,
     loadingAssistantSessions: () => useAssistantStore().loadingAssistantSessions,
     loadingAssistantProposals: () => useAssistantStore().loadingAssistantProposals,
+    loadingAssistantSignals: () => useAssistantStore().loadingAssistantSignals,
     loadingAssistantMemoryCandidates: () => useAssistantStore().loadingAssistantMemoryCandidates,
     creatingAssistantSession: () => useAssistantStore().creatingAssistantSession,
     archivingAssistantSession: () => useAssistantStore().archivingAssistantSession,
@@ -149,6 +152,7 @@ export const useWorkspaceStore = defineStore("workspace", {
           eventsStore.fetchTasks(),
           assistantStore.fetchCurrentAssistantSession(),
           assistantStore.fetchAssistantSessions(),
+          assistantStore.fetchAssistantSignals(),
         ]);
 
         this.captureFrontendPerformance();
@@ -187,6 +191,7 @@ export const useWorkspaceStore = defineStore("workspace", {
     async fetchTasks(force = false) { return useEventsStore().fetchTasks(force); },
     async fetchAssistantSessions() { return useAssistantStore().fetchAssistantSessions(); },
     async fetchAssistantProposals() { return useAssistantStore().fetchAssistantProposals(); },
+    async fetchAssistantSignals() { return useAssistantStore().fetchAssistantSignals(); },
     async fetchAssistantMemoryCandidates() { return useAssistantStore().fetchAssistantMemoryCandidates(); },
     async fetchAssistantMemory() { return useAssistantStore().fetchAssistantMemory(); },
     async fetchCurrentAssistantSession() { return useAssistantStore().fetchCurrentAssistantSession(); },
@@ -331,6 +336,7 @@ export const useWorkspaceStore = defineStore("workspace", {
       await Promise.allSettled([
         assistantStore.fetchAssistantSessions(),
         assistantStore.fetchAssistantProposals(),
+        assistantStore.fetchAssistantSignals(),
         assistantStore.fetchAssistantMemoryCandidates(),
       ]);
 
@@ -355,6 +361,7 @@ export const useWorkspaceStore = defineStore("workspace", {
           eventsStore.fetchTasks(),
           assistantStore.fetchCurrentAssistantSession(),
           assistantStore.fetchAssistantProposals(),
+          assistantStore.fetchAssistantSignals(),
           assistantStore.fetchAssistantMemoryCandidates(),
         ]);
       } else {

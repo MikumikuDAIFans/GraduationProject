@@ -8,6 +8,7 @@ import type {
   AssistantMessage,
   AssistantProposal,
   AssistantProposalOption,
+  AssistantSignal,
   AssistantSession,
 } from "@/stores/workspace";
 import { formatDateTime } from "@/utils/locale";
@@ -17,10 +18,12 @@ const props = defineProps<{
   sending: boolean;
   lastAssistantActions: AssistantAction[];
   assistantProposals: AssistantProposal[];
+  assistantSignals: AssistantSignal[];
   assistantMemoryCandidates: AssistantMemoryCandidate[];
   assistantSessions: AssistantSession[];
   activeSessionId: number | null;
   loadingProposals: boolean;
+  loadingSignals: boolean;
   loadingMemoryCandidates: boolean;
   creatingSession: boolean;
   archivingSession: boolean;
@@ -33,6 +36,7 @@ const emit = defineEmits<{
   send: [message: string];
   focusTask: [taskId: number];
   fetchProposals: [];
+  fetchSignals: [];
   fetchMemoryCandidates: [];
   confirmProposal: [proposalId: number, optionId: string];
   rejectProposal: [proposalId: number];
@@ -54,13 +58,21 @@ const markdown = new MarkdownIt({
 });
 
 const draft = ref("");
+const locallySubmitting = ref(false);
+let sendUnlockTimer: number | null = null;
 const proposalRevisionDrafts = ref<Record<number, string>>({});
 const messageContainer = ref<HTMLElement | null>(null);
-const canSend = computed(() => draft.value.trim().length > 0 && !props.sending);
 const sessionBusy = computed(() => props.creatingSession || props.archivingSession || props.clearingSession);
+const canSend = computed(() => draft.value.trim().length > 0 && !props.sending && !locallySubmitting.value);
+const isSending = computed(() => props.sending || locallySubmitting.value);
 const visibleProposals = computed(() =>
   props.assistantProposals
     .filter((proposal) => ["pending", "accepted", "execution_pending", "execution_failed"].includes(proposal.status))
+    .slice(0, 5),
+);
+const visibleSignals = computed(() =>
+  props.assistantSignals
+    .filter((signal) => ["new", "evaluated", "proposal_created"].includes(signal.status))
     .slice(0, 5),
 );
 const visibleMemoryCandidates = computed(() => props.assistantMemoryCandidates.slice(0, 5));
@@ -78,10 +90,19 @@ function renderMarkdown(text: string): string {
 }
 
 function send() {
+  if (locallySubmitting.value || props.sending || sessionBusy.value) return;
   const value = draft.value.trim();
   if (!value) return;
-  emit("send", value);
+  locallySubmitting.value = true;
+  if (sendUnlockTimer !== null) window.clearTimeout(sendUnlockTimer);
   draft.value = "";
+  emit("send", value);
+  sendUnlockTimer = window.setTimeout(() => {
+    if (!props.sending) {
+      locallySubmitting.value = false;
+    }
+    sendUnlockTimer = null;
+  }, 800);
 }
 
 function handleKeydown(event: KeyboardEvent) {
@@ -149,12 +170,74 @@ function proposalStatusClass(status: string) {
 }
 
 function proposalProtocolLabel(proposal: AssistantProposal) {
+  const protocolLabel = proposal.payload_json?.protocol_label;
+  if (typeof protocolLabel === "string" && protocolLabel.trim()) {
+    return protocolLabel;
+  }
   return proposalProtocolLabels.value.get(proposal.id) ?? `#${proposal.id}`;
 }
 
 function proposalExecutionSummary(proposal: AssistantProposal) {
   const execution = proposal.payload_json?.execution as { result?: { actions?: Array<Record<string, unknown>> } } | undefined;
   return execution?.result?.actions ?? [];
+}
+
+function signalTypeLabel(signal: AssistantSignal) {
+  const map: Record<string, string> = {
+    deadline_risk: t("assistantPanel.signalDeadlineRisk"),
+    departure_readiness: t("assistantPanel.signalDeparture"),
+    conflict_warning: t("assistantPanel.signalConflict"),
+    daily_morning_review: t("assistantPanel.signalMorning"),
+    daily_night_review: t("assistantPanel.signalNight"),
+    proposal_followup: t("assistantPanel.signalProposalFollowup"),
+  };
+  return map[signal.signal_type] ?? signal.signal_type;
+}
+
+function signalToneClass(signal: AssistantSignal) {
+  if (signal.signal_type === "departure_readiness" || signal.severity === "urgent") {
+    return "border-danger/30 bg-danger-light text-danger";
+  }
+  if (signal.signal_type === "deadline_risk" || signal.severity === "negotiate") {
+    return "border-warn/30 bg-warn-light text-warn";
+  }
+  return "border-accent/30 bg-accent-light text-accent";
+}
+
+function signalSource(signal: AssistantSignal) {
+  return signal.source_job || signal.dedup_key || signal.signal_type;
+}
+
+function signalReason(signal: AssistantSignal) {
+  const context = signal.context_json ?? {};
+  if (signal.signal_type === "deadline_risk") {
+    const content = typeof context["content"] === "string" ? context["content"] : signal.target_id;
+    const deadline = typeof context["deadline"] === "string" ? formatDateTime(context["deadline"], locale.value) : null;
+    return deadline
+      ? `任务「${content}」截止时间接近：${deadline}。可回复“帮我安排补救方案”或“先忽略”。`
+      : `任务「${content}」临近截止，需要跟进。可回复“帮我安排补救方案”或“先忽略”。`;
+  }
+  if (signal.signal_type === "departure_readiness") {
+    const title = typeof context["title"] === "string" ? context["title"] : signal.target_id;
+    const departure = typeof context["departure_time"] === "string" ? formatDateTime(context["departure_time"], locale.value) : null;
+    const travel = typeof context["travel_duration_minutes"] === "number" ? context["travel_duration_minutes"] : null;
+    const slack = typeof context["slack_minutes"] === "number" ? context["slack_minutes"] : null;
+    const weather = context["weather_snapshot"] as { weather?: { text?: string } } | null;
+    const parts = [`「${title}」即将到出发窗口`];
+    if (departure) parts.push(`建议出发 ${departure}`);
+    if (travel != null) parts.push(`预计通勤 ${travel} 分钟`);
+    if (slack != null) parts.push(`冗余 ${slack} 分钟`);
+    if (weather?.weather?.text) parts.push(`天气 ${weather.weather.text}`);
+    return `${parts.join("，")}。可回复“我已经在了”或“今天不去了”。`;
+  }
+  if (signal.signal_type === "proposal_followup") {
+    const summary = typeof context["proposal_summary"] === "string" ? context["proposal_summary"] : signal.target_id;
+    const label = typeof context["protocol_label"] === "string" && context["protocol_label"].trim()
+      ? context["protocol_label"].trim()
+      : signal.target_id;
+    return `待确认方案跟进：${label}「${summary}」已经等待超过 2 小时。可回复“按方案A安排”“修改方案”或“先不要安排”。`;
+  }
+  return typeof context["message"] === "string" ? context["message"] : t("assistantPanel.signalGenericReason");
 }
 
 function memoryTypeLabel(type: string) {
@@ -219,6 +302,7 @@ watch(
 
 onMounted(() => {
   emit("fetchProposals");
+  emit("fetchSignals");
   emit("fetchMemoryCandidates");
 });
 
@@ -226,14 +310,22 @@ watch(
   () => props.activeSessionId,
   () => {
     emit("fetchProposals");
+    emit("fetchSignals");
     emit("fetchMemoryCandidates");
+  },
+);
+
+watch(
+  () => props.sending,
+  (sending) => {
+    if (!sending && !sendUnlockTimer) locallySubmitting.value = false;
   },
 );
 </script>
 
 <template>
-  <div class="flex h-full flex-col bg-white">
-    <div class="border-b border-border px-4 py-3">
+  <div class="flex h-full min-h-0 flex-col overflow-hidden bg-white">
+    <div class="shrink-0 border-b border-border px-4 py-3">
       <div class="flex items-center justify-between gap-3">
         <div class="flex items-center gap-2">
           <div class="flex h-7 w-7 items-center justify-center rounded-lg bg-accent-light">
@@ -296,13 +388,44 @@ watch(
       </div>
     </div>
 
+    <div v-if="visibleSignals.length || loadingSignals" class="shrink-0 border-b border-border bg-surface-2 px-3 py-3">
+      <div class="mb-2 flex items-center justify-between">
+        <p class="text-xs font-semibold text-ink">{{ t("assistantPanel.activeFollowups") }}</p>
+        <span v-if="loadingSignals" class="text-[10px] text-ink-3">{{ t("common.loading") }}</span>
+      </div>
+
+      <div class="max-h-32 space-y-2 overflow-y-auto sm:max-h-52">
+        <div
+          v-for="signal in visibleSignals"
+          :key="signal.id"
+          class="rounded-lg border border-border bg-white px-3 py-2.5 shadow-card"
+        >
+          <div class="flex flex-wrap items-center gap-1.5">
+            <span
+              class="rounded-full border px-2 py-0.5 text-[10px] font-semibold"
+              :class="signalToneClass(signal)"
+            >
+              {{ signalTypeLabel(signal) }}
+            </span>
+            <span class="text-[10px] font-semibold uppercase tracking-widest text-ink-3">
+              S{{ signal.id }}
+            </span>
+          </div>
+          <p class="mt-1 text-xs font-semibold leading-snug text-ink">{{ signalReason(signal) }}</p>
+          <p class="mt-0.5 text-[11px] leading-snug text-ink-3">
+            {{ t("assistantPanel.signalSource") }}：{{ signalSource(signal) }}
+          </p>
+        </div>
+      </div>
+    </div>
+
     <div v-if="visibleProposals.length || loadingProposals" class="shrink-0 border-b border-border bg-surface-2 px-3 py-3">
       <div class="mb-2 flex items-center justify-between">
         <p class="text-xs font-semibold text-ink">{{ t("assistantPanel.proposals") }}</p>
         <span v-if="loadingProposals" class="text-[10px] text-ink-3">{{ t("common.loading") }}</span>
       </div>
 
-      <div class="max-h-64 space-y-2 overflow-y-auto">
+      <div class="assistant-proposal-list max-h-44 space-y-2 overflow-y-auto pr-1 sm:max-h-64">
         <div
           v-for="proposal in visibleProposals"
           :key="proposal.id"
@@ -321,7 +444,7 @@ watch(
                   {{ proposalStatusLabel(proposal.status) }}
                 </span>
               </div>
-              <p class="mt-1 text-xs font-semibold leading-snug text-ink">{{ proposal.summary }}</p>
+              <p class="assistant-proposal-summary mt-1 break-words text-xs font-semibold leading-snug text-ink">{{ proposal.summary }}</p>
             </div>
             <button
               v-if="proposal.status === 'execution_failed'"
@@ -342,7 +465,7 @@ watch(
             >
               <div class="flex items-start justify-between gap-2">
                 <div class="min-w-0">
-                  <p class="text-xs font-medium text-ink">
+                  <p class="assistant-proposal-option-title break-words text-xs font-medium text-ink">
                     {{ option.option_id }} · {{ option.title }}
                     <span
                       v-if="proposal.recommended_option_id === option.option_id"
@@ -351,8 +474,8 @@ watch(
                       {{ t("assistantPanel.recommended") }}
                     </span>
                   </p>
-                  <p v-if="option.summary" class="mt-0.5 text-[11px] leading-snug text-ink-3">{{ option.summary }}</p>
-                  <p v-if="option.rationale" class="mt-0.5 text-[11px] leading-snug text-ink-3">{{ option.rationale }}</p>
+                  <p v-if="option.summary" class="assistant-proposal-detail mt-0.5 break-words text-[11px] leading-snug text-ink-3">{{ option.summary }}</p>
+                  <p v-if="option.rationale" class="assistant-proposal-rationale mt-0.5 break-words text-[11px] leading-snug text-ink-3">{{ option.rationale }}</p>
                 </div>
                 <button
                   v-if="canConfirmProposal(proposal)"
@@ -377,11 +500,11 @@ watch(
             </p>
           </div>
 
-          <div v-if="canReviseProposal(proposal)" class="mt-2 flex gap-2 border-t border-border pt-2">
+          <div v-if="canReviseProposal(proposal)" class="mt-2 flex flex-wrap gap-2 border-t border-border pt-2 sm:flex-nowrap">
             <input
               v-model="proposalRevisionDrafts[proposal.id]"
               type="text"
-              class="min-w-0 flex-1 rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink placeholder:text-ink-3 focus:border-accent/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-accent/20"
+              class="min-w-0 flex-1 basis-full rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink placeholder:text-ink-3 focus:border-accent/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-accent/20 sm:basis-auto"
               :placeholder="t('assistantPanel.revisePlaceholder')"
               :disabled="proposalBusyId === proposal.id"
               @keydown.enter.prevent="submitRevision(proposal.id)"
@@ -414,7 +537,7 @@ watch(
         <span v-if="loadingMemoryCandidates" class="text-[10px] text-ink-3">{{ t("common.loading") }}</span>
       </div>
 
-      <div class="max-h-52 space-y-2 overflow-y-auto">
+      <div class="max-h-36 space-y-2 overflow-y-auto sm:max-h-52">
         <div
           v-for="candidate in visibleMemoryCandidates"
           :key="candidate.id"
@@ -456,7 +579,7 @@ watch(
       </div>
     </div>
 
-    <div ref="messageContainer" class="flex-1 space-y-3 overflow-y-auto px-3 py-4">
+    <div ref="messageContainer" class="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 py-4">
       <div v-if="!messages.length && !sending" class="flex flex-col items-center justify-center py-16 text-center">
         <div class="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-accent-light">
           <svg class="h-6 w-6 text-accent" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
@@ -481,7 +604,7 @@ watch(
         </div>
 
         <div
-          class="max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed"
+          class="min-w-0 max-w-[88%] break-words rounded-2xl px-4 py-2.5 text-sm leading-relaxed sm:max-w-[80%]"
           :class="message.role === 'user'
             ? 'rounded-br-sm bg-accent text-white'
             : 'rounded-bl-sm border border-border bg-surface-2 text-ink'"
@@ -583,20 +706,49 @@ watch(
         <textarea
           v-model="draft"
           rows="2"
-          class="flex-1 resize-none rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm text-ink placeholder:text-ink-3 focus:border-accent/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-accent/20"
+          class="min-w-0 flex-1 resize-none rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm text-ink placeholder:text-ink-3 focus:border-accent/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-accent/20"
           :placeholder="t('assistantPanel.askPlaceholder')"
+          :disabled="sessionBusy"
           @keydown="handleKeydown"
         />
         <button
           type="button"
           class="shrink-0 self-end rounded-xl bg-accent px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
           :disabled="!canSend || sessionBusy"
+          :aria-busy="isSending"
           @click="send"
         >
-          {{ t("common.send") }}
+          {{ isSending ? t("common.loading") : t("common.send") }}
         </button>
       </div>
       <p class="mt-1.5 text-[10px] text-ink-3">{{ t("assistantPanel.sendHint") }}</p>
     </div>
   </div>
 </template>
+
+<style scoped>
+.assistant-proposal-list {
+  overscroll-behavior: contain;
+}
+
+.assistant-proposal-summary,
+.assistant-proposal-option-title,
+.assistant-proposal-detail,
+.assistant-proposal-rationale {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .assistant-proposal-summary,
+  .assistant-proposal-detail {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .assistant-proposal-rationale {
+    display: none;
+  }
+}
+</style>

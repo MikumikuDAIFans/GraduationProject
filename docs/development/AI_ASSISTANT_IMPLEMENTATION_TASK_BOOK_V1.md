@@ -4,13 +4,13 @@
 
 - Plan ID: `ai-assistant-implementation-v1`
 - Version: `v1`
-- Last updated: `2026-05-06 17:11 +08:00`
+- Last updated: `2026-05-09 02:19 +08:00`
 - Canonical progress file: `E:\GraduationProject\docs\development\AI_ASSISTANT_IMPLEMENTATION_TASK_BOOK_V1.md`
-- Related handoff file: `none`
+- Related handoff file: `E:\GraduationProject\docs\development\AI_ASSISTANT_SESSION_HANDOFF_2026-05-07.md`
 - Source design file: `E:\GraduationProject\docs\development\AI_ASSISTANT_REDESIGN_PLAN_V1.md`
-- Current branch: `codex/v4-completion`
+- Current branch: `master`
 - Current active phase: `Phase 9 - Model-Driven Orchestration Refactor`
-- Execution readiness: `re-planning`
+- Execution readiness: `implementation in progress`
 
 ## 目标
 
@@ -2048,3 +2048,909 @@
   - 当前固定澄清模板仍会在误路由后放大 chatbot 感，必须降级为最后兜底，而不是默认主回复机制。
 - Next recommended action:
   - 先定义新的 model-driven orchestration schema 和 `send_message()` 单一路径迁移图，再补 8-12 条真实 transcript 回归测试，最后开始执行 Phase 9A 的代码重构。
+
+## 进度更新 - 2026-05-07 18:53 +08:00
+
+- Overall progress: Phase 9A 已进入首轮运行时代码实现。当前已完成统一 orchestration schema 的第一版落地、真实 transcript 级 continuation 回归测试、`task_schedule_plan` proposal shape 第一版，以及 `primary` 模式下阻断 legacy fallback 的迁移切口。
+- Active phase: Phase 9 - Model-Driven Orchestration Refactor
+- Phase status:
+  - Phase 0 - Baseline Freeze And Guardrails: done
+  - Phase 1 - Data Foundation And Migration: done
+  - Phase 2 - Proposal API And Manager: done
+  - Phase 3 - Passive Conductor And Specialist Registry: done
+  - Phase 4 - Action Executor And Confirmed Write Path: done
+  - Phase 5 - Frontend Proposal Surface: done
+  - Phase 6 - Phase 1B Stability And Observability: done
+  - Phase 7 - Proactive Signals And Daily Rhythm: done
+  - Phase 8 - Long-Term Memory And Personalization: done
+  - Phase 9 - Model-Driven Orchestration Refactor: in progress
+- Files changed in this step:
+  - `E:\GraduationProject\backend\app\assistant_agents\contracts.py`
+    - 新增统一中间态结构：`TargetScope`、`ContinuationSignals`、`PlanningIntent`、`TimePreference`、`OrchestrationAssessment`。
+    - `UnderstandingResult` 现在可携带 `orchestration`，用于把“用户目标 / target resolution / continuation / planning shape”显式化。
+  - `E:\GraduationProject\backend\app\assistant_agents\specialists\understanding.py`
+    - 新增 continuation 检测与任务继续规划识别。
+    - 新增 `plan_task_schedule` 理解分支，可把“我预计 3 天整理完成，帮我安排下下午 3 点到 5 点”识别为围绕现有任务继续规划，而不是误建新 task/event。
+    - 新增时间偏好、持续天数、多日 block 扩展的第一版结构化抽取。
+  - `E:\GraduationProject\backend\app\assistant_agents\specialists\planning.py`
+    - 新增 `task_schedule_plan` proposal shape。
+    - 支持围绕已有任务生成多天专注块 proposal，并在 action payload 中写入 `linked_task_id` 与 `focus_block`。
+  - `E:\GraduationProject\backend\app\assistant_agents\specialists\task_or_event_clarifier.py`
+    - 为 `plan_task_schedule` 增加更贴近 continuation 语义的澄清，而不是退回泛化“这是任务还是日程”。
+  - `E:\GraduationProject\backend\app\assistant_agents\conductor.py`
+    - 将 `orchestration` 中间态挂入 conductor metadata，便于后续日志、A/B 验证和单一路径迁移。
+  - `E:\GraduationProject\backend\app\services\assistant.py`
+    - 新增 `primary` conductor mode。
+    - 在 `primary` 模式下，如果 conductor 不能产出明确结果，会阻断 legacy fallback，而不是继续默认掉回旧规则链。
+    - 保持 `proposal` 模式兼容现有链路，作为迁移期安全阀。
+  - `E:\GraduationProject\backend\tests\test_assistant_conductor.py`
+    - 新增真实 transcript 风格回归：任务 continuation -> `task_schedule_plan`。
+    - 新增 `send_message()` 在 proposal 模式下对 continuation 请求不再落回 legacy。
+    - 新增 `primary` 模式阻断 legacy fallback 的回归。
+- Validation:
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py` -> `30 passed`
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_service.py tests/test_assistant_specialists.py tests/test_assistant_proposal_revise.py` -> `45 passed`
+  - `docker exec graduation-project-api pytest -q` -> `393 passed`
+  - `python -m compileall E:\GraduationProject\backend\app\assistant_agents E:\GraduationProject\backend\app\services\assistant.py` -> passed
+  - `pnpm exec vue-tsc --noEmit` -> passed
+  - `pnpm test` -> `3 passed`
+  - `pnpm run build` -> passed
+- Open risks / remaining work:
+  - 当前 `plan_task_schedule` 还是规则抽取驱动的第一版，只是把 continuation / planning shape 升成了一等结构，尚未真正接入 LLM 产出的结构化 orchestration。
+  - `primary` 模式已经能阻断 legacy fallback，但默认配置仍未切换，说明单一路径迁移还没有完成。
+  - 固定模板澄清和 proposal 文案仍然存在，只是 continuation 场景触发面已缩小；Phase 9B/9C 仍需继续把回复生成权交给模型。
+  - 当前 task scheduling 仅覆盖“已有任务 -> 多天专注块”这一保守子集，还没覆盖“新任务 + schedule bundle”“复杂 revise”“非连续日期偏好”等更复杂形态。
+- Next recommended action:
+  - 进入 Phase 9A 下一步：补更多真实 transcript 回归，继续扩展 `orchestration` 到 revise / confirm / answer 场景，并开始收缩 `send_message()` 中 workflow / legacy plan 的默认参与范围。
+
+## 进度更新 - 2026-05-07 19:08 +08:00
+
+- Overall progress: Phase 9A 第二步已完成。proposal 文本协议现在也开始按“已有目标交互”收口，用户明确在说“确认现有方案 / 修改现有方案”但当前并无 pending proposal 时，不会再掉回 legacy 任务/日程理解链，而是直接返回面向当前上下文的 answer。
+- Active phase: Phase 9 - Model-Driven Orchestration Refactor
+- Files changed in this step:
+  - `E:\GraduationProject\backend\app\services\assistant.py`
+    - `_maybe_handle_proposal_text_protocol()` 在识别到 `confirm/revise` 意图但找不到 pending proposal 时，改为直接返回 answer，而不是放行到后续 conductor/workflow/legacy plan。
+    - 新增 `_build_missing_proposal_protocol_reply()`，为“确认现有方案 / 修改现有方案，但当前无待确认方案”提供上下文一致的回复。
+  - `E:\GraduationProject\backend\tests\test_assistant_conductor.py`
+    - 新增缺失 pending proposal 时的 confirm / revise 回归。
+    - 新增 `send_message()` 在 proposal 模式下不会因为“同意”而误掉回 legacy build_plan 的回归。
+- Validation:
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py` -> `33 passed`
+  - `docker exec graduation-project-api pytest -q` -> `396 passed`
+- Open risks / remaining work:
+  - proposal 文本协议虽然已不再轻易放行到 legacy，但其本身仍是独立前置链路，尚未和 conductor 的 `orchestration` 中间态彻底合并。
+  - `workflow` 与 `AssistantPlanRuntime.build_plan()` 仍然在默认 `proposal` 模式下保留兜底参与权，完整单一路径迁移还未完成。
+  - 目前“answer”场景仍主要体现为协议型直答，尚未扩展到更广泛的模型主导日常问答 / 轻咨询输入。
+- Next recommended action:
+  - 继续 Phase 9A：把 proposal confirm / revise 的目标解析和 conversation mode 显式纳入统一 orchestration 表达，再开始把 `proposal` 模式下的 fallback 范围进一步缩到仅保留少量安全兜底。
+
+## 进度更新 - 2026-05-07 21:42 +08:00
+
+- Overall progress: Phase 9A 第三步已完成。proposal text protocol 不再只是“前置黑箱分支”，现在已经能显式生成 `OrchestrationAssessment`，并且 `proposal` 模式下对上下文型输入的 legacy fallback 进一步收紧：只要消息明显是在继续围绕 active target / existing proposal / context reference 说话，就不会再默认掉回旧 `build_plan()`。
+- Active phase: Phase 9 - Model-Driven Orchestration Refactor
+- Files changed in this step:
+  - `E:\GraduationProject\backend\app\services\assistant.py`
+    - 为 proposal text protocol 新增显式的 `_build_proposal_protocol_assessment()`，把 `confirm_existing / revise_existing` 的 `conversation_mode`、`user_goal`、`target_scope`、`continuation` 结构化。
+    - 将 pending proposal 解析拆成 `_resolve_text_protocol_proposal_from_active()`，让协议 target resolution 逻辑更接近统一 orchestration 风格。
+    - `_build_missing_proposal_protocol_reply()` 现在可根据 assessment 区分“缺 pending proposal”和“目标仍 ambiguous”。
+    - `_should_block_legacy_fallback()` 扩展到 `proposal` 模式：如果消息明显属于上下文型输入，就优先阻断 legacy fallback。
+    - `_primary_mode_fallback_reply()` 现在会结合 active target 给出更具体的回退提示，而不是统一笼统文案。
+  - `E:\GraduationProject\backend\tests\test_assistant_conductor.py`
+    - 新增 proposal confirm text 的 orchestration assessment 回归。
+    - 新增 `proposal` 模式下 context-driven message 遇到 conductor legacy 结果时，也不会落回 legacy build_plan 的回归。
+- Validation:
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py` -> `35 passed`
+  - `docker exec graduation-project-api pytest -q` -> `398 passed`
+- Open risks / remaining work:
+  - 当前 orchestration 结构已覆盖 task continuation 和 proposal text protocol，但 event update / batch update / memory-only answer 还未统一并入同一层显式表达。
+  - `workflow` 与 `AssistantPlanRuntime.build_plan()` 虽然触发面继续缩小，但在非 context-driven 的普通输入上仍然保有默认兜底地位。
+  - `NegotiationSpecialist` / `TaskOrEventClarifierSpecialist` 的模板式回复仍未退役，Phase 9B/9C 仍需继续推进模型生成式协商。
+- Next recommended action:
+  - 继续 Phase 9A：把 event update / batch update 也接入统一 orchestration schema，并尝试在 `proposal` 模式下把 `workflow` 默认参与范围缩到只剩明确非 conductor 覆盖场景。
+
+## 进度更新 - 2026-05-07 22:00 +08:00
+
+- Overall progress: Phase 9A 第四步已完成。event update / batch update 现在也进入统一 orchestration 表达层，不再只有 task continuation 和 proposal text protocol 具备显式 `conversation_mode / user_goal / target_scope / proposal_shape`。
+- Active phase: Phase 9 - Model-Driven Orchestration Refactor
+- Files changed in this step:
+  - `E:\GraduationProject\backend\app\assistant_agents\specialists\understanding.py`
+    - `_understand_update()` 现在接收 `continuation`，并为 event/task update 产出 orchestration。
+    - 新增 `_build_event_update_orchestration()`，统一描述单日程更新、批量日程改期/取消、日程完成的 `user_goal`、`target_scope`、`proposal_shape`。
+    - `mark_task_completed` 的目标型更新也补上了显式 orchestration。
+  - `E:\GraduationProject\backend\tests\test_assistant_conductor.py`
+    - 为单日程改期补了 orchestration 断言。
+    - 为批量改期补了 orchestration 断言。
+    - 为“目标已定位但缺少 batch shift rule”的澄清场景补了 orchestration 断言。
+- Validation:
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py` -> `35 passed`
+  - `docker exec graduation-project-api pytest -q` -> `398 passed`
+- Open risks / remaining work:
+  - 现在 update 链路已经有显式 orchestration，但 `event_creation / task_creation` 仍然没有像 Phase 9 目标那样形成完全统一的显式语义面。
+  - `workflow` 与 `AssistantPlanRuntime.build_plan()` 在 `proposal` 模式下仍是最终兜底，虽然上下文型输入的触发面已经缩小，但单一路径迁移尚未完成。
+  - clarification / negotiation 的模板回复仍未被模型生成式协商替代。
+- Next recommended action:
+  - 继续 Phase 9A：把 `event_creation / task_creation / answer` 也尽量补齐统一 orchestration 表达，然后开始尝试把 `proposal` 模式下 `workflow` 默认参与权进一步下放到 feature flag 或更窄的 degrade path。
+
+## 进度更新 - 2026-05-08 10:18 +08:00
+
+- Overall progress: Phase 9A 第五步已完成。`event_creation / task_creation / schedule_guidance / unknown` 现在也具备显式 orchestration 表达，统一中间态已经覆盖创建类、更新类、proposal text protocol 和 answer-like guidance 语义。
+- Active phase: Phase 9 - Model-Driven Orchestration Refactor
+- Files changed in this step:
+  - `E:\GraduationProject\backend\app\assistant_agents\specialists\understanding.py`
+    - `create_event` / `create_task` 现在会生成显式 orchestration。
+    - `schedule_guidance` 现在会被标记为 `conversation_mode="answer"`、`user_goal="schedule_guidance"`，即便当前 conductor 还未直接回答它，理解层已经不再把它当成无结构 fallback。
+    - `unknown` 现在也会生成基础 clarification-oriented orchestration。
+    - 新增 `_build_creation_orchestration()`，统一创建类 proposal 的中间态表达。
+  - `E:\GraduationProject\backend\tests\test_assistant_conductor.py`
+    - 为 `event_creation` 补了 orchestration 断言。
+    - 为 generic task clarification 补了 orchestration 断言。
+    - 为 `schedule_guidance` 补了 answer-like orchestration 断言。
+- Validation:
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py` -> `36 passed`
+  - `docker exec graduation-project-api pytest -q` -> `399 passed`
+- Open risks / remaining work:
+  - 虽然理解层的统一 orchestration 覆盖面已经明显扩大，但 conductor 仍未对 `conversation_mode="answer"` 形成独立处理分支，`schedule_guidance` 仍会继续走旧 fallback 执行路径。
+  - `workflow` 与 `AssistantPlanRuntime.build_plan()` 仍然承担大量最终回答职责；当前只是理解层先把语义建模统一了。
+  - negotiation / clarification 的模板回复依旧存在，尚未切换到模型主导的动态协商。
+- Next recommended action:
+  - 继续 Phase 9A：开始真正收缩 `proposal` 模式下 `workflow / build_plan` 的默认参与范围，并优先挑一个 answer-like 场景（建议 `schedule_guidance`）改成 conductor 可直接产出的独立 reply path。
+
+## 进度更新 - 2026-05-08 10:49 +08:00
+
+- Overall progress: Phase 9A 第六步已完成。`schedule_guidance` 已经从 `proposal` 模式下对 `build_plan()` 的默认依赖中切出，开始走 answer-like orchestration path：先由 conductor/understanding 产出统一中间态，再由 `AssistantService` 根据 `conversation_mode="answer"` 直接构建回复与 `suggest_schedule` 动作，而不是先掉进 workflow / legacy plan。
+- Active phase: Phase 9 - Model-Driven Orchestration Refactor
+- Files changed in this step:
+  - `E:\GraduationProject\backend\app\services\assistant.py`
+    - 在 `send_message()` 与 `send_message_stream()` 中新增 `_maybe_build_orchestration_answer_plan()` 调用。
+    - 当 conductor 结果携带 `conversation_mode="answer"` 且 `user_goal="schedule_guidance"` 时，直接走 answer-like path，绕开 `_build_plan()` / `workflow` 默认兜底。
+    - 当前 answer-like path 仍复用现有 `_build_rule_based_plan()` 的 `schedule_guidance` 具体回复构造，但控制权已前移到 orchestration 层。
+  - `E:\GraduationProject\backend\tests\test_assistant_conductor.py`
+    - 新增 `proposal` 模式下 `schedule_guidance` 不再运行 legacy `_build_plan()` 的回归。
+    - 新增该链路会直接返回 `suggest_schedule` 动作的回归。
+- Validation:
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py` -> `37 passed`
+  - 首次全量 `pytest -q` 遇到容器内 `/tmp/pytest-of-root` 临时目录状态异常，表现为 pytest tmp dir / sqlite 临时测试环境报错，不是本轮代码回归。
+  - 清理 `docker exec graduation-project-api sh -lc "rm -rf /tmp/pytest-of-root && mkdir -p /tmp/pytest-of-root"` 后重跑：
+    - `docker exec graduation-project-api pytest -q` -> `400 passed`
+- Open risks / remaining work:
+  - `schedule_guidance` 已经不再经过默认 `_build_plan()` 兜底，但其 answer 内容仍复用旧 rule-based helper，说明“主控先整理语义”已经实现，“回复生成完全模型主导”还没实现。
+  - 其他 answer-like / advice-like 输入仍未像 `schedule_guidance` 一样完成独立 path 切出。
+  - `workflow` 与 `_build_plan()` 仍然覆盖很多非 proposal / 非 schedule_guidance 场景，单一路径迁移还未完成。
+- Next recommended action:
+  - 继续 Phase 9A：再挑一个高频非 proposal 场景（建议 `event_context_advice` 或 `progress_followup`）切出独立 orchestration answer path，然后开始评估 `workflow` 是否可以在 `proposal` 模式下降为更窄的 feature-flag fallback。
+
+## 进度更新 - 2026-05-08 19:10 +08:00
+
+- Overall progress: Phase 9A 第七步已完成。`progress_followup` 已从 `proposal` 模式下的默认 legacy `_build_plan()` 路径中切出，成为第二个 answer-like orchestration direct reply path：理解层先产出 `conversation_mode="answer"` / `user_goal="progress_followup"`，`AssistantService` 再直接构建进度跟进回复与 `suggest_schedule` 动作。
+- Active phase: Phase 9 - Model-Driven Orchestration Refactor
+- Files changed in this step:
+  - `E:\GraduationProject\backend\app\assistant_agents\contracts.py`
+    - `GoalType` 增加 `progress_followup`，让进度跟进不再被迫挤进 `unknown` 或 legacy fallback 表达。
+  - `E:\GraduationProject\backend\app\assistant_agents\specialists\understanding.py`
+    - `progress_followup` 现在会生成显式 answer orchestration。
+    - target scope 先标为 `kind="task" / resolution="ambiguous"`，表达它通常围绕当前活跃任务集合给出跟进建议，而不是立即写入任务或日程。
+  - `E:\GraduationProject\backend\app\services\assistant.py`
+    - `_maybe_build_orchestration_answer_plan()` 支持 `user_goal="progress_followup"`。
+    - 该路径直接调用现有进度跟进计划构造，绕过 workflow / legacy `_build_plan()` 默认兜底。
+  - `E:\GraduationProject\backend\tests\test_assistant_conductor.py`
+    - 新增 conductor 层 `progress_followup` answer orchestration 回归。
+    - 新增 `send_message()` proposal 模式下进度跟进不运行 legacy `_build_plan()` 的真实 transcript 回归。
+    - 回归覆盖返回进度摘要、最近执行反馈和 `suggest_schedule` 动作。
+- Validation:
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py` -> `39 passed`
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_service.py tests/test_assistant_conductor.py` -> `75 passed`
+- Open risks / remaining work:
+  - `progress_followup` 的具体回复内容仍复用既有 rule-based helper；本步完成的是主控路径收敛，不是回复生成模型化。
+  - `event_context_advice` 仍未切出独立 orchestration answer path，且当前理解层可能先被 event/create 识别截获，需要下一步单独处理。
+  - `workflow` 与 `_build_plan()` 在其他非 answer-like 场景仍是默认兜底；Phase 9A 还需要继续收缩它们在 `proposal` 模式下的触发面。
+- Next recommended action:
+  - 继续 Phase 9A：优先处理 `event_context_advice`，先修正理解层对“几点出发 / 要不要带伞 / 通勤天气建议”这类输入的 orchestration 识别，再切出对应 direct answer path，并补 proposal 模式下不落回 `_build_plan()` 的 transcript 回归。
+
+## 进度更新 - 2026-05-08 20:14 +08:00
+
+- Overall progress: Phase 9A 第八步已完成。`event_context_advice` 也已从旧的 event creation / legacy `_build_plan()` 默认路径中切出，成为独立 answer-like orchestration path。至此，本轮连续完成了 `progress_followup` 与 `event_context_advice` 两个高频非 proposal 场景的 direct reply path。
+- Active phase: Phase 9 - Model-Driven Orchestration Refactor
+- Files changed in this step:
+  - `E:\GraduationProject\backend\app\assistant_agents\contracts.py`
+    - `GoalType` 增加 `event_context_advice`。
+  - `E:\GraduationProject\backend\app\assistant_agents\specialists\understanding.py`
+    - `_classify()` 现在优先保留 `event_context_advice` / `progress_followup` 这类 direct answer intent，避免“几点出发 / 要不要带伞 / 通勤天气建议”先被 `_looks_like_event()` 截获为创建日程。
+    - `event_context_advice` 会生成 `conversation_mode="answer"`、`user_goal="event_context_advice"`、`target_scope.kind="event"` 的 orchestration。
+    - 当标题、时间、地点足够明确时，target resolution 标为 `resolved`；上下文不完整时保守标为 `ambiguous`，但仍保持 answer path，不直接写入。
+  - `E:\GraduationProject\backend\app\services\assistant.py`
+    - `_maybe_build_orchestration_answer_plan()` 支持 `event_context_advice`，由 orchestration direct path 构建通勤 / 天气 / 出发建议。
+    - 该路径仍只产生 `propose_event` pending-style action，不进行 confirmed write，保持 proposal-first / confirmation-before-write 边界。
+  - `E:\GraduationProject\backend\tests\test_assistant_conductor.py`
+    - 新增 conductor 层 `event_context_advice` answer orchestration 回归。
+    - 新增 `send_message()` proposal 模式下 event context advice 不运行 legacy `_build_plan()` 的真实 transcript 回归。
+    - 回归覆盖 `propose_event` 动作、通勤摘要、天气/带伞建议。
+- Validation:
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py` -> `41 passed`
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_service.py` -> `36 passed`
+  - `docker exec graduation-project-api pytest -q` -> `404 passed in 675.66s (0:11:15)`
+- Open risks / remaining work:
+  - `schedule_guidance` / `progress_followup` / `event_context_advice` 已经完成主控路径收敛，但回复内容仍主要复用现有 rule-based helper。
+  - `workflow` 与 `_build_plan()` 仍覆盖剩余未迁移场景；下一步应开始把 `proposal` 模式下的 workflow 默认参与权降为更窄的 feature-flag fallback。
+  - clarification / negotiation 仍有模板化回复，Phase 9B/9C 需要继续把澄清与协商文案交给模型生成。
+- Next recommended action:
+  - 继续 Phase 9A/9B 交界：盘点 `proposal` 模式下剩余会默认进入 workflow / `_build_plan()` 的 intent，优先把 workflow 降级为只服务未覆盖 intent 的 fallback，并为每次收缩补 transcript 回归。
+
+## 进度更新 - 2026-05-08 20:29 +08:00
+
+- Overall progress: Phase 9A 第九步已完成。`proposal/primary` 模式下的 workflow 已从默认兜底降级：只要 conductor 已经运行，后续不会再默认进入 `_respond_with_workflow()` / `_respond_with_workflow_stream()`，而是继续走 orchestration answer / proposal / clarification / blocked fallback / `_build_plan()` 的更窄路径。
+- Active phase: Phase 9 - Model-Driven Orchestration Refactor
+- Files changed in this step:
+  - `E:\GraduationProject\backend\app\services\assistant.py`
+    - 新增 `_should_use_workflow_fallback()`。
+    - `send_message()` 与 `send_message_stream()` 改为通过该门控决定是否允许 workflow fallback。
+    - 在 `assistant_conductor_mode in {"proposal", "primary"}` 且 conductor 已运行时，禁用 workflow 默认兜底；`legacy` 模式、未运行 conductor、`ENABLE_WORKFLOW=false` 的既有语义保持不变。
+    - `progress_followup` 的空状态不再返回 `None`，而是直接返回“目前没有新的进度变化。”，避免空状态继续掉进 workflow / `_build_plan()`。
+  - `E:\GraduationProject\backend\app\services\assistant_runtime_plan.py`
+    - 同步 `build_progress_followup_plan()` 空状态行为，避免抽出 runtime 入口与 `AssistantService` 包装入口语义分裂。
+  - `E:\GraduationProject\backend\tests\test_assistant_conductor.py`
+    - 新增空进度跟进在 `proposal` 模式下不走 workflow / `_build_plan()` 的回归。
+    - 新增 conductor 已运行后，`proposal` 模式不再把 workflow 当默认兜底的回归。
+- Validation:
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py` -> `43 passed`
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_service.py tests/test_workflow.py tests/test_workflow_memory_context.py` -> `70 passed`
+  - `docker exec graduation-project-api pytest -q` -> `406 passed in 576.12s (0:09:36)`
+- Open risks / remaining work:
+  - workflow 已降级，但 `_build_plan()` 仍是部分兜底路径，且内部仍有 rule-based short-circuit；后续需要继续把明确 intent 从 `_build_plan()` 中迁出。
+  - `send_message_stream()` 在非 workflow fallback 后仍保留 Gemini streaming / `_build_plan()` 路径，需要后续继续统一成与非流式相同的 orchestration-first 控制面。
+  - 模板式 clarification / negotiation 仍未模型化，Phase 9B/9C 仍需推进生成式澄清。
+- Next recommended action:
+  - 继续 Phase 9B：优先收缩 `_build_plan()` 中对 `schedule_guidance / event_context_advice / progress_followup` 的 rule-based short-circuit 兜底职责，把这些 answer-like intent 的唯一主入口固定为 `_maybe_build_orchestration_answer_plan()`，同时保留 legacy mode 兼容路径。
+
+## 进度更新 - 2026-05-08 20:47 +08:00
+
+- Overall progress: Phase 9B 第一处收缩已完成。`_build_plan()` 中 `schedule_guidance / event_context_advice / progress_followup` 的 rule-based short-circuit 现在可以按调用入口关闭；在 `proposal/primary` 模式且 conductor 已运行后，answer-like intent 不再通过 `_build_plan()` 内部规则短路绕过 orchestration answer 入口。legacy 兼容路径仍保留默认行为。
+- Active phase: Phase 9 - Model-Driven Orchestration Refactor
+- Files changed in this step:
+  - `E:\GraduationProject\backend\app\services\assistant_runtime_plan.py`
+    - `build_plan()` 新增 `allow_answer_like_rule_short_circuit` 参数，默认 `True` 保持 legacy 兼容。
+    - 当该参数为 `False` 且 intent 属于 `schedule_guidance / event_context_advice / progress_followup` 时，不再直接返回 rule-based fallback plan，也不再用 rule-based answer/actions 覆盖空模型结果。
+  - `E:\GraduationProject\backend\app\services\assistant.py`
+    - `_build_plan()` 包装方法透传 `allow_answer_like_rule_short_circuit`。
+    - `send_message()` 与 `send_message_stream()` 在 conductor 已运行后的 fallback plan 调用中，使用 `_should_allow_answer_like_rule_short_circuit()` 关闭 answer-like 规则短路。
+  - `E:\GraduationProject\backend\tests\test_assistant_service.py`
+    - 新增 `_build_plan()` 可关闭 answer-like rule short-circuit 的回归，验证 `schedule_guidance` 不再直接返回 `suggest_schedule` fallback。
+  - `E:\GraduationProject\backend\tests\test_assistant_conductor.py`
+    - 强化 proposal fallback 回归，确认 conductor 已运行后传入 `allow_answer_like_rule_short_circuit=False`。
+- Validation:
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py` -> `43 passed`
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_service.py` -> `37 passed`
+  - `docker exec graduation-project-api pytest -q tests/test_workflow.py tests/test_workflow_memory_context.py` -> `34 passed`
+  - `docker exec graduation-project-api pytest -q` -> `407 passed in 782.10s (0:13:02)`
+- Open risks / remaining work:
+  - `_build_plan()` 仍保留 legacy 兼容能力，只是 proposal/primary conductor fallback 入口不再允许 answer-like 规则短路。
+  - 非流式路径已经明确传入该门控；流式路径仍有 Gemini streaming 的单独分支，后续需要继续把流式与非流式的 fallback 控制面对齐。
+  - 下一步应继续收缩模板式 clarification / negotiation，避免未知或歧义输入过早落入固定话术。
+- Next recommended action:
+  - 继续 Phase 9B/9C：选择一个高频 clarification 场景，把模板式 `TaskOrEventClarifierSpecialist` / `NegotiationSpecialist` 回复改为 orchestration-aware 的生成式澄清边界，并补 transcript 回归。
+
+## 进度更新 - 2026-05-08 21:02 +08:00
+
+- Overall progress: Phase 9C 第一处澄清收缩已完成。`TaskOrEventClarifierSpecialist` 不再只依赖固定 ambiguity 分支；对高频任务创建澄清和不完整日程创建澄清，已经优先读取 `OrchestrationAssessment.missing_information / user_goal / proposal_shape / target_scope` 生成问题，并在 conductor metadata 中标记 `clarification_source="orchestration"`。
+- Active phase: Phase 9 - Model-Driven Orchestration Refactor
+- Files changed in this step:
+  - `E:\GraduationProject\backend\app\assistant_agents\specialists\task_or_event_clarifier.py`
+    - 新增 `_build_orchestration_clarification()`。
+    - `create_task + task_creation` 的澄清现在按 orchestration missing fields 生成，例如 `subject / deadline_or_time_window / rhythm`。
+    - `create_event + event_creation` 的普通缺字段澄清也改为 orchestration-aware 生成，例如 `start_time / end_time_or_duration / title`。
+    - 对 `dating_request_too_vague` 保留原专门兜底，避免过度泛化高风险模糊输入。
+  - `E:\GraduationProject\backend\tests\test_assistant_conductor.py`
+    - 强化 `帮我安排复习` 回归，确认 metadata 标记 orchestration 澄清来源，并保留“科目 / 截止 / 可确认”信息。
+    - 新增“不完整日程创建” transcript 回归，确认回复来自 orchestration-aware clarification，并要求包含“可确认的日程方案 / 开始时间”。
+- Validation:
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py` -> `44 passed`
+  - `docker exec graduation-project-api pytest -q` -> `408 passed in 618.60s (0:10:18)`
+- Open risks / remaining work:
+  - 这一步仍是 orchestration-aware 的确定性生成，不是真正 LLM 生成式澄清；但已经把模板分支降级为后备路径。
+  - `NegotiationSpecialist.format_proposals()` 的 proposal 文案仍是固定模板，后续 Phase 9C 需要继续拆。
+  - 其他 update / batch clarification 仍有固定分支，可继续逐步迁移到 orchestration-aware 生成。
+- Next recommended action:
+  - 继续 Phase 9C：把 `NegotiationSpecialist` 的 proposal 回复从固定模板改成使用 `proposal_shape / orchestration.user_goal / target_scope` 的生成边界，先覆盖 `task_schedule_plan` 或 `event_reschedule`，并补 transcript 回归。
+
+## 进度更新 - 2026-05-08 21:15 +08:00
+
+- Overall progress: Phase 9C 第二处 negotiation 收缩已完成。`NegotiationSpecialist.format_proposals()` 不再对所有 proposal 使用同一个固定模板；`task_schedule_plan` 与 `event_reschedule` 已按 orchestration 的 `proposal_shape / target_scope` 生成更贴近目标的 proposal 回复，并在 conductor metadata 中标记 `proposal_reply_source="orchestration"`。
+- Active phase: Phase 9 - Model-Driven Orchestration Refactor
+- Files changed in this step:
+  - `E:\GraduationProject\backend\app\assistant_agents\specialists\negotiation.py`
+    - `format_proposals()` 现在接收 `ConductorState`，可读取 `understanding.orchestration`。
+    - 新增 `_format_task_schedule_plan()`，为任务排程 proposal 输出“任务排程方案 / 确认后才创建专注时段”的上下文文案。
+    - 新增 `_format_event_reschedule()`，为日程改期 proposal 输出“改期方案 / 确认后才改动原日程”的上下文文案。
+    - 默认固定模板保留为未迁移 proposal shape 的兜底。
+  - `E:\GraduationProject\backend\tests\test_assistant_conductor.py`
+    - `task_schedule_plan` 回归新增 `proposal_reply_source` 断言，并确认回复包含“任务排程方案 / 确认后我才会创建这些专注时段”。
+    - `event_reschedule` 回归新增 `proposal_reply_source` 断言，并确认回复包含“可确认的改期方案 / 确认后我才会改动原日程”。
+- Validation:
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py` -> `44 passed`
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_service.py` -> `37 passed`
+  - `docker exec graduation-project-api pytest -q` -> `408 passed in 496.26s (0:08:16)`
+- Open risks / remaining work:
+  - 这一步仍是 orchestration-aware deterministic wording，不是完整 LLM generated negotiation。
+  - `event_creation / task_creation / batch update / status update` 的 proposal 回复仍走默认模板，后续可继续按 proposal shape 迁移。
+  - 前端 proposal surface 未重新做系统级 smoke，最终收口前仍需真实 API/UI smoke。
+- Next recommended action:
+  - 继续 Phase 9C：扩展 proposal reply generation 到 `event_creation / task_creation`，或开始做一次端到端 smoke，检查 proposal-first / confirm-before-write / memory notice / proactive follow-up 是否仍完整。
+
+## 进度更新 - 2026-05-08 21:29 +08:00
+
+- Overall progress: Phase 9C 第三处 negotiation 收缩已完成。`event_creation` 与 `task_creation` 的 proposal 回复也已接入 orchestration-aware wording，创建类 proposal 不再默认使用通用固定模板；回复会明确区分“新日程方案 / 新任务方案”以及“确认后才创建”的执行边界。
+- Active phase: Phase 9 - Model-Driven Orchestration Refactor
+- Files changed in this step:
+  - `E:\GraduationProject\backend\app\assistant_agents\specialists\negotiation.py`
+    - 新增 `_format_event_creation()`，为新日程 proposal 输出“新日程方案 / 现在不会直接写入日程 / 确认后才创建日程”。
+    - 新增 `_format_task_creation()`，为新任务 proposal 输出“新任务方案 / 现在不会直接写入任务 / 确认后才创建任务”。
+    - `event_creation / task_creation / event_reschedule / task_schedule_plan` 均已通过 `proposal_reply_source="orchestration"` 标记迁移路径。
+  - `E:\GraduationProject\backend\tests\test_assistant_conductor.py`
+    - 强化 clear event creation 回归，确认 `proposal_reply_source` 与“新日程方案 / 不会直接写入”文案。
+    - 新增 clear task creation transcript 回归，确认 `task_creation` proposal shape、`create_task` action 与“新任务方案 / 不会直接写入任务”文案。
+- Validation:
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py` -> `45 passed`
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_service.py` -> `37 passed`
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_proposal_api.py tests/test_assistant_proposal_manager.py tests/test_assistant_proposal_revise.py` -> `15 passed`
+  - `docker exec graduation-project-api pytest -q` -> `409 passed in 460.30s (0:07:40)`
+- Open risks / remaining work:
+  - Batch update / status update proposal 回复仍走默认模板兜底。
+  - 当前 wording 仍是 deterministic orchestration-aware generation，不是完整 LLM negotiation。
+  - 需要做系统级 smoke，确认 API / proposal persistence / confirmation write path / memory notice / proactive follow-up 仍协同正常。
+- Next recommended action:
+  - 进入系统级 smoke 前，先补一条 lightweight API-level smoke transcript，覆盖 proposal mode 下 create event -> pending proposal -> confirm -> write path，验证 proposal-first 与 confirmation-before-write 没被 Phase 9C wording 改动破坏。
+
+## 进度更新 - 2026-05-08 21:48 +08:00
+
+- Overall progress: Phase 9C 第四处 negotiation 收缩已完成。剩余 batch/status/update 类 proposal shape 已接入 orchestration-aware wording：`event_cancel / event_status_update / event_batch_cancel / event_batch_reschedule / task_status_update` 不再默认落到通用 proposal 模板，proposal 回复会明确对应“取消 / 状态更新 / 批量改期 / 批量取消”的确认边界。
+- Active phase: Phase 9 - Model-Driven Orchestration Refactor
+- Files changed in this step:
+  - `E:\GraduationProject\backend\app\assistant_agents\specialists\negotiation.py`
+    - 新增 `_format_update_proposal()`，统一处理 update/status/batch proposal wording。
+    - 新增 `_update_target_label()`，优先从 proposal payload / related id 生成目标标签。
+    - `event_cancel / event_status_update / event_batch_cancel / event_batch_reschedule / task_status_update` 均标记 `proposal_reply_source="orchestration"`。
+  - `E:\GraduationProject\backend\tests\test_assistant_conductor.py`
+    - `event_batch_reschedule` transcript 增加 `proposal_reply_source`、`批量改期方案`、`确认前不会修改日程` 断言。
+    - `task_status_update` transcript 增加 `proposal_reply_source`、`任务状态更新方案`、`确认前不会修改任务` 断言。
+- Validation:
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py` -> `45 passed`
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_service.py` -> `37 passed`
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_proposal_api.py tests/test_assistant_proposal_manager.py tests/test_assistant_proposal_revise.py` -> `15 passed`
+  - `docker exec graduation-project-api pytest -q` -> `409 passed in 751.61s (0:12:31)`
+- Open risks / remaining work:
+  - Proposal wording 已基本完成 orchestration-aware 分流，但仍不是 LLM-generated negotiation。
+  - 需要开始系统级 smoke，覆盖真实 API / persistence / confirm-before-write / action executor。
+  - 主控路径仍需最终审计：确认 legacy workflow / `_build_plan()` 只剩明确兼容 fallback，而不是默认主控。
+- Next recommended action:
+  - 做 lightweight API/service smoke：proposal mode 下 create event 只创建 pending proposal，不写 event；随后 confirm proposal 才触发 action executor 写入，并验证回复/状态/写入结果。
+
+## 进度更新 - 2026-05-08 22:03 +08:00
+
+- Overall progress: Phase 9C 后的 lightweight service smoke 已补齐。现在有一条端到端风格回归覆盖 proposal mode 下的核心安全边界：用户提出创建日程时只生成 pending proposal，不走 legacy event write；用户随后回复确认文本时，才进入 proposal confirmation path，并把 active target 更新到 executed proposal / related event。
+- Active phase: Phase 9 - Model-Driven Orchestration Refactor
+- Files changed in this step:
+  - `E:\GraduationProject\backend\tests\test_assistant_conductor.py`
+    - 新增 `test_send_message_proposal_mode_create_event_then_confirm_smoke()`。
+    - 第一轮 `send_message("明天下午3点我要去学校和同学见面")` 断言只创建 `event_creation` pending proposal，`event_service.create_event` 若被调用会直接失败。
+    - 第二轮 `send_message("同意")` 断言调用 `confirm_proposal(user_id="demo-user", proposal_id=202, option_id="A")`。
+    - 验证确认后回复为“已按这个方案确认并执行。”，并且 active target payload 写入 `active_proposal_id=202 / related_event_id=88`。
+- Validation:
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py` -> `46 passed`
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_proposal_manager.py` -> `6 passed`
+  - `docker exec graduation-project-api pytest -q` -> `410 passed in 588.78s (0:09:48)`
+- Open risks / remaining work:
+  - 这仍是 service-level smoke，尚未通过真实 HTTP API / 前端 UI 走完整链路。
+  - Fake proposal manager 验证了确认路径调用与 active target 写入；真实 action executor 的写入由 `test_assistant_proposal_manager.py` 覆盖，但两者仍是分层验证。
+  - 最终收口前需要一次真实运行环境 smoke：API health、assistant message、proposal list/confirm、事件写入结果。
+- Next recommended action:
+  - 做最终完成审计前的真实运行环境 smoke。如果当前容器 API 已可用，先检查 health，再用现有测试库或临时 smoke 数据跑一次 create event proposal -> confirm -> event readback。
+
+## 进度更新 - 2026-05-08 22:06 +08:00
+
+- Overall progress: 真实运行环境 HTTP smoke 已完成一轮。当前容器 API 在 `ASSISTANT_CONDUCTOR_MODE=proposal` 下可用，已用真实 `/api/assistant/message`、`/api/assistant/proposals/{id}/confirm`、`/api/events` 路径验证 create event proposal -> confirm -> event readback -> cleanup。
+- Active phase: Phase 9 - Model-Driven Orchestration Refactor
+- Runtime smoke evidence:
+  - `GET http://127.0.0.1:8000/api/health` -> `{"status":"ok","service":"Personal Affairs Assistant","version":"0.1.0","environment":"development","database_ready":true}`
+  - Runtime env:
+    - `ASSISTANT_CONDUCTOR_MODE=proposal`
+    - `SQLITE_DB_PATH=/app/data/app.db`
+  - `POST /api/assistant/message` with `明天下午3点我要去学校和同学见面 ...`:
+    - response actions: `[]`
+    - response reply contained `待确认方案`
+    - no legacy event write occurred before confirmation
+  - `GET /api/assistant/proposals?status=pending&proposal_type=event_creation&limit=20`:
+    - pending proposal found: `proposal_id=35`
+    - summary: `建议创建日程“和同学见面”：05-09 15:00-16:00，地点：学校`
+  - `POST /api/assistant/proposals/35/confirm`:
+    - confirmed status: `executed`
+    - related event id: `57`
+  - `GET /api/events`:
+    - event `57` found with title `和同学见面`
+  - Cleanup:
+    - `DELETE /api/events/57` -> `200`
+    - follow-up pending event creation count -> `0`
+- Notes:
+  - 首次 smoke message 带了 `SMOKE-P9-*` marker，但当前标题抽取会丢弃该 marker；脚本因此没有按 marker 匹配 proposal。随后按当前唯一 pending `event_creation` proposal 继续完成确认与 cleanup。
+  - 这暴露了一个非阻塞观察点：自由文本 marker 不适合作为事件标题识别锚点，后续 smoke 如需稳定定位，应该使用 proposal id / timestamp 前置状态，而不是期望 marker 被标题抽取保留。
+- Validation:
+  - HTTP runtime smoke -> passed
+  - smoke cleanup verification -> `pending_event_creation=0`
+- Open risks / remaining work:
+  - 已完成 backend tests + runtime API smoke，但尚未做前端 UI 手动/自动 smoke。
+  - 还需要最终完成审计，逐项核对 `goal.txt` 的“模型主导语义编排 / proposal-first / 确认后执行 / 长期记忆 / 主动跟进 / legacy 降级”是否都有实际证据。
+- Next recommended action:
+  - 执行最终完成审计。如果审计发现只剩文档收口，则更新 handoff/progress 并判断 Phase 9 是否可标记完成；如果发现缺口，则继续补最小验证或代码路径。
+
+## 完成审计 - 2026-05-08 22:07 +08:00
+
+- Objective restatement:
+  - 将个人事务工作台 AI 助手从“规则前置决策 + 多套 fallback 的 proposal 外壳”推进到“模型主导语义编排 + proposal-first 执行边界 + 用户确认后执行 + 长期记忆 + 主动跟进”的统一主控路径。
+  - 当前 Phase 9 重点是收回 legacy workflow / `_build_plan()` / 模板澄清主导权。
+- Prompt-to-artifact checklist:
+  - 高频 answer-like 场景不再默认掉进 workflow / `_build_plan()`:
+    - Evidence: `schedule_guidance / progress_followup / event_context_advice` 均已有 `conversation_mode="answer"` orchestration direct path。
+    - Evidence: `tests/test_assistant_conductor.py` 覆盖 proposal mode 下不运行 legacy `_build_plan()` / workflow 的 transcript。
+  - proposal-first / confirmation-before-write:
+    - Evidence: service-level smoke `test_send_message_proposal_mode_create_event_then_confirm_smoke()`。
+    - Evidence: runtime HTTP smoke `POST /assistant/message -> pending proposal -> POST /assistant/proposals/{id}/confirm -> event readback -> cleanup` passed。
+  - workflow 降级:
+    - Evidence: `_should_use_workflow_fallback()` 禁止 proposal/primary conductor 后默认进入 workflow。
+    - Evidence: targeted regression 覆盖 proposal mode 不再默认用 workflow fallback。
+  - `_build_plan()` answer-like rule short-circuit 降级:
+    - Evidence: `allow_answer_like_rule_short_circuit=False` in proposal/primary conductor fallback。
+    - Evidence: `test_build_plan_can_disable_answer_like_rule_short_circuit()`。
+  - clarification / negotiation 模板降级:
+    - Evidence: `TaskOrEventClarifierSpecialist` 已优先用 orchestration missing fields 生成 create task/event 澄清。
+    - Evidence: `NegotiationSpecialist` 已对 major proposal shapes 使用 orchestration-aware wording，并标记 `proposal_reply_source="orchestration"`。
+  - 长期记忆:
+    - Evidence: Phase 8 task book 记录 memory candidate API、confirm/reject、`.md` 写入 smoke 与 UI smoke 已完成。
+    - Gap: 本轮 Phase 9 后未重新跑 memory candidate HTTP/UI smoke。
+  - 主动跟进:
+    - Evidence: Phase 7 task book 记录 heartbeat/signals/proactive API smoke 已完成；Phase 9 progress followup direct path 已覆盖。
+    - Gap: 本轮 Phase 9 后未重新跑 heartbeat/proactive signal runtime smoke。
+  - 系统级 smoke:
+    - Evidence: backend full regression `410 passed` and runtime HTTP create event proposal -> confirm -> event readback passed.
+    - Gap: 前端 UI proposal surface 未在 Phase 9 后重新 smoke。
+- Completion decision:
+  - Not complete yet.
+  - Reason: 后端主控路径已经大幅收敛并有真实 HTTP smoke，但“完整模型生成式澄清/协商”、Phase 9 后的 memory/proactive 重新验证、以及前端 UI smoke 仍缺证据。不能仅凭 backend tests 与单条 runtime smoke 判定整个 `goal.txt` 已完成。
+- Next recommended action:
+  - 跑最小增量 runtime smoke：
+    1. memory candidate create -> confirm -> readback/cleanup；
+    2. proactive heartbeat/signal endpoint smoke；
+    3. 前端或 Playwright UI smoke 验证 proposal 待确认区仍可见/可操作。
+  - 若这三项通过，再做最终 completion audit。
+
+## 运行态补充 smoke - 2026-05-08 22:10 +08:00
+
+- Long-term memory runtime smoke:
+  - Used isolated user: `smoke-memory-1778249376`
+  - `POST /api/assistant/memory/candidates` -> candidate `9`, status `proposed`
+  - `POST /api/assistant/memory/candidates/9/confirm` -> status `written`
+  - `GET /api/assistant/memory` -> smoke marker read back successfully
+  - Cleanup: removed `/app/data/assistant_memory/smoke-memory-1778249376`
+  - Result: passed
+- Proactive signal runtime smoke:
+  - Used isolated user: `smoke-signal-1778249420`
+  - `POST /api/assistant/heartbeat/run` with `signal_type=deadline_risk` -> signal `1`
+  - heartbeat message confirmed proposal creation/writes still require later confirmation
+  - `POST /api/assistant/signals/1/proposal` -> proposal `36`, status `pending`
+  - Proposal action type: `acknowledge_signal`
+  - `GET /api/assistant/signals?status=proposal_created` contained signal `1`
+  - Result: passed
+- Updated completion audit status:
+  - Memory runtime verification: now covered.
+  - Proactive signal runtime verification: now covered.
+  - Remaining material gap: front-end / UI smoke after Phase 9 changes.
+- Next recommended action:
+  - Run a minimal frontend/UI smoke for assistant proposal surface, or explicitly document why backend/API smoke is sufficient for current goal if UI is out of scope.
+
+## 前端 UI smoke - 2026-05-08 22:18 +08:00
+
+- Overall progress: Phase 9 后的最小前端 UI smoke 已补齐。当前本地 Vite 页面 `http://127.0.0.1:8888` 可打开，助手 tab 能展示后端返回的 pending proposal 与 proposed memory candidate。
+- Setup:
+  - Created temporary local-user proposal through real API:
+    - `POST /api/assistant/message` with `明天上午10点到10点30安排和同学见面 ui-smoke-frontend-1778249832`
+    - reply contained `待确认方案`
+    - latest pending `event_creation` proposal: `proposal_id=38`
+  - Created temporary local-user memory candidate:
+    - `POST /api/assistant/memory/candidates`
+    - candidate `11`, status `proposed`
+    - marker/title: `ui-smoke-frontend-1778249832`
+- Playwright evidence:
+  - Navigated to `http://127.0.0.1:8888`
+  - Opened navigation tab `助手`
+  - DOM text checks:
+    - `待确认方案`: present
+    - `待确认记忆`: present
+    - `确认`: present
+    - `写入记忆`: present
+    - temporary memory marker `ui-smoke-frontend-1778249832`: present
+  - Result: passed
+- Cleanup:
+  - `POST /api/assistant/proposals/38/reject` -> status `rejected`
+  - `POST /api/assistant/memory/candidates/11/reject` -> status `rejected`
+  - Verification:
+    - proposal `38` no longer in pending list
+    - memory candidate `11` no longer in proposed list
+  - Note: there was already one unrelated pending proposal and one unrelated proposed memory candidate for `local-user`; they were left untouched.
+- Updated audit status:
+  - Backend full regression: covered by `410 passed`
+  - Runtime proposal-first create event smoke: covered
+  - Runtime memory candidate write/readback smoke: covered
+  - Runtime proactive signal smoke: covered
+  - Frontend assistant proposal/memory surface smoke: now covered
+
+## 最终整合判断 - 2026-05-08 22:18 +08:00
+
+- Current session success condition:
+  - Met.
+  - `progress_followup` and `event_context_advice` now have orchestration-driven answer paths and regressions.
+  - Proposal mode no longer treats workflow / `_build_plan()` as the default fallback after conductor output.
+  - Clarification and negotiation now prefer orchestration-derived structure for the covered create/update/proposal shapes.
+  - Service, backend full regression, runtime HTTP smoke, memory/proactive smoke, and frontend UI smoke all have evidence.
+- Overall `goal.txt` completion decision:
+  - Not marked complete yet.
+  - Reason: Phase 9 has been materially advanced and smoke-tested, but the broader goal says to continue until the assistant has truly migrated to a unified model-led orchestration path. The current implementation still retains legacy workflow / `_build_plan()` compatibility fallback and deterministic orchestration-aware wording for several clarification/negotiation paths. These are now demoted, tested, and safer, but not fully removed or fully model-generated across the entire assistant surface.
+- Recommended next action:
+  - Continue Phase 9 by auditing remaining proposal-mode branches where `AssistantService` can still call legacy `_build_plan()` or workflow compatibility fallbacks, then remove or gate the next safest branch with transcript regressions.
+  - After each removal, rerun targeted conductor/service tests and periodically rerun full backend regression.
+
+## 进度更新 - 2026-05-09 00:45 +08:00
+
+- Overall progress: 继续 Phase 9 fallback 收缩，补齐流式助手路径。此前 REST `send_message()` 已覆盖 proposal-mode answer-like orchestration，但 `send_message_stream()` 中存在一个未覆盖缺口：answer-plan 调用曾传入不存在的参数；并且 conductor 在 `proposal/primary` 模式下已有结果后，streaming 路径仍会先尝试旧的 Gemini streaming plan fallback。
+- Files changed in this step:
+  - `E:\GraduationProject\backend\app\services\assistant.py`
+    - 修正 `send_message_stream()` 调用 `_maybe_build_orchestration_answer_plan()` 的参数列表，避免 answer-like orchestration 在流式路径触发 `TypeError`。
+    - 新增 `_should_use_streaming_plan_fallback()`。
+    - 在 `proposal/primary` 且 conductor 已运行并返回结果时，禁止默认进入 Gemini streaming plan fallback；流式路径改为与 REST 路径一致，进入受 gate 约束的 `_build_plan(... allow_answer_like_rule_short_circuit=False)`。
+  - `E:\GraduationProject\backend\tests\test_assistant_conductor.py`
+    - 新增 `test_send_message_stream_proposal_mode_progress_followup_empty_state_stays_on_answer_path()`，覆盖空进度 answer path 不进入 workflow / `_build_plan()`，并返回 `目前没有新的进度变化。`。
+    - 新增 `test_send_message_stream_proposal_mode_does_not_use_gemini_stream_as_default_fallback()`，覆盖 proposal-mode conductor 已运行后不再默认调用 Gemini streaming plan fallback，并断言后续 `_build_plan()` 的 answer-like rule short-circuit 被关闭。
+- Validation:
+  - First targeted run intentionally exposed the stream bug and an accidental patch mismatch; fixed before final validation.
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py` -> `47 passed`
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py tests/test_assistant_service.py` -> `85 passed`
+  - `docker exec graduation-project-api python -m compileall app/services/assistant.py tests/test_assistant_conductor.py` -> passed
+- Current completion status:
+  - Goal still not complete. This step removes one more default fallback path from the streaming surface, but broader Phase 9 still has intentionally retained compatibility fallback through `_build_plan()` for unsupported/non-orchestrated proposal-mode messages.
+- Next recommended action:
+  - Continue auditing `AssistantService` for remaining proposal-mode fallback behavior after conductor result, especially unsupported messages that still reach `_build_plan()` compatibility logic, and decide the next safe branch to gate behind explicit mode/intent rather than defaulting to legacy planning.
+
+## 进度更新 - 2026-05-09 01:04 +08:00
+
+- Overall progress: 继续收回模板式 clarification 的主导权。`unknown` goal 之前虽然已有 `OrchestrationAssessment(conversation_mode="clarification", user_goal="unknown", missing_information=["goal_type"])`，但 `TaskOrEventClarifierSpecialist` 没有消费这段 orchestration 信息，最后仍落到固定模板“你希望把这件事当成一次性日程，还是需要拆成多个日程组合成的任务？”。
+- Files changed in this step:
+  - `E:\GraduationProject\backend\app\assistant_agents\specialists\task_or_event_clarifier.py`
+    - 在 `_build_orchestration_clarification()` 中新增 `user_goal="unknown" / missing_information=["goal_type"]` 分支。
+    - 新回复围绕“你想让我产出什么结果”澄清，让用户选择创建/调整日程、拆解并安排任务，或只基于现有事项给建议，并提示可补充时间/地点/截止时间/偏好。
+    - 命中后标记 `clarification_source="orchestration"`，不再落到最后的固定 task/event 模板。
+  - `E:\GraduationProject\backend\tests\test_assistant_conductor.py`
+    - 新增 `test_conductor_uses_orchestration_clarification_for_unknown_goal()`，验证普通 unknown 输入走 orchestration clarification，回复包含“产出什么结果”和“基于现有事项给你建议”。
+- Validation:
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py` -> `49 passed`
+  - `docker exec graduation-project-api python -m compileall app/assistant_agents/specialists/task_or_event_clarifier.py tests/test_assistant_conductor.py` -> passed
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_service.py` -> `37 passed`
+- Current completion status:
+  - Goal still not complete. This step removes one more template clarification fallback, but Phase 9 still has retained compatibility branches and not every clarification/negotiation surface is fully model/orchestration-derived.
+- Next recommended action:
+  - Continue scanning template clarification/negotiation branches for cases where `UnderstandingResult.orchestration` already carries enough structure but the specialist still falls through to hard-coded legacy wording.
+
+## 进度更新 - 2026-05-09 01:20 +08:00
+
+- Overall progress: 继续收回批量日程澄清的模板分支。`cancel_events_batch` / `reschedule_events_batch` 在 `UnderstandingResult.orchestration` 中已经有 `user_goal`、`proposal_shape` 与 `missing_information`，但缺日期/移动规则时仍落到旧 ambiguity 文案。
+- Files changed in this step:
+  - `E:\GraduationProject\backend\app\assistant_agents\specialists\task_or_event_clarifier.py`
+    - `_build_orchestration_clarification()` 新增批量日程分支。
+    - 覆盖 `cancel_events_batch` 与 `reschedule_events_batch`。
+    - 将 `target_event` / `target_date` 映射为“要操作的日期或日期范围”，将 `batch_shift_days` 映射为“整体移动规则，比如推迟一天、提前两天，或改到某个日期”。
+    - 命中后标记 `clarification_source="orchestration"`。
+  - `E:\GraduationProject\backend\tests\test_assistant_conductor.py`
+    - 更新 `test_conductor_clarifies_batch_cancel_without_date()`，断言批量取消缺日期走 orchestration clarification。
+    - 更新 `test_conductor_clarifies_batch_reschedule_without_shift_or_destination()`，断言批量改期缺移动规则走 orchestration clarification。
+    - 更新 `test_conductor_clarifies_batch_reschedule_destination_without_source_date()`，断言“改到目标日期但缺源日期范围”走 orchestration clarification。
+- Validation:
+  - First targeted run exposed actual missing key was `target_event` rather than only `target_date`; mapping fixed.
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py` -> `49 passed`
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_service.py` -> `37 passed`
+  - `docker exec graduation-project-api python -m compileall app/assistant_agents/specialists/task_or_event_clarifier.py tests/test_assistant_conductor.py` -> passed
+- Current completion status:
+  - Goal still not complete. More clarification fallback branches are now orchestration-aware, but compatibility fallback and some specialized legacy wording remain.
+- Next recommended action:
+  - Continue with remaining clarification branches where ambiguity-specific text can be derived from orchestration target scope and missing information, or run a focused audit to decide whether the residual specialized ambiguity text should remain as explicit compatibility fallback.
+
+## 进度更新 - 2026-05-09 01:34 +08:00
+
+- Overall progress: 继续收回单个日程更新澄清的模板分支。`cancel_event` / `reschedule_event` 在目标日程不明确、目标找不到、或改期缺新时间时，已经有 `orchestration.user_goal`、`target_scope.candidate_labels` 与 `missing_information`，但之前仍落到旧 ambiguity 文案。
+- Files changed in this step:
+  - `E:\GraduationProject\backend\app\assistant_agents\specialists\task_or_event_clarifier.py`
+    - `_build_orchestration_clarification()` 新增单个日程更新分支。
+    - 覆盖 `cancel_event`、`reschedule_event`、`complete_event`、`update_event`。
+    - 将 `target_event` 映射为“要操作的具体日程”，将 `new_start_time` 映射为“新的日期和具体时间，或一个可选时间段”。
+    - 回复中保留 `target_scope.candidate_labels`，用于目标不明确时展示候选日程。
+    - 命中后标记 `clarification_source="orchestration"`。
+  - `E:\GraduationProject\backend\tests\test_assistant_conductor.py`
+    - 更新 `test_conductor_clarifies_ambiguous_event_update_target()`，断言取消日程目标不明确走 orchestration clarification。
+    - 新增 `test_conductor_uses_orchestration_clarification_for_missing_event_update_target()`。
+    - 新增 `test_conductor_uses_orchestration_clarification_for_reschedule_missing_time()`。
+    - 更新 `test_conductor_clarifies_pronoun_without_unique_context()`，断言指代消歧走 orchestration clarification 并保留候选日程。
+- Validation:
+  - First targeted run exposed existing pronoun clarification test still expected legacy wording; updated to the new orchestration wording.
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py` -> `51 passed`
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_service.py` -> `37 passed`
+  - `docker exec graduation-project-api python -m compileall app/assistant_agents/specialists/task_or_event_clarifier.py tests/test_assistant_conductor.py` -> passed
+- Current completion status:
+  - Goal still not complete. Event-update clarification is now substantially orchestration-driven, but retained compatibility fallback remains elsewhere and still requires final audit before completion.
+- Next recommended action:
+  - Continue with task-update clarification branches (`target_task_ambiguous`, `target_task_not_found`, `schedule_time_missing`) so task continuation/update clarification follows the same orchestration-first pattern.
+
+## 进度更新 - 2026-05-09 01:41 +08:00
+
+- Overall progress: 继续收回任务澄清的模板分支。任务继续排程与任务状态更新此前已有 `orchestration.user_goal`、`target_scope` 和 `missing_information`，但目标任务不明确/找不到、或继续排程缺时段时仍落到旧 task ambiguity 文案。
+- Files changed in this step:
+  - `E:\GraduationProject\backend\app\assistant_agents\specialists\task_or_event_clarifier.py`
+    - `_build_orchestration_clarification()` 新增 `schedule_blocks` / `task_schedule_plan` 分支。
+    - 将 `target_task` 映射为“要继续规划的具体任务”，将 `time_preferences` 映射为“希望安排到哪天、几点到几点，或可接受的时间段”。
+    - 新增 `complete_task` / `update_target` 分支，将 `target_task` 映射为“要操作的具体任务”。
+    - 回复保留 `target_scope.candidate_labels`，用于任务候选消歧。
+    - 命中后标记 `clarification_source="orchestration"`。
+  - `E:\GraduationProject\backend\tests\test_assistant_conductor.py`
+    - 新增 `test_conductor_uses_orchestration_clarification_for_missing_task_update_target()`。
+    - 新增 `test_conductor_uses_orchestration_clarification_for_task_schedule_missing_target_and_time()`。
+    - 新增 `test_conductor_uses_orchestration_clarification_for_task_schedule_missing_time()`。
+- Validation:
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py` -> `54 passed`
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_service.py` -> `37 passed`
+  - `docker exec graduation-project-api python -m compileall app/assistant_agents/specialists/task_or_event_clarifier.py tests/test_assistant_conductor.py` -> passed
+- Current completion status:
+  - Goal still not complete. Clarification paths are now much more consistently orchestration-first, but full completion still requires a final audit of remaining fallback/legacy paths and a broader regression pass.
+- Next recommended action:
+  - Run a focused audit of `TaskOrEventClarifierSpecialist` to identify what remains intentionally specialized fallback versus accidental legacy template fallback, then either document the residual compatibility fallback or convert the remaining safe branches.
+
+## 验证更新 - 2026-05-09 01:53 +08:00
+
+- Backend full regression after the 2026-05-09 clarification/fallback changes:
+  - `docker exec graduation-project-api pytest -q` -> `418 passed in 576.79s (0:09:36)`
+- Updated validation baseline:
+  - Phase 9 当前后端全量基线已从前一轮 `410 passed` 更新为 `418 passed`。
+  - 新增测试覆盖了 streaming fallback gate、unknown/batch/event-update/task-update orchestration clarification。
+- Current completion status:
+  - Goal still not complete. Full regression is green, but completion still requires final audit against `goal.txt` and any remaining legacy fallback/compatibility branches.
+
+## 进度更新 - 2026-05-09 01:57 +08:00
+
+- Overall progress: 对 `TaskOrEventClarifierSpecialist` 做 focused audit 后，剩余旧文案主要是刻意保留的专用兜底，例如 `dating_request_too_vague`、批量范围过大、以及无可消费 orchestration 的最后兜底。为后续完成审计区分“已消费 orchestration”与“刻意保留兼容兜底”，现在对残余专用分支显式打标。
+- Files changed in this step:
+  - `E:\GraduationProject\backend\app\assistant_agents\specialists\task_or_event_clarifier.py`
+    - 当 `understanding.orchestration` 存在但 `_build_orchestration_clarification()` 没有返回问题时，进入 legacy/specialized 分支前写入 `clarification_source="specialized_fallback"`。
+    - 已经成功被 orchestration 消费的分支仍保持 `clarification_source="orchestration"`。
+  - `E:\GraduationProject\backend\tests\test_assistant_conductor.py`
+    - `test_conductor_clarifies_vague_dating_request()` 现在断言该路径是 `specialized_fallback`，明确这是刻意保留的专用澄清，而不是未审计的模板漏网。
+- Validation:
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py tests/test_assistant_service.py` -> `91 passed`
+  - `docker exec graduation-project-api python -m compileall app/assistant_agents/specialists/task_or_event_clarifier.py tests/test_assistant_conductor.py` -> passed
+- Current completion status:
+  - Goal still not complete. Clarification specialist 的剩余 fallback 已可审计地区分，但 `AssistantService` 层 `_build_plan()` compatibility fallback 仍需要最终审计/决策。
+- Next recommended action:
+  - 转向 `AssistantService` compatibility fallback：列出 proposal/primary 下仍可能调用 `_build_plan()` 的路径，判断是否应继续保留、改为 explicit compatibility mode，或在 proposal mode 下默认阻断。
+
+## 进度更新 - 2026-05-09 02:15 +08:00
+
+- Overall progress: 完成 `AssistantService` 层一个关键 fallback 收缩：在 `proposal/primary` 模式下，只要 conductor 已经返回结果，REST 与 streaming 路径都不再默认进入 `_build_plan()` compatibility fallback。`_build_plan()` 现在只保留给 legacy/shadow 或 conductor 未运行/无结果的兼容路径。
+- Files changed in this step:
+  - `E:\GraduationProject\backend\app\services\assistant.py`
+    - 新增 `_should_use_plan_compatibility_fallback()`。
+    - REST `send_message()` 在 workflow fallback 之后、调用 `_build_plan()` 之前检查该 gate；proposal/primary + conductor result 时直接返回 `_primary_mode_fallback_reply()`，并持久化 assistant message。
+    - Streaming `send_message_stream()` 同步使用该 gate；proposal/primary + conductor result 时不进入 Gemini streaming plan，也不进入 `_build_plan()`，直接流式返回 blocked fallback reply。
+    - Pending action decision 仍保留在 gate 之前，避免误伤旧 pending action 确认兼容路径。
+  - `E:\GraduationProject\backend\tests\test_assistant_conductor.py`
+    - 更新 `test_send_message_proposal_mode_does_not_use_workflow_as_default_fallback()`：现在断言 proposal-mode conductor 已运行后既不走 workflow，也不走 `_build_plan()`，而是返回“旧的规则回退链路”阻断回复。
+    - 更新 `test_send_message_stream_proposal_mode_does_not_use_gemini_stream_as_default_fallback()`：现在断言 streaming 路径也不走 Gemini streaming plan 或 `_build_plan()`。
+- Validation:
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py tests/test_assistant_service.py` -> `91 passed`
+  - `docker exec graduation-project-api python -m compileall app/services/assistant.py tests/test_assistant_conductor.py` -> passed
+  - `docker exec graduation-project-api pytest -q` -> `418 passed in 578.63s (0:09:38)`
+- Current completion status:
+  - Goal still not complete pending final audit, but the largest remaining default legacy fallback is now gated: proposal/primary conductor output no longer falls through to `_build_plan()` by default.
+- Next recommended action:
+  - Perform a completion audit against `goal.txt`: verify model-led orchestration, proposal-first execution, confirmation-before-write, memory/proactive evidence, UI smoke, workflow fallback gating, `_build_plan()` compatibility gating, and residual specialized fallbacks.
+
+## 最终完成审计 - 2026-05-09 02:19 +08:00
+
+- Objective restatement:
+  - 完成 `E:\GraduationProject\docs\development\goal.txt`：继续 Phase 9，直到 AI 助手从“规则前置决策 + 多套 fallback 的 proposal 外壳”迁移到“模型/Conductor 主导语义编排 + proposal-first 执行边界 + 用户确认后执行 + 长期记忆 + 主动跟进”的统一主控路径。
+  - 当前重点是收回 legacy workflow / `_build_plan()` / 模板澄清的主导权，并完成真实系统级 smoke + 全量回归 + 文档收口。
+- Prompt-to-artifact checklist:
+  - 高频 answer-like 场景切出 orchestration direct path:
+    - Evidence: `schedule_guidance`、`progress_followup`、`event_context_advice` 均有 `conversation_mode="answer"` / `_maybe_build_orchestration_answer_plan()` direct path。
+    - Evidence: conductor/service 回归覆盖不进入 workflow / `_build_plan()`。
+  - proposal-first / confirmation-before-write:
+    - Evidence: service-level smoke 覆盖 create event 只创建 pending proposal；确认文本后才执行。
+    - Evidence: final runtime smoke after latest fallback gate:
+      - `GET /api/health` -> `ok`, `database_ready=true`
+      - isolated user `final-smoke-1778264359`
+      - `POST /api/assistant/message` -> reply contained `待确认方案`
+      - pending event_creation proposal `39`, status `pending`
+      - `POST /api/assistant/proposals/39/confirm` -> status `executed`, related event `57`
+      - `GET /api/events` read back event `57`, title `和同学见面`
+      - cleanup `DELETE /api/events/57` -> `200`
+      - pending event_creation after cleanup -> `0`
+  - workflow fallback 降级:
+    - Evidence: `_should_use_workflow_fallback()` returns false in proposal/primary when conductor returned a result。
+    - Evidence: regression asserts proposal-mode conductor output does not default to workflow fallback。
+  - `_build_plan()` compatibility fallback 降级:
+    - Evidence: `_should_use_plan_compatibility_fallback()` blocks REST and streaming `_build_plan()` fallback in proposal/primary after conductor result。
+    - Evidence: regressions assert both REST and streaming paths do not call `_build_plan()` after proposal-mode conductor result。
+  - streaming fallback 降级:
+    - Evidence: `_should_use_streaming_plan_fallback()` blocks Gemini streaming plan fallback in proposal/primary after conductor result。
+    - Evidence: streaming regression asserts Gemini streaming plan fallback is not called。
+  - 模板 clarification 降级:
+    - Evidence: `TaskOrEventClarifierSpecialist` now consumes `OrchestrationAssessment` for unknown, create task/event, batch event update, single event update, task continuation, and task update clarification。
+    - Evidence: successful orchestration clarification paths mark `clarification_source="orchestration"`。
+    - Evidence: residual specialized fallback paths are explicitly marked `clarification_source="specialized_fallback"` for auditability。
+  - negotiation 模板降级:
+    - Evidence: `NegotiationSpecialist` uses orchestration-aware wording for task schedule, event reschedule, event creation, task creation, event cancel/status/batch updates, and task status update。
+    - Evidence: covered proposal replies mark `proposal_reply_source="orchestration"`。
+  - 长期记忆:
+    - Evidence: Phase 8 implementation exists for memory candidates, confirm/reject, `.md` write boundary, frontend pending memory UI。
+    - Evidence: Phase 9 supplemental runtime smoke wrote and read back isolated memory candidate, then cleaned memory directory。
+    - Evidence: Phase 9 frontend UI smoke showed `待确认记忆` and `写入记忆` surface。
+  - 主动跟进:
+    - Evidence: Phase 7 signal/heartbeat infrastructure and signal -> proposal conversion exist。
+    - Evidence: Phase 9 supplemental runtime smoke created deadline-risk signal, converted signal to pending proposal, and verified signal status。
+    - Evidence: `progress_followup` now has orchestration answer path。
+  - 前端/UI:
+    - Evidence: Playwright UI smoke after Phase 9 showed `待确认方案`、`待确认记忆`、`确认`、`写入记忆` in assistant tab。
+  - Regression gate:
+    - Evidence: targeted conductor/service regressions after latest changes -> `91 passed`。
+    - Evidence: compileall after latest changes -> passed。
+    - Evidence: backend full regression after latest `_build_plan()` gate -> `418 passed in 578.63s (0:09:38)`。
+- Residual risks / explicit compatibility:
+  - `legacy` / `shadow` modes still retain compatibility paths by design.
+  - Some highly specialized clarification text remains as `specialized_fallback`, but it is no longer untracked template dominance; it is explicitly marked and only used when the orchestration branch does not produce a better question.
+  - The task book and code still use deterministic specialist logic around the Conductor; this Phase 9 completion means the main control path is Conductor/orchestration-led and no longer defaults to legacy workflow / `_build_plan()` in proposal/primary mode.
+- Completion decision:
+  - Complete for `goal.txt`.
+  - Reason: every explicit deliverable in `goal.txt` now has concrete code evidence, regression evidence, runtime/API smoke evidence, UI evidence, and documented residual compatibility boundaries.
+
+## 进度更新 - 2026-05-10 21:00 +08:00
+
+- Trigger:
+  - 用户重新打开更严格目标：旧结论仍未满足预期，要求彻底移除程序强拆语句与老旧 workflow，并新增 DeepSeek/SiliconFlow 作为首选 LLM API、Gemini 作为备选。
+- Overall progress:
+  - LLM provider 已从单一 Gemini 改为 DeepSeek/SiliconFlow primary + Gemini fallback。
+  - 旧 `backend/app/workflow/` LangGraph workflow 包已物理删除；`AssistantService` 不再 import、构建、调用或保留 workflow fallback / stream fallback 方法。
+  - `ENABLE_WORKFLOW / ENABLE_REACT_SUBGRAPH / ROUTE_CONFIDENCE_THRESHOLD` 已从后端配置和 `.env.example` 移除。
+  - `/api/debug/workflow/*` 旧调试接口已移除。
+  - 改期 proposal 修复：用户只说“改到 4 点”时保留原日程时长，不再由时间解析默认 60 分钟覆盖。
+- Files changed in this step:
+  - `backend/app/tools/gemini.py`
+    - 保持 `GeminiClient` 兼容类名，但内部按 provider order 调度。
+    - `LLM_PROVIDER=deepseek` 时调用 `https://api.siliconflow.cn/v1/chat/completions`。
+    - DeepSeek 失败时自动尝试 `LLM_FALLBACK_PROVIDER=gemini`。
+  - `backend/app/core/config.py`
+    - 新增 `LLM_FALLBACK_PROVIDER`、`DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL`、`DEEPSEEK_BASE_URL` 与 DeepSeek timeout/retry 参数。
+    - 移除旧 workflow 相关配置项。
+  - `backend/app/api/routes/health.py` / `backend/app/api/schemas.py`
+    - `/api/health/ai` 现在返回 primary provider 与 fallback provider。
+  - `backend/app/services/assistant.py`
+    - 删除 workflow import、workflow graph 初始化、workflow fallback gate、`_run_workflow_for_message()`、`_respond_with_workflow()`、`_respond_with_workflow_stream()`。
+  - `backend/app/api/routes/debug.py`
+    - 删除 `/debug/workflow/summary` 和 `/debug/workflow/diagram`。
+  - `backend/app/workflow/*`
+    - 已删除。
+  - `backend/tests/test_workflow.py` / `backend/tests/test_workflow_memory_context.py`
+    - 已删除，避免继续为已退役 workflow 建立回归约束。
+  - `backend/tests/test_llm_client.py`
+    - 新增 DeepSeek primary -> Gemini fallback 调度测试。
+  - `.env.example`
+    - 更新为 DeepSeek primary + Gemini fallback 示例，不包含真实密钥。
+- Validation:
+  - DeepSeek/SiliconFlow real connectivity using local `.env` key and Bearer auth:
+    - `POST https://api.siliconflow.cn/v1/chat/completions` -> `status=200`
+  - Source audit:
+    - `rg -n "workflow|Workflow|LangGraph|react_subgraph|react_tools|ENABLE_WORKFLOW|ENABLE_REACT_SUBGRAPH|ROUTE_CONFIDENCE" backend\app backend\tests .env .env.example -S` -> no matches.
+  - Targeted regression:
+    - `.venv312\Scripts\python.exe -m pytest -q tests\test_llm_client.py tests\test_assistant_conductor.py tests\test_assistant_service.py tests\test_api.py` -> `114 passed`.
+  - Compile:
+    - `.venv312\Scripts\python.exe -m compileall app` -> passed.
+  - Backend full regression:
+    - `.venv312\Scripts\python.exe -m pytest -q` -> `395 passed, 3 warnings in 116.48s`.
+- Current completion status:
+  - Still not complete for the reopened user objective.
+  - Reason: backend code and LLM provider changes are now green, but the reopened objective explicitly asks for browser-level scenario acceptance after refactor. Browser/API scenario smoke still needs to be rerun against the current server state, and final completion audit must map each new requirement to evidence.
+- Next action:
+  - Start/restart backend/frontend as needed, run the prepared acceptance scenarios through browser/API, then perform final audit against: no hard sentence splitting, no old workflow, DeepSeek primary/Gemini fallback, proposal-first multi-agent assistant, confirm-before-write.
+
+## 进度更新 - 2026-05-10 21:25 +08:00
+
+- Overall progress:
+  - Reopened objective 的运行态验收已补齐。
+  - 后端在 `127.0.0.1:8000` 与 `127.0.0.1:8013` 使用同一 smoke DB 启动，前端 Vite 在 `127.0.0.1:8888` 启动。
+  - 前端默认 API 指向 `127.0.0.1:8000`，因此浏览器 smoke 使用 8000 端口后端完成。
+- Runtime environment evidence:
+  - `GET http://127.0.0.1:8000/api/health/ai` -> `{"enabled":true,"provider":"deepseek","fallback_provider":"gemini",...}`
+  - `GET http://127.0.0.1:8888` -> HTTP 200.
+- API acceptance evidence:
+  - Scenario A: proposal-first / confirm-before-write / confirm idempotency.
+    - User: `acceptance-20260510`
+    - Message: `明天下午3点我要去学校和同学见面`
+    - Result before confirm:
+      - assistant reply contained `待确认方案`
+      - pending proposal count `1`
+      - event count remained `0`
+    - Confirm `option_id=A`:
+      - proposal status -> `executed`
+      - related event id -> `1`
+      - event count -> `1`
+    - Repeat confirm:
+      - status remained `executed`
+      - related event id remained `1`
+      - event count remained `1`
+    - Cleanup:
+      - temporary event deleted.
+  - Scenario B: no hard sentence splitting.
+    - User: `acceptance-split-20260510`
+    - Message: `中午12点我要去驾校接李婷`
+    - Proposal action payload:
+      - `title = 去驾校接李婷`
+      - `location_name = 驾校`
+      - `has_bad_title = false` for `点我要`
+      - `has_bad_location = false` for `接李婷`
+    - Proposal rejected after verification; no event write performed.
+- Browser acceptance evidence:
+  - Playwright opened `http://127.0.0.1:8888`, navigated to `助手`.
+  - Submitted `中午12点我要去驾校接李婷`.
+  - UI displayed:
+    - `待确认方案`
+    - `P1`
+    - `建议创建日程“去驾校接李婷”：05-10 12:00-13:00，地点：驾校`
+    - `确认`
+  - Clicking `确认` executed the proposal.
+  - API readback for `local-user`:
+    - events count `1`
+    - event title `去驾校接李婷`
+    - proposal status `executed`
+    - related event id `1`
+  - Cleanup:
+    - temporary UI smoke event deleted; local-user event count returned to `0`.
+- Additional source audit:
+  - `rg -n "workflow|Workflow|LangGraph|react_subgraph|react_tools|ENABLE_WORKFLOW|ENABLE_REACT_SUBGRAPH|ROUTE_CONFIDENCE" backend\app backend\tests .env .env.example -S` -> no matches.
+  - `backend/app/workflow/` directory removed.
+- Current completion status:
+  - Ready for final completion audit against reopened objective.
+
+## 验收更新 - 2026-05-15 02:52 +08:00
+
+- Trigger:
+  - 继续按 `docs/development/AI_ASSISTANT_BROWSER_TEST_SCENARIOS_V1.md` 做最终完成审计，要求只在当前代码、测试、浏览器/API 证据均能支撑时收口。
+- Fixes in this checkpoint:
+  - `backend/app/core/config.py` / `backend/app/main.py`
+    - CORS 从固定端口白名单改为可配置 `CORS_ALLOWED_ORIGINS`，并增加默认 `CORS_ALLOW_ORIGIN_REGEX=http://(localhost|127\.0\.0\.1):\d+`，解决临时 Vite 端口浏览器验收被 CORS 拦截的问题。
+  - `backend/tests/test_api.py`
+    - 删除已退役 workflow debug endpoint 的回归测试，改为覆盖 `http://127.0.0.1:8891` 预检请求。
+  - `.env.example`
+    - 增加 `API_HOST_PORT` 与 CORS 示例配置。
+  - `docker-compose.yml`
+    - API host port 改为 `${API_HOST_PORT:-8000}:8000`，避免 Windows 主机上 8000 被占用时无法启动容器。
+- Runtime/browser evidence:
+  - 本地 API 使用隔离 DB `backend/data/browser_acceptance_18714.db` 跑在 `127.0.0.1:18714`，前端 Vite 跑在 `127.0.0.1:8891` 且 `VITE_API_BASE_URL=http://127.0.0.1:18714/api`。
+  - 浏览器输入 `中午12点我要去驾校接李婷` 后，UI 正确显示 `待确认方案`、`P1`、`建议创建日程“去驾校接李婷”：05-15 12:00-13:00，地点：驾校`、`确认`。
+  - 未确认前日历为 `0 个事件`；点击确认后 `POST /api/assistant/proposals/4/confirm => 200`，日历变为 `1 个事件`，标题为 `去驾校接李婷`。
+  - 重复确认同一 proposal 后状态保持 `executed`，`related_event_id=1`，事件数量保持 `1`。
+  - 清理临时事件后 pending proposal 为 `0`。
+  - 干净用户 API hard-split smoke 验证同句 payload：`title=去驾校接李婷`、`location=驾校`、`bad_split=False`；proposal 已拒绝且未落库。
+  - Docker API 使用 `API_HOST_PORT=18716 docker compose up -d api` 可启动；`GET http://127.0.0.1:18716/api/health` 返回 `ok` 且 `database_ready=true`。
+- Current validation rerun:
+  - `.\.venv312\Scripts\python.exe -m pytest -q tests/test_api.py::test_cors_allows_localhost_dev_ports tests/test_api.py::test_health_endpoint tests/test_llm_client.py tests/test_assistant_text_protocol.py tests/test_assistant_conductor.py tests/test_assistant_service.py tests/test_assistant_proposal_manager.py tests/test_assistant_proposal_revise.py tests/test_assistant_action_executor.py tests/test_assistant_memory_capture.py tests/test_assistant_signal_to_proposal.py tests/test_assistant_proposal_expiry.py` -> `201 passed in 51.65s`
+  - `pnpm exec vue-tsc --noEmit` -> passed
+  - `pnpm run build` -> passed
+  - `rg -n "workflow|Workflow|LangGraph|react_subgraph|react_tools|ENABLE_WORKFLOW|ENABLE_REACT_SUBGRAPH|ROUTE_CONFIDENCE|点按钮|点击这里" backend\app backend\tests frontend\src .env.example -S` -> no matches
+- Acceptance audit against `AI_ASSISTANT_BROWSER_TEST_SCENARIOS_V1.md`:
+  - P0 automation coverage is satisfied by the current focused regression set plus browser/API smoke: proposal-first creation, single confirm execution, duplicate confirm idempotency, ambiguity clarification, revise/reject, expired/superseded, execution_failed/retry, no direct write before confirmation, no hard sentence split, and no retired workflow/debug wording.
+  - P1 coverage is tracked by existing targeted tests for signal cooldown/dedup, signal -> proposal, memory candidate confirm/reject/no implicit write, departure/deadline signals, provider fallback, CORS/dev-port browser recovery, frontend pending proposal surface, and build/typecheck gates. Browser-level coverage is not exhaustive for every P1 narrative scenario, but remaining low-risk variants are covered by unit/API tests and task-book tracking.
+  - Proposal state transitions covered in current tests: `pending`, `executed`, `rejected`, `superseded`, `expired`, `execution_failed`.
+  - Proactive follow-up boundaries covered by signal dedup/cooldown tests and signal-to-proposal tests; active runtime remains gated by `ASSISTANT_PROACTIVE_MODE`.
+  - Refresh/mobile/network failure class: pending proposal state is persisted server-side; CORS/dev-port failure was the only browser blocker found in this checkpoint and has been fixed with a regression test.
+- Completion decision:
+  - Complete for the current objective.
+  - Reason: the current code removes old workflow paths, keeps DeepSeek/SiliconFlow primary with Gemini fallback, enforces proposal-first and confirm-before-write boundaries, passes focused backend/frontend gates, and has real browser/API evidence for the highest-risk P0 flow and the hard-split regression.

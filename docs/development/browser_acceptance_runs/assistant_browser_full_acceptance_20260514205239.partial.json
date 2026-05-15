@@ -1,0 +1,39 @@
+{
+  "run_id": "20260514205239",
+  "api_base": "http://127.0.0.1:18741/api",
+  "web_url": "http://127.0.0.1:8894",
+  "db_path": "E:\\GraduationProject\\backend\\data\\browser_full_acceptance_20260514205239.db",
+  "memory_path": "E:\\GraduationProject\\backend\\data\\browser_full_acceptance_memory_20260514205239",
+  "summary": {
+    "total": 3,
+    "pass": 0,
+    "fail": 3,
+    "tracked": 0
+  },
+  "results": [
+    {
+      "id": "BAI-P1-408",
+      "title": "长对话滚动与最新消息可见",
+      "status": "FAIL",
+      "duration_ms": 90890,
+      "evidence": [],
+      "error": "Error: latest message/input not visible in long chat\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at record.timeoutMs (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1253:5)\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runUiAndFailureCases (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1249:3)\n    at async runMemoryCases (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1189:3)\n    at async runLocationSignalMemoryUiFailureCases (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1116:3)\n    at async runRemainingP1AndRegressionScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:960:3)\n    at async runScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:797:3)"
+    },
+    {
+      "id": "BAI-P1-410",
+      "title": "标签稳定性跨刷新和 revision",
+      "status": "FAIL",
+      "duration_ms": 52858,
+      "evidence": [],
+      "error": "Error: refreshed P1 did not map to latest pending proposal\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1264:5\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runUiAndFailureCases (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1257:3)\n    at async runMemoryCases (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1189:3)\n    at async runLocationSignalMemoryUiFailureCases (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1116:3)\n    at async runRemainingP1AndRegressionScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:960:3)"
+    },
+    {
+      "id": "BAI-P1-501",
+      "title": "Provider 失败 fallback",
+      "status": "FAIL",
+      "duration_ms": 3225,
+      "evidence": [],
+      "error": "Error: no business writes: event count changed 0->1\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at expectNoBusinessWrite (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:515:3)\n    at file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1284:11\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runFailureAndOldProposalCases (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1280:3)\n    at async runUiAndFailureCases (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1276:3)\n    at async runMemoryCases (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1189:3)"
+    }
+  ]
+}

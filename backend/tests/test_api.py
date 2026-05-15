@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from app.api import deps
 from app.api.routes import assistant as assistant_routes
 from app.api.router import api_router
+from app.main import create_app
 
 
 class FakeAssistantService:
@@ -518,18 +519,19 @@ def test_health_endpoint() -> None:
     assert "avg_request_ms" in perf_response.json()
 
 
-def test_debug_workflow_endpoints() -> None:
-    client, _, _, _, _, _, _, _, _ = build_client()
+def test_cors_allows_localhost_dev_ports() -> None:
+    client = TestClient(create_app())
 
-    summary_response = client.get("/api/debug/workflow/summary")
-    diagram_response = client.get("/api/debug/workflow/diagram")
+    response = client.options(
+        "/api/health",
+        headers={
+            "Origin": "http://127.0.0.1:8891",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
 
-    assert summary_response.status_code == 200
-    assert "workflow_enabled" in summary_response.json()
-    assert "nodes" in summary_response.json()
-    assert diagram_response.status_code == 200
-    assert diagram_response.json()["format"] == "mermaid"
-    assert "graph TD" in diagram_response.json()["diagram"]
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:8891"
 
 
 def test_events_create_and_list() -> None:

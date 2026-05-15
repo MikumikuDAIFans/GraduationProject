@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 
 from app.assistant_agents.contracts import AssistantAgentContext, ConductorState
 
@@ -29,7 +30,11 @@ class MemorySpecialist:
         if not text:
             return False
         lowered = text.lower()
-        return any(marker in text for marker in ("记住", "帮我记", "以后记得", "保存一下", "请记")) or "remember" in lowered
+        return (
+            any(marker in text for marker in ("记住", "帮我记", "以后记得", "保存一下", "请记"))
+            or self._extract_place_alias_instruction(text) is not None
+            or "remember" in lowered
+        )
 
     def extract_candidate(self, message: str) -> dict | None:
         text = message.strip()
@@ -38,22 +43,55 @@ class MemorySpecialist:
         if not self.is_explicit_memory_request(text):
             return None
 
-        memory_type = self._classify_memory_type(text)
-        content = self._strip_memory_prefix(text)
+        alias_instruction = self._extract_place_alias_instruction(text)
+        if alias_instruction is not None:
+            alias, target = alias_instruction
+            memory_type = "places"
+            title = alias
+            content = f"{alias} = {target}"
+            confidence = 0.85
+            reason = "User explicitly defined a place alias."
+        else:
+            memory_type = self._classify_memory_type(text)
+            content = self._strip_memory_prefix(text)
+            title = self._title_for(memory_type, content)
+            confidence = 0.7
+            reason = "User explicitly asked the assistant to remember this."
         digest = hashlib.sha256(f"{memory_type}:{content}".encode("utf-8")).hexdigest()[:16]
         return {
             "memory_type": memory_type,
             "source_specialist": self.name,
             "status": "proposed",
-            "confidence": 0.7,
+            "confidence": confidence,
             "proposed_change_json": {
                 "operation": "append_entry",
-                "title": self._title_for(memory_type, content),
+                "title": title,
                 "content": content,
             },
-            "reason": "User explicitly asked the assistant to remember this.",
+            "reason": reason,
             "dedup_key": f"memory:{memory_type}:{digest}",
         }
+
+    def _extract_place_alias_instruction(self, text: str) -> tuple[str, str] | None:
+        patterns = [
+            r"^以后把(?P<alias>[^，。,;；\n]{1,24}?)理解为(?P<target>[^，。,;；\n]{2,80})",
+            r"^以后(?P<alias>[^，。,;；\n]{1,24}?)(?:指的是|就是|是)(?P<target>[^，。,;；\n]{2,80})",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if not match:
+                continue
+            alias = self._clean_place_alias(match.group("alias"))
+            target = self._clean_place_target(match.group("target"))
+            if alias and target and alias != target:
+                return alias, target
+        return None
+
+    def _clean_place_alias(self, value: str | None) -> str:
+        return (value or "").strip(" ：:，,。；; \t\r\n")
+
+    def _clean_place_target(self, value: str | None) -> str:
+        return (value or "").strip(" ：:，,。；; \t\r\n")
 
     def _classify_memory_type(self, text: str) -> str:
         if any(token in text for token in ("地点", "地址", "学校", "图书馆", "驾校", "公司", "家")):

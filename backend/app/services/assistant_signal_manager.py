@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 from fastapi import HTTPException, status
 from loguru import logger
+from sqlalchemy import select
 
 from app.api.schemas import AssistantProposalCreate, AssistantSignalCreate
 from app.db.session import get_sessionmaker
-from app.models import AssistantProposal, AssistantSignal
+from app.models import AssistantProposal, AssistantSignal, Event, Task
 from app.repositories.assistant_signals import AssistantSignalRepository
 from app.services.assistant_proposal_manager import AssistantProposalManager
 
@@ -20,6 +21,7 @@ SIGNAL_COOLDOWNS: dict[str, timedelta] = {
     "daily_morning_review": timedelta(hours=24),
     "daily_night_review": timedelta(hours=24),
     "departure_readiness": timedelta(minutes=30),
+    "proposal_followup": timedelta(hours=2),
 }
 DEFAULT_SIGNAL_COOLDOWN = timedelta(hours=1)
 TERMINAL_SIGNAL_STATUSES = {"dismissed", "expired"}
@@ -123,7 +125,7 @@ class AssistantSignalManager:
         proposal_manager = self._get_proposal_manager()
         proposal = await proposal_manager.create_proposal(
             user_id=user_id,
-            payload=self._proposal_payload_for_signal(signal),
+            payload=await self._proposal_payload_for_signal(user_id=user_id, signal=signal),
         )
         await self.mark_proposal_created(user_id=user_id, signal_id=signal.id)
         return proposal
@@ -161,15 +163,16 @@ class AssistantSignalManager:
             self.proposal_manager = AssistantProposalManager()
         return self.proposal_manager
 
-    def _proposal_payload_for_signal(self, signal: AssistantSignal) -> AssistantProposalCreate:
+    async def _proposal_payload_for_signal(self, *, user_id: str, signal: AssistantSignal) -> AssistantProposalCreate:
         proposal_type = {
             "deadline_risk": "deadline_recovery",
             "conflict_warning": "reschedule_plan",
             "daily_morning_review": "daily_plan_followup",
             "daily_night_review": "daily_review_followup",
             "departure_readiness": "departure_readiness",
+            "proposal_followup": "proposal_followup",
         }.get(signal.signal_type, "signal_followup")
-        summary = self._proposal_summary(signal)
+        summary = await self._proposal_summary_for_signal(user_id=user_id, signal=signal)
         return AssistantProposalCreate(
             proposal_type=proposal_type,
             trigger_type="assistant_signal",
@@ -212,6 +215,89 @@ class AssistantSignalManager:
             source_signal_id=signal.id,
         )
 
+    async def _proposal_summary_for_signal(self, *, user_id: str, signal: AssistantSignal) -> str:
+        if signal.signal_type == "daily_night_review":
+            return await self._daily_night_review_summary(user_id=user_id, signal=signal)
+        return self._proposal_summary(signal)
+
+    async def _daily_night_review_summary(self, *, user_id: str, signal: AssistantSignal) -> str:
+        context = signal.context_json or {}
+        raw_date = context.get("local_date")
+        try:
+            target_date = date.fromisoformat(str(raw_date)) if raw_date else datetime.now().date()
+        except ValueError:
+            target_date = datetime.now().date()
+
+        day_start = datetime.combine(target_date, time.min)
+        day_end = day_start + timedelta(days=1)
+        events: list[Event] = []
+        tasks: list[Task] = []
+        proposals: list[AssistantProposal] = []
+        try:
+            async with self.repository.session_factory() as session:
+                events = list(
+                    (
+                        await session.scalars(
+                            select(Event)
+                            .where(
+                                Event.user_id == user_id,
+                                Event.start_time >= day_start,
+                                Event.start_time < day_end,
+                                Event.status != "canceled",
+                            )
+                            .order_by(Event.start_time.asc(), Event.id.asc())
+                            .limit(5)
+                        )
+                    ).all()
+                )
+                tasks = list(
+                    (
+                        await session.scalars(
+                            select(Task)
+                            .where(
+                                Task.user_id == user_id,
+                                Task.status.notin_(["done", "completed", "archived"]),
+                            )
+                            .order_by(Task.priority.asc(), Task.id.asc())
+                            .limit(5)
+                        )
+                    ).all()
+                )
+                proposals = list(
+                    (
+                        await session.scalars(
+                            select(AssistantProposal)
+                            .where(
+                                AssistantProposal.user_id == user_id,
+                                AssistantProposal.status == "pending",
+                            )
+                            .order_by(AssistantProposal.created_at.desc(), AssistantProposal.id.desc())
+                            .limit(5)
+                        )
+                    ).all()
+                )
+        except Exception as exc:  # pragma: no cover - summary fallback should not block proposal creation
+            logger.bind(component="assistant.signal").warning(
+                "Failed to build daily night review snapshot: {error}",
+                error=str(exc),
+            )
+
+        def _event_label(event: Event) -> str:
+            start_time = getattr(event, "start_time", None)
+            prefix = start_time.strftime("%H:%M") if isinstance(start_time, datetime) else "时间待定"
+            return f"{prefix} {event.title}"
+
+        event_text = "；".join(_event_label(event) for event in events) or "暂无已登记日程"
+        task_text = "；".join(task.content for task in tasks) or "暂无未完成任务"
+        proposal_text = "；".join(proposal.summary for proposal in proposals[:3]) or "暂无待确认方案"
+        return (
+            "睡前复盘："
+            f"今日日程完成核对：{event_text}。"
+            f"未完成任务：{task_text}。"
+            f"pending proposal 跟进：{proposal_text}。"
+            "可回复：今天这两个都完成了；政治课完成了，复习没做；先不要安排。"
+        )
+
     def _proposal_summary(self, signal: AssistantSignal) -> str:
         context = signal.context_json or {}
         if signal.signal_type == "deadline_risk":
@@ -220,10 +306,20 @@ class AssistantSignalManager:
             return f"日程「{context.get('event_a_title') or signal.target_id}」可能与其他安排冲突，需要确认调整方案。"
         if signal.signal_type == "departure_readiness":
             return f"「{context.get('title') or signal.target_id}」即将到出发时间，需要临行确认。"
+        if signal.signal_type == "proposal_followup":
+            original_summary = str(context.get("proposal_summary") or signal.target_id or "").strip()
+            fallback_label = f"P{signal.target_id}" if signal.target_id else "这个方案"
+            label = str(context.get("protocol_label") or fallback_label).strip()
+            if original_summary:
+                return (
+                    f"待确认方案跟进：{label}「{original_summary}」已经等待超过 2 小时。"
+                    "可回复：按方案A安排；改成4点开始；先不要安排。"
+                )
+            return "待确认方案跟进：有方案已经等待超过 2 小时。可回复：按方案A安排；修改方案；先不要安排。"
         if signal.signal_type == "daily_night_review":
-            return "睡前复盘：请确认今天完成情况与需要顺延的事项。"
+            return str(context.get("message") or "睡前复盘：请确认今天完成情况与需要顺延的事项。")
         if signal.signal_type == "daily_morning_review":
-            return "晨间计划确认：请查看今天安排是否需要调整。"
+            return str(context.get("message") or "晨间计划确认：请查看今天安排是否需要调整。")
         return f"主动信号 {signal.signal_type} 需要跟进。"
 
     def _proposal_priority(self, signal: AssistantSignal) -> int:

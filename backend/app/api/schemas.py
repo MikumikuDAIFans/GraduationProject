@@ -28,6 +28,7 @@ class HealthRead(ReadModel):
 class HealthAIRead(ReadModel):
     enabled: bool
     provider: str
+    fallback_provider: str | None = None
     circuit_open: bool
     circuit_open_until: datetime | None = None
     consecutive_failures: int = 0
