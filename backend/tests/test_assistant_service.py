@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 import asyncio
 
-from app.api.schemas import AssistantAction, AssistantInboxItem, AssistantInboxRead
+from app.api.schemas import AssistantAction, AssistantInboxItem, AssistantInboxRead, AssistantMessageRead
 from app.assistant_agents.contracts import ConductorResult
 from app.services.assistant import AssistantService
 
@@ -32,6 +32,69 @@ def test_conductor_reply_surfaces_all_provider_failure_notice() -> None:
 
     assert reply.startswith("AI 服务暂时不可用")
     assert "我先把“复习”理解成一个需要持续跟进的任务" in reply
+
+
+def test_build_proposal_render_blocks_from_result_includes_inline_payload() -> None:
+    service = AssistantService()
+    proposal = SimpleNamespace(
+        id=11,
+        status="pending",
+        proposal_type="event_creation",
+        summary="建议创建日程",
+        recommended_option_id="A",
+        selected_option_id=None,
+        payload_json={
+            "protocol_label": "P1",
+            "options": [
+                {
+                    "option_id": "A",
+                    "title": "方案A",
+                    "summary": "明天 15:00-16:00",
+                    "rationale": "最早空档",
+                }
+            ],
+        },
+    )
+    result = ConductorResult(
+        decision="proposal",
+        reply="建议创建一个方案。",
+        metadata={"persisted_proposal_ids": [11], "persisted_proposals": [proposal]},
+    )
+
+    blocks = service._build_proposal_render_blocks_from_result(result)
+
+    assert len(blocks) == 1
+    assert blocks[0].type == "proposal_options"
+    assert blocks[0].payload["protocol_label"] == "P1"
+    assert blocks[0].payload["options"][0]["prompt_on_click"] == "接受 P1 方案A"
+
+
+def test_assistant_message_read_restores_render_blocks_from_json() -> None:
+    message = AssistantMessageRead.model_validate(
+        {
+            "id": 1,
+            "session_id": 2,
+            "role": "assistant",
+            "content": "我已生成方案。",
+            "tool_calls_json": None,
+            "render_blocks_json": [
+                {
+                    "type": "proposal_options",
+                    "payload": {
+                        "proposal_id": 11,
+                        "protocol_label": "P1",
+                        "status": "pending",
+                        "options": [{"option_id": "A", "title": "方案A", "prompt_on_click": "接受 P1 方案A"}],
+                    },
+                }
+            ],
+            "created_at": datetime.now().isoformat(),
+        }
+    )
+
+    assert message.render_blocks
+    assert message.render_blocks[0].type == "proposal_options"
+    assert message.render_blocks[0].payload["protocol_label"] == "P1"
 
 
 def test_rule_helper_does_not_extract_event_title_from_message() -> None:
@@ -178,6 +241,232 @@ def test_extract_time_range_from_cross_midnight_message() -> None:
     assert end_time is not None
     assert start_time.isoformat().startswith("2026-05-15T23:00:00")
     assert end_time.isoformat().startswith("2026-05-16T01:00:00")
+
+
+def test_extract_time_range_from_month_day_hao_departure_message() -> None:
+    service = AssistantService()
+
+    start_time, end_time = service._extract_time_range(
+        "5月21号下午1点出发去学校",
+        reference=datetime.fromisoformat("2026-05-15T09:00:00"),
+    )
+
+    assert start_time is not None
+    assert start_time.isoformat().startswith("2026-05-21T13:00:00")
+    assert end_time is None
+
+
+def test_extract_time_range_from_next_month_day_message() -> None:
+    service = AssistantService()
+
+    start_time, end_time = service._extract_time_range(
+        "下个月的一号下午1点去学校",
+        reference=datetime.fromisoformat("2026-05-15T09:00:00"),
+    )
+
+    assert start_time is not None
+    assert start_time.isoformat().startswith("2026-06-01T13:00:00")
+    assert end_time is None
+
+
+def test_deterministic_departure_to_location_creates_event_proposal() -> None:
+    async def scenario() -> None:
+        service = AssistantService()
+        created_payloads = []
+        active_targets = []
+
+        class FakeProposalManager:
+            async def create_proposal(self, *, user_id, payload):
+                created_payloads.append(payload)
+                return SimpleNamespace(
+                    id=7,
+                    session_id=1,
+                    proposal_type=payload.proposal_type,
+                    status=payload.status,
+                    summary=payload.summary,
+                    payload_json=payload.payload_json,
+                    recommended_option_id=payload.recommended_option_id,
+                )
+
+        async def fake_label_direct_proposal(**kwargs):
+            proposal = kwargs["proposal"]
+            proposal.payload_json["protocol_label"] = "P1"
+            return proposal
+
+        async def fake_persist_active_target_for_proposal(**kwargs):
+            active_targets.append(kwargs)
+
+        fake_manager = FakeProposalManager()
+        service.proposal_manager = fake_manager  # type: ignore[assignment]
+        service._label_direct_proposal = fake_label_direct_proposal  # type: ignore[method-assign]
+        service._persist_active_target_for_proposal = fake_persist_active_target_for_proposal  # type: ignore[method-assign]
+
+        reply = await service._maybe_create_deterministic_event_proposal(
+            user_id="demo-user",
+            session_id=1,
+            user_message="5月21号下午1点出发去学校",
+            events=[],
+        )
+
+        assert reply is not None
+        assert "P1" in reply
+        assert "05-21 13:00-14:00" in reply
+        assert created_payloads
+        proposal = created_payloads[0]
+        assert proposal.proposal_type == "event_creation"
+        option = proposal.payload_json["options"][0]
+        action = option["actions"][0]
+        assert action["type"] == "create_event"
+        event_payload = action["payload"]
+        assert event_payload["title"] == "去学校"
+        assert event_payload["location_name"] == "学校"
+        assert event_payload["start_time"].startswith("2026-05-21T13:00:00")
+        assert event_payload["end_time"].startswith("2026-05-21T14:00:00")
+        assert active_targets
+
+    asyncio.run(scenario())
+
+
+def test_deterministic_event_creation_skips_standalone_reschedule_text() -> None:
+    service = AssistantService()
+
+    assert service._should_try_deterministic_event_proposal("5月21号下午1点出发去学校") is True
+    assert service._should_try_deterministic_event_proposal("把生产级批量日程10改到5月30号晚上7点到8点，地点改到新测试地点") is False
+
+
+def test_place_memory_does_not_resolve_unrelated_dating_location() -> None:
+    service = AssistantService()
+    memory_context = {
+        "places": {
+            "items": [
+                {"alias": "学校", "location_name": "南京大学仙林校区"},
+            ]
+        }
+    }
+
+    resolved = service.memory_service.resolve_place_alias(
+        user_message="明天晚上6点去约会",
+        location_name="约会",
+        memory_context=memory_context,
+    )
+
+    assert resolved is None
+
+
+def test_deterministic_explicit_event_list_creates_batch_proposal() -> None:
+    async def scenario() -> None:
+        service = AssistantService()
+        created_payloads = []
+        fake_manager = None
+
+        class FakeProposalManager:
+            async def create_proposal(self, *, user_id, payload):
+                created_payloads.append(payload)
+                return SimpleNamespace(
+                    id=9,
+                    session_id=1,
+                    proposal_type=payload.proposal_type,
+                    status=payload.status,
+                    summary=payload.summary,
+                    payload_json=payload.payload_json,
+                    recommended_option_id=payload.recommended_option_id,
+                )
+
+        async def fake_label_direct_proposal(**kwargs):
+            proposal = kwargs["proposal"]
+            proposal.payload_json["protocol_label"] = "P1"
+            return proposal
+
+        async def fake_persist_active_target_for_proposal(**_kwargs):
+            return None
+
+        fake_manager = FakeProposalManager()
+        service.proposal_manager = fake_manager  # type: ignore[assignment]
+        service._label_direct_proposal = fake_label_direct_proposal  # type: ignore[method-assign]
+        service._persist_active_target_for_proposal = fake_persist_active_target_for_proposal  # type: ignore[method-assign]
+        lines = [
+            f"{index}. 5月{day}号 09:00-10:00 批量测试日程{index:02d} @测试地点"
+            for index, day in enumerate(range(21, 31), start=1)
+        ]
+        message = "请把以下日程批量加入日历：\n" + "\n".join(lines)
+
+        reply = await service._maybe_create_deterministic_explicit_event_list_proposal(
+            user_id="demo-user",
+            session_id=1,
+            user_message=message,
+        )
+
+        assert reply is not None
+        assert "批量创建 10 个日程" in reply
+        proposal = created_payloads[0]
+        assert proposal.proposal_type == "event_batch_creation"
+        option = proposal.payload_json["options"][0]
+        assert len(option["actions"]) == 10
+        first_payload = option["actions"][0]["payload"]
+        assert first_payload["title"] == "批量测试日程01"
+        assert first_payload["location_name"] == "测试地点"
+        assert first_payload["start_time"].startswith("2026-05-21T09:00:00")
+        assert first_payload["end_time"].startswith("2026-05-21T10:00:00")
+
+    asyncio.run(scenario())
+
+
+def test_deterministic_compound_event_request_creates_separate_inline_proposals() -> None:
+    async def scenario() -> None:
+        service = AssistantService()
+        created_payloads = []
+
+        class FakeProposalManager:
+            def __init__(self) -> None:
+                self.created = []
+
+            async def create_proposal(self, *, user_id, payload):
+                created_payloads.append(payload)
+                proposal = SimpleNamespace(
+                    id=len(created_payloads),
+                    session_id=1,
+                    proposal_type=payload.proposal_type,
+                    status=payload.status,
+                    summary=payload.summary,
+                    payload_json=payload.payload_json,
+                    recommended_option_id=payload.recommended_option_id,
+                    selected_option_id=None,
+                    related_task_id=None,
+                    related_event_id=None,
+                )
+                self.created.append(proposal)
+                return proposal
+
+            async def list_proposals(self, *, user_id, session_id, statuses=None, limit=50):
+                return list(self.created)
+
+        async def fake_persist_active_target_for_proposal(**_kwargs):
+            return None
+
+        fake_manager = FakeProposalManager()
+        service.proposal_manager = fake_manager  # type: ignore[assignment]
+        service._persist_active_target_for_proposal = fake_persist_active_target_for_proposal  # type: ignore[method-assign]
+
+        reply = await service._maybe_create_deterministic_compound_event_proposals(
+            user_id="demo-user",
+            session_id=1,
+            user_message="明天下午3点去学校开会，晚上8点提醒我复习英语",
+            events=[],
+        )
+
+        assert reply is not None
+        assert "多个目标" in reply
+        assert len(created_payloads) == 2
+        assert created_payloads[0].payload_json["options"][0]["actions"][0]["payload"]["title"] == "去学校开会"
+        assert created_payloads[1].payload_json["options"][0]["actions"][0]["payload"]["title"] == "复习英语"
+        assert fake_manager.created[0].payload_json["protocol_label"] == "P1"
+        assert fake_manager.created[1].payload_json["protocol_label"] == "P2"
+        blocks = service._take_inline_render_blocks()
+        assert len(blocks) == 2
+        assert blocks[0].payload["protocol_label"] == "P1"
+        assert blocks[1].payload["protocol_label"] == "P2"
+
+    asyncio.run(scenario())
 
 
 def test_extract_time_range_from_relative_reminder_event() -> None:

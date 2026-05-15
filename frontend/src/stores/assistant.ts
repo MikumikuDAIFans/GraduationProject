@@ -57,7 +57,14 @@ export interface AssistantMessage {
   role: "user" | "assistant";
   content: string;
   tool_calls_json?: AssistantAction[] | null;
+  render_blocks_json?: AssistantRenderBlock[] | null;
+  render_blocks?: AssistantRenderBlock[];
   created_at?: string;
+}
+
+export interface AssistantRenderBlock {
+  type: string;
+  payload: Record<string, unknown>;
 }
 
 export interface AssistantSession {
@@ -175,6 +182,10 @@ const ACTIVE_PROPOSAL_STATUSES = [
   "accepted",
   "execution_pending",
   "execution_failed",
+  "executed",
+  "rejected",
+  "expired",
+  "superseded",
 ];
 
 const ACTIVE_MEMORY_CANDIDATE_STATUSES = ["proposed"];
@@ -317,13 +328,12 @@ export const useAssistantStore = defineStore("assistant", {
       try {
         const params = new URLSearchParams();
         statuses.forEach((status) => params.append("status", status));
-        params.set("limit", "20");
+        if (this.sessionId != null) params.set("session_id", String(this.sessionId));
+        params.set("limit", "100");
         const response = await api.get<{ items: AssistantProposal[]; total: number }>("/assistant/proposals", {
           params,
         });
-        this.assistantProposals = response.data.items.filter(
-          (proposal) => proposal.session_id == null || proposal.session_id === this.sessionId,
-        );
+        this.assistantProposals = response.data.items;
       } catch (error) {
         console.error("Failed to fetch assistant proposals:", error);
       } finally {
@@ -568,6 +578,7 @@ export const useAssistantStore = defineStore("assistant", {
                 type: string;
                 text?: string;
                 actions?: AssistantAction[];
+                render_blocks?: AssistantRenderBlock[];
                 session_id?: number;
                 full_reply?: string;
               };
@@ -585,7 +596,10 @@ export const useAssistantStore = defineStore("assistant", {
                 finished = true;
                 this.sessionId = data.session_id ?? this.sessionId;
                 const rendered = await defaultOutputAdapter.render(data.full_reply ?? "");
-                if (assistantMessage) assistantMessage.content = rendered;
+                if (assistantMessage) {
+                  assistantMessage.content = rendered;
+                  assistantMessage.render_blocks = data.render_blocks ?? [];
+                }
                 ws.close();
                 completed = true;
                 await this.refreshAssistantSidebarsAfterSend();
@@ -655,6 +669,7 @@ export const useAssistantStore = defineStore("assistant", {
             session_id: number;
             reply: string;
             actions: AssistantAction[];
+            render_blocks?: AssistantRenderBlock[];
           }>("/assistant/message", {
             session_id: this.sessionId,
             message: normalizedMessage,
@@ -667,6 +682,7 @@ export const useAssistantStore = defineStore("assistant", {
             role: "assistant",
             content: renderedReply,
             tool_calls_json: response.data.actions,
+            render_blocks: response.data.render_blocks ?? [],
           });
           this.lastAssistantActions = response.data.actions;
 

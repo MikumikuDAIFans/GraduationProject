@@ -34,11 +34,16 @@ WEEKDAY_MAP = {
     "末": 5,
 }
 
+TIME_PERIOD_RAW = r"(?:凌晨|早上|上午|中午|下午|傍晚|晚上|今晚|今早|明早|明晚)"
 TIME_TOKEN_RAW = (
-    r"(?:凌晨|早上|上午|中午|下午|傍晚|晚上|今晚|今早|明早|明晚)?\s*"
+    rf"{TIME_PERIOD_RAW}?\s*"
     r"(?:\d{1,2}(?::\d{2}|点半|点一刻|点三刻|点\d{1,2}分?|点|时半|时一刻|时三刻|时\d{1,2}分?|时)?|[零〇一二两三四五六七八九十]{1,3}(?:点半|点一刻|点三刻|点[零〇一二三四五六七八九十]{1,3}分?|点|时半|时一刻|时三刻|时[零〇一二三四五六七八九十]{1,3}分?|时))"
 )
 TIME_TOKEN_PATTERN = re.compile(TIME_TOKEN_RAW)
+EXPLICIT_TIME_TOKEN_PATTERN = re.compile(
+    rf"{TIME_PERIOD_RAW}?\s*"
+    r"(?:\d{1,2}(?::\d{2}|点半|点一刻|点三刻|点\d{1,2}分?|点|时半|时一刻|时三刻|时\d{1,2}分?|时)|[零〇一二两三四五六七八九十]{1,3}(?:点半|点一刻|点三刻|点[零〇一二三四五六七八九十]{1,3}分?|点|时半|时一刻|时三刻|时[零〇一二三四五六七八九十]{1,3}分?|时))"
+)
 
 
 class AssistantTextRuntime:
@@ -256,11 +261,12 @@ class AssistantTextRuntime:
                 end_dt = self._normalize_range_end(start_dt, end_dt)
                 return start_dt, end_dt
 
-        token_match = TIME_TOKEN_PATTERN.search(user_message)
+        token_match = EXPLICIT_TIME_TOKEN_PATTERN.search(user_message)
         if token_match:
             start_dt, _ = self._parse_time_token(token_match.group(0), base_date)
-            if start_dt and re.search(r"日程|会议|开会|组会|答辩|面试|约会|聚餐|上课|演示|汇报|看医生|meeting|event|appointment", user_message, re.I):
-                return start_dt, start_dt + timedelta(minutes=self._extract_duration_minutes(user_message) or 60)
+            if start_dt and re.search(r"日程|会议|开会|组会|答辩|面试|约会|聚餐|上课|演示|汇报|看医生|出发|去|到|在|于|meeting|event|appointment", user_message, re.I):
+                duration_minutes = self._extract_duration_minutes(user_message)
+                return start_dt, start_dt + timedelta(minutes=duration_minutes) if duration_minutes else None
 
         return None, None
 
@@ -280,7 +286,17 @@ class AssistantTextRuntime:
         if "今天" in user_message or "今晚" in user_message or "今早" in user_message:
             return reference_date
 
-        explicit = re.search(r"(?:(\d{4})[年/-])?(\d{1,2})月(\d{1,2})日", user_message)
+        next_month_match = re.search(r"(?:下个?月|下月)(?:的)?(?P<day>\d{1,2}|[一二两三四五六七八九十]{1,3})[日号]?", user_message)
+        if next_month_match:
+            month = reference_date.month + 1
+            year = reference_date.year
+            if month > 12:
+                month = 1
+                year += 1
+            day = self._parse_number(next_month_match.group("day")) or 1
+            return date(year, month, day)
+
+        explicit = re.search(r"(?:(\d{4})[年/-])?(\d{1,2})月(\d{1,2})[日号]", user_message)
         if explicit:
             year_raw, month_raw, day_raw = explicit.groups()
             year = int(year_raw) if year_raw else reference_date.year
@@ -437,6 +453,7 @@ class AssistantTextRuntime:
             return None
 
         keyword_patterns = [
+            r"(?:今天|明天|后天|大后天|这周|本周|下周)?(?:帮我|请|麻烦)?(?:安排一下|安排|规划一下|规划)?\s*(?P<content>(?:复习|学习|准备|整理)[\u4e00-\u9fa5A-Za-z0-9]{1,24})",
             r"(?:帮我|请|麻烦)?(?:安排一下|安排|规划一下|规划|提醒我|记得)?\s*(?P<content>[\u4e00-\u9fa5A-Za-z0-9]{1,24}(?:复习|整理|准备|论文|材料|作业|报告|任务|待办))",
             r"(?:完成|推进|处理)\s*(?P<content>[\u4e00-\u9fa5A-Za-z0-9]{1,24})",
         ]

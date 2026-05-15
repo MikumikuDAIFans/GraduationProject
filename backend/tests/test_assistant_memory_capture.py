@@ -39,16 +39,22 @@ class FakeMemoryService:
         return list(self.candidates)
 
     async def confirm_candidate(self, *, user_id: str, candidate_id: int):
-        del user_id, candidate_id
-        candidate = self.candidates[0]
-        self.candidates = [SimpleNamespace(**{**candidate.__dict__, "status": "written"})]
-        return self.candidates[0]
+        del user_id
+        for index, candidate in enumerate(self.candidates):
+            if candidate.id == candidate_id:
+                updated = SimpleNamespace(**{**candidate.__dict__, "status": "written"})
+                self.candidates[index] = updated
+                return updated
+        raise AssertionError(f"candidate {candidate_id} not found")
 
     async def reject_candidate(self, *, user_id: str, candidate_id: int):
-        del user_id, candidate_id
-        candidate = self.candidates[0]
-        self.candidates = [SimpleNamespace(**{**candidate.__dict__, "status": "rejected"})]
-        return self.candidates[0]
+        del user_id
+        for index, candidate in enumerate(self.candidates):
+            if candidate.id == candidate_id:
+                updated = SimpleNamespace(**{**candidate.__dict__, "status": "rejected"})
+                self.candidates[index] = updated
+                return updated
+        raise AssertionError(f"candidate {candidate_id} not found")
 
     async def build_runtime_context(self, *, user_id: str):
         assert user_id == "local-user"
@@ -166,6 +172,68 @@ def test_memory_text_protocol_rejects_single_pending_candidate() -> None:
         assert reply is not None
         assert "已拒绝这条待确认记忆" in reply
         assert fake_memory.candidates[0].status == "rejected"
+
+    asyncio.run(scenario())
+
+
+def test_memory_text_protocol_confirms_explicit_candidate_id() -> None:
+    async def scenario() -> None:
+        service = AssistantService()
+        fake_memory = FakeMemoryService()
+        fake_memory.candidates.append(
+            SimpleNamespace(
+                id=2,
+                status="proposed",
+                memory_type="preferences",
+                proposed_change_json={
+                    "operation": "append_entry",
+                    "title": "深度工作",
+                    "content": "我喜欢上午安排深度工作",
+                },
+            )
+        )
+        service.memory_service = fake_memory
+
+        reply = await service._maybe_handle_memory_candidate_text_protocol(
+            user_id="local-user",
+            user_message="记住 M2",
+        )
+
+        assert reply is not None
+        assert "已确认并写入长期记忆" in reply
+        assert fake_memory.candidates[0].status == "proposed"
+        assert fake_memory.candidates[1].status == "written"
+
+    asyncio.run(scenario())
+
+
+def test_memory_text_protocol_rejects_explicit_candidate_id() -> None:
+    async def scenario() -> None:
+        service = AssistantService()
+        fake_memory = FakeMemoryService()
+        fake_memory.candidates.append(
+            SimpleNamespace(
+                id=2,
+                status="proposed",
+                memory_type="preferences",
+                proposed_change_json={
+                    "operation": "append_entry",
+                    "title": "深度工作",
+                    "content": "我喜欢上午安排深度工作",
+                },
+            )
+        )
+        service.memory_service = fake_memory
+
+        reply = await service._maybe_handle_memory_candidate_text_protocol(
+            user_id="local-user",
+            user_message="M2 不要记",
+        )
+
+        assert reply is not None
+        assert "已拒绝这条待确认记忆" in reply
+        assert fake_memory.candidates[0].status == "proposed"
+        assert fake_memory.candidates[1].status == "rejected"
 
     asyncio.run(scenario())
 

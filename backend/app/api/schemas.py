@@ -200,10 +200,16 @@ class AssistantAction(ReadModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class AssistantRenderBlock(ReadModel):
+    type: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class AssistantResponse(ReadModel):
     session_id: int
     reply: str
     actions: list[AssistantAction] = Field(default_factory=list)
+    render_blocks: list[AssistantRenderBlock] = Field(default_factory=list)
 
 
 class VoiceAssistantResponse(AssistantResponse):
@@ -244,7 +250,20 @@ class AssistantMessageRead(ReadModel):
     role: str
     content: str
     tool_calls_json: list[dict[str, Any]] | None = None
+    render_blocks_json: list[dict[str, Any]] | None = None
+    render_blocks: list[AssistantRenderBlock] = Field(default_factory=list)
     created_at: datetime
+
+    @classmethod
+    def model_validate(cls, obj: Any, *args: Any, **kwargs: Any):
+        item = super().model_validate(obj, *args, **kwargs)
+        if not item.render_blocks and item.render_blocks_json:
+            item.render_blocks = [
+                AssistantRenderBlock.model_validate(block)
+                for block in item.render_blocks_json
+                if isinstance(block, dict)
+            ]
+        return item
 
 
 class AssistantSessionRead(ReadModel):

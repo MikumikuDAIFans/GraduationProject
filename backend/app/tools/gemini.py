@@ -12,6 +12,7 @@ from loguru import logger
 
 from app.core.config import get_settings
 from app.core.error_handler import GeminiAPIError
+from app.schemas.assistant_understanding import validate_message_understanding_payload
 
 
 class GeminiClient:
@@ -134,7 +135,10 @@ class GeminiClient:
         payload = self._parse_json_payload(text)
         if not isinstance(payload, dict):
             raise GeminiAPIError("Gemini returned invalid message understanding.")
-        return payload
+        try:
+            return validate_message_understanding_payload(payload)
+        except ValueError as exc:
+            raise GeminiAPIError("Gemini returned invalid message understanding.") from exc
 
     async def generate_text(self, prompt: str) -> str:
         """Public text generation helper for assistant callers."""

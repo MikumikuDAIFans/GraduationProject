@@ -199,8 +199,8 @@ class AssistantMemoryService:
             alias_lower = alias.lower()
             if extracted_location and (
                 extracted_location == alias_lower
-                or alias_lower in extracted_location
-                or extracted_location in alias_lower
+                or extracted_location.startswith(f"{alias_lower}-")
+                or extracted_location.startswith(f"{alias_lower} ")
             ):
                 return item
         if extracted_location:

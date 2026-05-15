@@ -17,6 +17,7 @@ from app.assistant_agents.contracts import (
     UnderstandingResult,
 )
 from app.services.assistant_runtime_text import AssistantTextRuntime, TIME_TOKEN_PATTERN
+from app.schemas.assistant_understanding import validate_message_understanding_payload
 
 
 class UnderstandingSpecialist:
@@ -52,6 +53,8 @@ class UnderstandingSpecialist:
         semantic_understanding = await self._extract_message_semantics_with_llm(message=message, context=context)
         intent = protected_intent or self._intent_from_semantic_understanding(semantic_understanding) or self._classify(message)
         if merged_event_creation_followup:
+            intent = "create_event"
+        if self._should_force_independent_timed_event_creation(message=message, intent=intent, context=context):
             intent = "create_event"
         if self._should_force_timed_reminder_event(message=message, intent=intent, context=context):
             intent = "create_event"
@@ -204,6 +207,8 @@ class UnderstandingSpecialist:
             return direct_answer_intent
         if self._looks_like_event(message):
             return "create_event"
+        if self._looks_like_incomplete_destination_event(message):
+            return "create_event"
         if self._looks_like_task(message):
             return "create_task"
         return direct_answer_intent
@@ -218,14 +223,14 @@ class UnderstandingSpecialist:
 
     def _protected_update_intent(self, message: str) -> str | None:
         update_intent = self._classify_update_intent(message)
-        if update_intent in {"mark_task_completed", "mark_event_completed"}:
+        if update_intent in {"reschedule_event", "mark_task_completed", "mark_event_completed"}:
             return update_intent
         if update_intent and self._looks_like_batch_event_request(message):
             return update_intent
         return None
 
     def _classify_update_intent(self, message: str) -> str | None:
-        if re.search(r"改到|改成|调整到|挪到|推到|推迟到|提前到|延期到|顺延到|延后到|reschedule|move", message, re.I):
+        if re.search(r"改到|改成|改为|调整到|挪到|推到|推迟到|提前到|延期到|顺延到|延后到|reschedule|move", message, re.I):
             return "reschedule_event"
         if re.search(r"(推迟|延期|后延|延后|顺延|提前)\s*(?:\d+|[一二两三四五六七八九十半])?\s*(天|日|小时|周)", message):
             return "reschedule_event"
@@ -248,7 +253,12 @@ class UnderstandingSpecialist:
         )
         return has_task_subject and not has_event_subject
 
-    def _looks_like_task_schedule_continuation(self, message: str) -> bool:
+    def _looks_like_task_schedule_continuation(self, message: str, *, context: AssistantAgentContext | None = None) -> bool:
+        if self._looks_like_explicit_single_event_request(message) and not self._looks_like_active_task_schedule_request(
+            message,
+            context=context,
+        ):
+            return False
         has_schedule_words = bool(
             re.search(r"继续规划|继续安排|继续排|安排下|安排一下|帮我安排|拆成|分成|分几天|排到|排进|分块", message)
         )
@@ -258,6 +268,24 @@ class UnderstandingSpecialist:
         return (has_schedule_words and (has_explicit_continuation or has_time_window or has_duration_hint)) or (
             has_time_window and has_duration_hint
         )
+
+    def _looks_like_active_task_schedule_request(self, message: str, *, context: AssistantAgentContext | None) -> bool:
+        active_target = (context.external_context or {}).get("active_target") if context is not None else None
+        has_active_task = isinstance(active_target, dict) and active_target.get("task_id") is not None
+        has_task_name = any(
+            str(getattr(task, "content", "") or "") and str(getattr(task, "content", "") or "") in message
+            for task in ((context.tasks if context is not None else []) or [])
+        )
+        has_task_schedule_shape = bool(re.search(r"未来|接下来|预计|大概|差不多|需要|连续|每天|分[几\d一二两三四五六七八九十]+天", message))
+        return (has_active_task or has_task_name or re.search(r"任务|待办", message)) and has_task_schedule_shape
+
+    def _looks_like_explicit_single_event_request(self, message: str) -> bool:
+        has_time = self.text_runtime._extract_time_range(message)[0] is not None or self._extract_partial_start_time(message) is not None
+        if not has_time:
+            return False
+        if re.search(r"日程|会议|开会|组会|活动|上课|培训|面试|体检|约会|聚餐|见面|碰头", message):
+            return True
+        return bool(re.search(r"(?:地点|在|去|到)\s*[\u4e00-\u9fa5A-Za-z0-9·（）()]{2,24}", message))
 
     def _message_contains_time_window(self, message: str) -> bool:
         if self.text_runtime._extract_time_range(message)[0] is not None:
@@ -373,7 +401,7 @@ class UnderstandingSpecialist:
         context: AssistantAgentContext,
         continuation: ContinuationSignals,
     ) -> UnderstandingResult | None:
-        if not self._looks_like_task_schedule_continuation(message):
+        if not self._looks_like_task_schedule_continuation(message, context=context):
             return None
 
         target = self._resolve_task_target(message, context)
@@ -461,18 +489,29 @@ class UnderstandingSpecialist:
             return True
         if self._extract_partial_start_time(message) is not None and re.search(r"去|到|在|于|at|in|to", message, re.I):
             return True
+        if self._message_has_time_details(message) and self._has_date_reference(message) and self._extract_standalone_timed_event_title(message):
+            return True
+        return False
+
+    def _looks_like_incomplete_destination_event(self, message: str) -> bool:
+        if not self._has_date_reference(message):
+            return False
+        if self._extract_event_location_from_message(message) or self._extract_simple_destination_location(message):
+            return True
         return False
 
     def _merge_event_creation_clarification_reply(self, message: str, *, context: AssistantAgentContext) -> str:
         history = self._history_without_current_user_message(message, context.history)
-        if not history or not self._looks_like_event_creation_followup(message):
+        if not self._looks_like_event_creation_followup(message):
+            return message
+        if self._looks_like_independent_timed_event_request(message, context=context):
             return message
 
-        recent_request = self._recent_event_creation_request(history)
+        recent_request = self._event_creation_request_from_conversation_state(context) or self._recent_event_creation_request(history)
         if recent_request is None:
             return message
 
-        recent_time_reply = self._recent_event_time_reply(history)
+        recent_time_reply = self._event_time_reply_from_conversation_state(context) or self._recent_event_time_reply(history)
         if self._looks_like_event_creation_directive(message) and recent_time_reply is not None:
             merged = self._merge_event_request_and_time(recent_request, recent_time_reply)
             return merged or message
@@ -482,6 +521,40 @@ class UnderstandingSpecialist:
             return merged or message
 
         return message
+
+    def _event_creation_request_from_conversation_state(self, context: AssistantAgentContext) -> dict[str, str] | None:
+        state = (context.external_context or {}).get("conversation_state")
+        if not isinstance(state, dict):
+            return None
+        active_goal = state.get("active_goal")
+        if not isinstance(active_goal, dict) or active_goal.get("type") != "create_event":
+            return None
+        known_slots = active_goal.get("known_slots")
+        if not isinstance(known_slots, dict):
+            return None
+        title = str(known_slots.get("title") or "").strip()
+        location = str(known_slots.get("location_name") or "").strip()
+        raw = str(active_goal.get("source_message") or "").strip()
+        date_value = str(known_slots.get("date") or "").strip()
+        if not title and not location:
+            return None
+        return {"raw": raw, "title": title, "location": location, "date": date_value}
+
+    def _event_time_reply_from_conversation_state(self, context: AssistantAgentContext) -> str | None:
+        state = (context.external_context or {}).get("conversation_state")
+        if not isinstance(state, dict):
+            return None
+        active_goal = state.get("active_goal")
+        if not isinstance(active_goal, dict) or active_goal.get("type") != "create_event":
+            return None
+        known_slots = active_goal.get("known_slots")
+        if not isinstance(known_slots, dict):
+            return None
+        start_time = str(known_slots.get("start_time") or "").strip()
+        end_time = str(known_slots.get("end_time") or "").strip()
+        if start_time and end_time:
+            return f"{start_time}到{end_time}"
+        return start_time or None
 
     def _history_without_current_user_message(self, message: str, history: list[Any]) -> list[Any]:
         items = list(history or [])
@@ -496,6 +569,18 @@ class UnderstandingSpecialist:
     def _looks_like_event_creation_followup(self, message: str) -> bool:
         return self._message_has_time_details(message) or self._looks_like_event_creation_directive(message)
 
+    def _looks_like_independent_timed_event_request(self, message: str, *, context: AssistantAgentContext | None = None) -> bool:
+        if not self._message_has_time_details(message):
+            return False
+        if self._looks_like_active_task_schedule_request(message, context=context):
+            return False
+        if re.search(r"约会|聚餐|见面|碰头|上课|开会|会议|组会|答辩|面试|体检|接|送", message):
+            return True
+        location = self._extract_event_location_from_message(message) or self._extract_simple_destination_location(message)
+        if location and not re.fullmatch(r"(?:下午|上午|晚上|早上|中午|凌晨)?\s*\d{1,2}\s*(?:点|时).*", message):
+            return True
+        return bool(self._has_date_reference(message) and self._extract_standalone_timed_event_title(message))
+
     def _looks_like_event_creation_directive(self, message: str) -> bool:
         return bool(
             re.search(r"(创建|新增|安排|生成|做成|转成).{0,8}(独立|单次|一次性)?日程", message)
@@ -508,6 +593,32 @@ class UnderstandingSpecialist:
             or self._extract_partial_start_time(message) is not None
             or re.search(r"(开始|起|结束|截止|持续|时长|几点到几点)", message)
         )
+
+    def _extract_standalone_timed_event_title(self, message: str) -> str | None:
+        cleaned = message.strip(" \t\r\n，。,；;：:！!?？")
+        cleaned = re.sub(
+            r"^(?:今天|明天|后天|大后天|今晚|明早|明晚|下个?月(?:的)?(?:\d{1,2}|[一二两三四五六七八九十]{1,3})[日号]?|"
+            r"下月(?:的)?(?:\d{1,2}|[一二两三四五六七八九十]{1,3})[日号]?|"
+            r"(?:\d{4}年)?\d{1,2}月\d{1,2}[日号]|(?:\d{4}[-/])?\d{1,2}[-/]\d{1,2}|"
+            r"(?:下下周|下周|本周|这周|周|星期)[一二三四五六日天末])",
+            "",
+            cleaned,
+            count=1,
+        )
+        cleaned = TIME_TOKEN_PATTERN.sub("", cleaned)
+        cleaned = re.sub(r"\d{1,2}:\d{2}(?:\s*(?:到|至|-|~)\s*\d{1,2}:\d{2})?", "", cleaned)
+        cleaned = re.sub(r"(?:上午|下午|晚上|早上|中午|凌晨)?\s*(?:\d{1,2}|[一二两三四五六七八九十两半]+)\s*(?:点|时)(?:半|[一二三四五六七八九十]刻)?(?:\s*(?:到|至|-|~)\s*(?:上午|下午|晚上|早上|中午|凌晨)?\s*(?:\d{1,2}|[一二两三四五六七八九十两半]+)\s*(?:点|时)(?:半|[一二三四五六七八九十]刻)?)?", "", cleaned)
+        cleaned = re.sub(r"^(?:我要|我想|帮我|请|麻烦|安排|创建|新增|添加|提醒我|记得)\s*", "", cleaned)
+        cleaned = cleaned.strip(" \t\r\n，。,；;：:！!?？")
+        if not (2 <= len(cleaned) <= 30):
+            return None
+        if re.search(r"开始|结束|持续|时长|几点|多久|怎么|要不要|天气", cleaned):
+            return None
+        if re.fullmatch(r"(?:去|到|在|于)?(?:学校|图书馆|公司|家|宿舍|校医院|医院|教室)", cleaned):
+            return None
+        if re.search(r"复习|学习|自习|写作|作业|报告|论文|材料|准备|整理|练习|阅读|背单词|运动|跑步|健身|开会|会议|组会|上课|考试|面试", cleaned):
+            return cleaned
+        return None
 
     def _recent_event_creation_request(self, history: list[Any]) -> dict[str, str] | None:
         for item in reversed(history[-10:]):
@@ -525,12 +636,15 @@ class UnderstandingSpecialist:
                     "raw": content,
                     "location": location or "",
                     "title": title or "",
+                    "date": self._extract_date_prefix_from_message(content) or "",
                 }
         return None
 
     def _extract_simple_destination_location(self, message: str) -> str | None:
         for match in re.finditer(r"(?:去|到|在|于)\s*(?P<location>[\u4e00-\u9fa5A-Za-z0-9·（）()]{1,24})(?:$|[，。,；;!！?？])", message):
             location = match.group("location").strip(" \t\r\n，。,；;：:")
+            if location in {"约会"}:
+                continue
             if not location or re.search(r"(?:\d{1,2}|[一二两三四五六七八九十两半]+)\s*(?:点|时)|开始|结束|截止", location):
                 continue
             return location
@@ -547,6 +661,9 @@ class UnderstandingSpecialist:
 
     def _merge_event_request_and_time(self, request: dict[str, str], time_fragment: str) -> str | None:
         normalized_time = time_fragment.strip(" \t\r\n，。,；;：:！!?？")
+        date_fragment = request.get("date", "").strip()
+        if date_fragment and normalized_time and not self._has_date_reference(normalized_time):
+            normalized_time = f"{date_fragment}{normalized_time}"
         pieces: list[str] = [normalized_time] if normalized_time else []
 
         title = request.get("title", "").strip()
@@ -559,6 +676,16 @@ class UnderstandingSpecialist:
             raw = request.get("raw", "").strip()
             return raw or None
         return "，".join(dict.fromkeys(pieces))
+
+    def _extract_date_prefix_from_message(self, message: str) -> str | None:
+        match = re.search(
+            r"(?:大后天|后天|明天|今天|今晚|明早|明晚|下个?月(?:的)?(?:\d{1,2}|[一二两三四五六七八九十]{1,3})[日号]?|"
+            r"下月(?:的)?(?:\d{1,2}|[一二两三四五六七八九十]{1,3})[日号]?|"
+            r"(?:\d{4}年)?\d{1,2}月\d{1,2}[日号]|(?:\d{4}[-/])?\d{1,2}[-/]\d{1,2}|"
+            r"(?:下下周|下周|本周|这周|周|星期)[一二三四五六日天末])",
+            message,
+        )
+        return match.group(0) if match else None
 
     def _looks_like_task(self, message: str) -> bool:
         return bool(re.search(r"任务|待办|todo|deadline|截止|完成|复习|整理|准备|记得|提醒我", message, re.I))
@@ -593,6 +720,34 @@ class UnderstandingSpecialist:
             or re.search(r"开会|会议|组会|上课|面试|体检|看医生|聚餐|约会|见面|meeting|appointment", message, re.I)
         )
         return has_event_target
+
+    def _should_force_independent_timed_event_creation(
+        self,
+        *,
+        message: str,
+        intent: str,
+        context: AssistantAgentContext,
+    ) -> bool:
+        if intent == "event_context_advice":
+            return False
+        if re.search(r"几点出发|什么时候出发|多久出发|要不要带伞|带伞|天气|通勤|怎么去", message):
+            return False
+        if re.search(r"改成|改到|改为|修改|调整|换成|开到|结束到|提前|推迟|延后|缩短|延长", message):
+            return False
+        if self._looks_like_active_task_schedule_request(message, context=context):
+            return False
+        has_time = bool(
+            self.text_runtime._extract_time_range(message, reference=context.now)[0] is not None
+            or self._extract_partial_start_time(message, reference=context.now) is not None
+        )
+        if not has_time:
+            return False
+        if self._has_date_reference(message) and self._extract_standalone_timed_event_title(message):
+            return True
+        return bool(
+            re.search(r"约会|聚餐|见面|碰头|上课|开会|会议|组会|答辩|面试|体检|看医生|接|送", message)
+            or self._extract_simple_destination_location(message)
+        )
 
     def _merge_medical_location_clarification_reply(
         self,
@@ -667,6 +822,7 @@ class UnderstandingSpecialist:
     ) -> UnderstandingResult:
         start_time, end_time = self.text_runtime._extract_time_range(message, reference=context.now)
         start_time = start_time or self._extract_partial_start_time(message, reference=context.now)
+        broad_time_period = self._extract_broad_time_period(message)
         semantic_slots = self._event_slots_from_message_semantics(semantic_understanding)
         semantic_source = "llm_message_understanding" if semantic_slots is not None else "llm_missing"
         if semantic_slots is None:
@@ -678,10 +834,16 @@ class UnderstandingSpecialist:
         else:
             location_name = None
             title = None
+        if not title:
+            title = self._extract_explicit_arranged_event_title(message)
         if not location_name:
             location_name = self._extract_event_location_from_message(message) or self._extract_simple_destination_location(message)
         if not title:
             title = self._extract_event_title_from_message(message=message, location_name=location_name)
+        if not title:
+            title = self._extract_standalone_timed_event_title(message)
+        if not title:
+            title = self._extract_social_event_title(message)
 
         slots: dict[str, Any] = {
             "title": title,
@@ -690,6 +852,8 @@ class UnderstandingSpecialist:
             "location_name": location_name,
             "semantic_source": semantic_source,
         }
+        if broad_time_period:
+            slots["broad_time_period"] = broad_time_period
         missing_fields: list[str] = []
         if not title:
             missing_fields.append("title")
@@ -705,9 +869,13 @@ class UnderstandingSpecialist:
 
         uses_default_duration = bool(end_time and not self._has_explicit_end_or_duration(message))
 
-        if title and start_time and location_name and missing_fields == ["end_time_or_duration"]:
+        if title and start_time and missing_fields == ["end_time_or_duration"]:
             can_propose = True
             assumptions.append("default_event_duration_60_minutes")
+        elif title and start_time and not location_name and re.search(r"约会|聚餐|见面|碰头", message):
+            can_propose = True
+            assumptions.append("default_event_duration_60_minutes")
+            assumptions.append("location_not_specified")
         elif title and start_time and end_time:
             can_propose = True
             requires_clarification = False
@@ -723,7 +891,7 @@ class UnderstandingSpecialist:
             can_propose = False
             requires_clarification = True
 
-        if re.fullmatch(r".{0,6}(我要|想)?去?约会[。！!？?]?", message):
+        if not start_time and re.fullmatch(r".{0,6}(我要|想)?去?约会[。！!？?]?", message):
             can_propose = False
             requires_clarification = True
             missing_fields = ["intent_detail", "start_time", "location_name", "end_time_or_duration"]
@@ -776,6 +944,10 @@ class UnderstandingSpecialist:
         except Exception:
             return None
         if not isinstance(raw, dict):
+            return None
+        try:
+            raw = validate_message_understanding_payload(raw)
+        except ValueError:
             return None
         confidence = raw.get("confidence")
         if isinstance(confidence, (int, float)) and confidence < 0.5:
@@ -877,6 +1049,8 @@ class UnderstandingSpecialist:
             "priority": 3,
             "can_split": bool(re.search(r"拆分|拆成|分成|分两次|分几次|分块", message)),
             "preferred_period": self.text_runtime._extract_period_preference(message),
+            "schedule_window": self._extract_task_schedule_window(message),
+            "wants_schedule_options": self._looks_like_new_task_schedule_request(message),
         }
         content = payload.get("content")
         generic_review = bool(content and re.fullmatch(r"(复习|学习|准备)", str(content)))
@@ -914,6 +1088,23 @@ class UnderstandingSpecialist:
             language=language,
             orchestration=orchestration,
         )
+
+    def _looks_like_new_task_schedule_request(self, message: str) -> bool:
+        has_schedule_word = bool(re.search(r"安排|规划|排一下|排进|排到|拆分|拆成|分成|计划", message))
+        has_time_window = self._extract_task_schedule_window(message) is not None
+        has_study_or_work_task = bool(re.search(r"复习|学习|准备|整理|论文|作业|报告|材料|背单词|练习", message))
+        return has_schedule_word and (has_time_window or has_study_or_work_task)
+
+    def _extract_task_schedule_window(self, message: str) -> str | None:
+        if re.search(r"这周|本周", message):
+            return "this_week"
+        if re.search(r"下周", message):
+            return "next_week"
+        if re.search(r"今天", message):
+            return "today"
+        if re.search(r"明天", message):
+            return "tomorrow"
+        return None
 
     def _build_creation_orchestration(
         self,
@@ -1000,6 +1191,9 @@ class UnderstandingSpecialist:
                 matched_event = next((event for event in context.events if getattr(event, "id", None) == target_id), None)
                 if matched_event is not None and getattr(matched_event, "start_time", None) is not None:
                     target_reference = getattr(matched_event, "start_time")
+            location_name = self._extract_update_location_from_message(message)
+            if location_name:
+                slots["location_name"] = location_name
             if target.get("target_scope") == "batch":
                 shift_days = self._extract_batch_shift_days(message)
                 _source_date, destination_date = self._extract_batch_reschedule_dates(message, context)
@@ -1016,6 +1210,9 @@ class UnderstandingSpecialist:
                     reference=date_reference,
                     inherited_period_reference=target_reference,
                 )
+                if partial_start_time is not None and not self._has_explicit_end_or_duration(message):
+                    start_time = partial_start_time
+                    end_time = None
                 if end_time is not None and not self._has_explicit_end_or_duration(message):
                     end_time = None
                     start_time = partial_start_time or start_time
@@ -1196,9 +1393,10 @@ class UnderstandingSpecialist:
         events = context.events
         active_events = [event for event in events if (getattr(event, "status", None) or "planned") != "canceled"]
         target_date = None
-        if self._has_date_reference(message):
+        target_date_message = self._event_target_source_fragment(message)
+        if self._has_date_reference(target_date_message):
             reference_date = (context.now or datetime.now()).date()
-            target_date = self.text_runtime._extract_target_date(message, reference_date)
+            target_date = self.text_runtime._extract_target_date(target_date_message, reference_date)
         scored = []
         for event in active_events:
             score = self._score_event_target(message, event, target_date=target_date)
@@ -1215,6 +1413,12 @@ class UnderstandingSpecialist:
             elif not scored and contextual.get("status") == "ambiguous":
                 return contextual
         return self._target_result(scored, title_attr="title")
+
+    def _event_target_source_fragment(self, message: str) -> str:
+        delimiter = re.search(r"改到|改成|改为|调整到|挪到|推到|推迟到|提前到|延期到|顺延到|延后到", message)
+        if delimiter:
+            return message[: delimiter.start()]
+        return message
 
     def _resolve_batch_event_target(
         self,
@@ -1293,6 +1497,7 @@ class UnderstandingSpecialist:
         return bool(
             re.search(
                 r"今天|明天|后天|大后天|昨天|前天|本周|这周|下周|周[一二三四五六日天]|"
+                r"(?:下个?月|下月)(?:的)?(?:\d{1,2}|[一二两三四五六七八九十]{1,3})[日号]?|"
                 r"\d{1,2}\s*月\s*\d{1,2}\s*[日号]?|\d{4}-\d{1,2}-\d{1,2}",
                 message,
             )
@@ -1312,7 +1517,7 @@ class UnderstandingSpecialist:
         message: str,
         context: AssistantAgentContext,
     ) -> tuple[date | None, date | None]:
-        delimiter = re.search(r"改到|改成|调整到|挪到|推到|推迟到|提前到|延期到|顺延到|延后到", message)
+        delimiter = re.search(r"改到|改成|改为|调整到|挪到|推到|推迟到|提前到|延期到|顺延到|延后到", message)
         if not delimiter:
             return None, None
         source_fragment = message[: delimiter.start()]
@@ -1398,13 +1603,15 @@ class UnderstandingSpecialist:
         text = str(value).strip()
         if not text:
             return 0
-        if text in message:
-            return 8
+        if self._is_exact_target_mentioned(message, text):
+            return 80
+        if self._is_exact_target_alias_mentioned(message, text):
+            return 72
         score = 0
         for token in self._target_tokens(text):
             if token in message:
                 score += min(len(token), 4)
-        return score
+        return min(score, 24)
 
     def _target_tokens(self, text: str) -> list[str]:
         tokens = re.findall(r"[\u4e00-\u9fa5A-Za-z0-9]{2,}", text)
@@ -1491,7 +1698,50 @@ class UnderstandingSpecialist:
         if not value:
             return False
         target = str(value).strip()
-        return bool(target and target in text)
+        if not target:
+            return False
+        pattern = re.escape(target)
+        if target[-1:].isdigit():
+            pattern += r"(?!\d)"
+        if target[:1].isdigit():
+            pattern = r"(?<!\d)" + pattern
+        return bool(re.search(pattern, text))
+
+    def _is_exact_target_alias_mentioned(self, text: str, value: str) -> bool:
+        compact = re.sub(r"[^\u4e00-\u9fa5A-Za-z0-9]", "", value)
+        if len(compact) < 4:
+            return False
+        aliases = {compact}
+        aliases.add(re.sub(r"^(?:处理|参加|安排|创建|新增|添加|开|做)", "", compact))
+        aliases.add(re.sub(r"^去[\u4e00-\u9fa5A-Za-z0-9]{1,24}(?:参加|处理|开|做)", "", compact))
+        for match in re.finditer(r"[\u4e00-\u9fa5A-Za-z]+[A-Za-z0-9]*\d+", compact):
+            aliases.add(match.group(0))
+        for alias in aliases:
+            if len(alias) < 4:
+                continue
+            pattern = re.escape(alias)
+            if alias[-1:].isdigit():
+                pattern += r"(?!\d)"
+            if re.search(pattern, text):
+                return True
+        return False
+
+    def _extract_update_location_from_message(self, message: str) -> str | None:
+        patterns = [
+            r"(?:地点|位置|地方)\s*(?:改到|改成|改为|换到|换成|调整到|设为|是|为|到)?\s*(?P<location>[\u4e00-\u9fa5A-Za-z0-9·（）()]{2,24})",
+            r"(?:改到|改成|改为|换到|换成|调整到)\s*(?P<location>[\u4e00-\u9fa5A-Za-z0-9·（）()]{2,24})(?:上课|开会|见面|培训|办事|聚餐|体检|面试)?",
+        ]
+        for pattern in patterns:
+            for match in re.finditer(pattern, message):
+                location = match.group("location").strip(" \t\r\n，。,；;：:")
+                if not location:
+                    continue
+                if re.search(r"(?:\d{1,2}|[一二两三四五六七八九十两半]+)\s*(?:点|时)", location):
+                    continue
+                if re.search(r"^\d{1,2}\s*月\s*\d{1,2}\s*[日号]?$", location):
+                    continue
+                return location
+        return None
 
     def _recent_history_text(self, history: list[Any]) -> str:
         chunks: list[str] = []
@@ -1598,6 +1848,28 @@ class UnderstandingSpecialist:
         hour = self.text_runtime._apply_period(hour, period)
         return datetime.combine(base_date, datetime.min.time()).replace(hour=hour, minute=minute)
 
+    def _extract_broad_time_period(self, message: str) -> str | None:
+        if re.search(r"\d{1,2}\s*(?:点|时)|\d{1,2}:\d{2}|[零〇一二两三四五六七八九十]{1,3}\s*(?:点|时)", message):
+            return None
+        period_match = re.search(r"凌晨|早上|上午|中午|下午|傍晚|晚上|今晚|今早|明早|明晚", message)
+        if not period_match:
+            return None
+        period = period_match.group(0)
+        mapping = {
+            "早上": "morning",
+            "上午": "morning",
+            "今早": "morning",
+            "明早": "morning",
+            "中午": "noon",
+            "下午": "afternoon",
+            "傍晚": "evening",
+            "晚上": "night",
+            "今晚": "night",
+            "明晚": "night",
+            "凌晨": "late_night",
+        }
+        return mapping.get(period)
+
     def _clean_location(self, location_name: Any, message: str) -> str | None:
         if not isinstance(location_name, str):
             return None
@@ -1632,6 +1904,30 @@ class UnderstandingSpecialist:
         if 2 <= len(after_location) <= 30 and re.match(r"(?:接|送)[\u4e00-\u9fa5A-Za-z0-9·（）()]{1,24}$", after_location):
             return f"去{location_name}{after_location}"
         return f"去{location_name}"
+
+    def _extract_explicit_arranged_event_title(self, message: str) -> str | None:
+        patterns = [
+            r"(?:安排|创建|新增|添加)\s*(?P<title>[\u4e00-\u9fa5A-Za-z0-9·（）()]{2,40}?)(?=[，,。；;]\s*(?:时间|地点|位置)|\s*(?:时间|地点|位置)\s*(?:是|在|为)?|$)",
+            r"(?:标题|名称)\s*(?:叫|是|为)?\s*(?P<title>[\u4e00-\u9fa5A-Za-z0-9·（）()]{2,40})",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, message)
+            if not match:
+                continue
+            title = match.group("title").strip(" \t\r\n，。,；;：:")
+            title = re.sub(r"^(?:一个|一条|这个|该)?", "", title).strip(" \t\r\n，。,；;：:")
+            if title:
+                return title[:40]
+        return None
+
+    def _extract_social_event_title(self, message: str) -> str | None:
+        if re.search(r"约会", message):
+            return "约会"
+        if re.search(r"聚餐", message):
+            return "聚餐"
+        if re.search(r"见面|碰头", message):
+            return "见面"
+        return None
 
     def _clean_event_title(self, title: Any, *, message: str, location_name: str | None) -> str | None:
         if not isinstance(title, str):

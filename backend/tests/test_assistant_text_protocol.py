@@ -68,6 +68,7 @@ def test_contextual_proposal_revision_allows_single_pending_short_reply() -> Non
     assert service._looks_like_contextual_proposal_revision("开到5点") is True
     assert service._looks_like_contextual_proposal_revision("下午1点开始，晚上10点结束") is True
     assert service._looks_like_contextual_proposal_revision("今天不去了") is False
+    assert service._looks_like_contextual_proposal_revision("明天晚上6点去约会") is False
 
 
 def test_proposal_rejection_protocol_phrases() -> None:
@@ -78,10 +79,17 @@ def test_proposal_rejection_protocol_phrases() -> None:
     assert service._classify_proposal_text_protocol("可以") == "confirm"
     assert service._classify_proposal_text_protocol("P1 按方案A安排") == "confirm"
     assert service._classify_proposal_text_protocol("确认 P1 方案A") == "confirm"
+    assert service._classify_proposal_text_protocol("接受 P1 方案A") == "confirm"
+    assert service._classify_proposal_text_protocol("拒绝 P1 全部方案") == "reject"
+    assert service._classify_proposal_text_protocol("拒绝全部 P3") == "reject"
+    assert service._classify_proposal_text_protocol("算了，不选了") == "reject"
+    assert service._classify_proposal_text_protocol("不选了") == "reject"
     assert service._classify_proposal_text_protocol("P1 开到5点") == "revise"
+    assert service._classify_proposal_text_protocol("重试 P1") == "retry"
     assert service._extract_proposal_option_id("P1 按方案A安排") == "A"
     assert service._extract_proposal_option_id("P2 按方案B") == "B"
     assert service._extract_proposal_option_id("确认 P1 方案A") == "A"
+    assert service._extract_proposal_option_id("接受 P1 方案B") == "B"
 
 
 def test_conductor_reply_uses_persisted_proposal_labels() -> None:
@@ -144,6 +152,26 @@ def test_proposal_revision_can_target_visible_global_pending_proposal() -> None:
                         "id": 202,
                         "status": "pending",
                         "summary": "建议创建日程“下午见面”：05-11 16:00-17:00",
+                        "payload_json": {
+                            "protocol_label": "P1",
+                            "options": [
+                                {
+                                    "option_id": "A",
+                                    "title": "按修改后的方案执行",
+                                    "summary": "建议创建日程“下午见面”：05-11 16:00-17:00",
+                                    "actions": [
+                                        {
+                                            "type": "create_event",
+                                            "payload": {
+                                                "title": "下午见面",
+                                                "start_time": "2026-05-11T16:00:00",
+                                                "end_time": "2026-05-11T17:00:00",
+                                            },
+                                        }
+                                    ],
+                                }
+                            ],
+                        },
                     }
                 )
 
@@ -164,6 +192,64 @@ def test_proposal_revision_can_target_visible_global_pending_proposal() -> None:
         assert reply is not None
         assert "新的待确认方案" in reply
         assert revised_calls == [(101, "下午的见面改到4点")]
+        blocks = service._take_inline_render_blocks()
+        assert len(blocks) == 1
+        assert blocks[0].type == "proposal_options"
+        assert blocks[0].payload["proposal_id"] == 202
+        assert blocks[0].payload["protocol_label"] == "P1"
+
+    asyncio.run(scenario())
+
+
+def test_proposal_retry_text_protocol_targets_failed_proposal() -> None:
+    async def scenario() -> None:
+        service = AssistantService()
+        retry_calls: list[int] = []
+        failed_proposal = SimpleNamespace(
+            id=303,
+            session_id=1,
+            status="execution_failed",
+            proposal_type="event_creation",
+            summary="建议创建日程“失败方案”",
+            recommended_option_id="A",
+            related_event_id=None,
+            related_task_id=None,
+            payload_json={
+                "protocol_label": "P1",
+                "options": [{"option_id": "A", "actions": []}],
+                "execution": {"last_error": "boom"},
+            },
+        )
+
+        class FakeProposalManager:
+            async def list_proposals(self, *, user_id, session_id, statuses, limit):
+                if statuses == ["pending"]:
+                    return []
+                if statuses == ["expired", "superseded", "execution_failed"]:
+                    return [failed_proposal]
+                return []
+
+            async def retry_proposal(self, *, user_id, proposal_id):
+                retry_calls.append(proposal_id)
+                return SimpleNamespace(**{**failed_proposal.__dict__, "status": "executed"})
+
+        class FakeThreadStateRepository:
+            async def upsert_active_target_state(self, **_kwargs):
+                return SimpleNamespace(id=1)
+
+        service.proposal_manager = FakeProposalManager()  # type: ignore[assignment]
+        service.thread_state_repository = FakeThreadStateRepository()  # type: ignore[assignment]
+
+        reply = await service._maybe_handle_proposal_text_protocol(
+            user_id="demo-user",
+            session_id=1,
+            user_message="重试 P1",
+            external_context={},
+        )
+
+        assert reply is not None
+        assert "重试" in reply
+        assert retry_calls == [303]
 
     asyncio.run(scenario())
 
@@ -272,5 +358,46 @@ def test_create_independent_event_directive_points_to_existing_pending_event_pro
         assert reply is not None
         assert "已经有待确认的独立日程方案" in reply
         assert "确认 P1 方案A" in reply
+
+    asyncio.run(scenario())
+
+
+def test_new_timed_event_does_not_revise_single_pending_event_proposal() -> None:
+    async def scenario() -> None:
+        service = AssistantService()
+        revised_calls: list[tuple[int, str]] = []
+        proposal = SimpleNamespace(
+            id=101,
+            session_id=1,
+            status="pending",
+            proposal_type="event_creation",
+            summary="建议创建日程“去学校”：06-01 13:00-14:00",
+            recommended_option_id="A",
+            related_event_id=None,
+            related_task_id=None,
+            payload_json={"protocol_label": "P1", "options": [{"option_id": "A", "actions": []}]},
+        )
+
+        class FakeProposalManager:
+            async def list_proposals(self, *, user_id, session_id, statuses, limit):
+                if statuses != ["pending"]:
+                    return []
+                return [proposal] if session_id == 1 else []
+
+            async def revise_proposal(self, *, user_id, proposal_id, message):
+                revised_calls.append((proposal_id, message))
+                return proposal
+
+        service.proposal_manager = FakeProposalManager()  # type: ignore[assignment]
+
+        reply = await service._maybe_handle_proposal_text_protocol(
+            user_id="demo-user",
+            session_id=1,
+            user_message="明天晚上6点去约会",
+            external_context={},
+        )
+
+        assert reply is None
+        assert revised_calls == []
 
     asyncio.run(scenario())

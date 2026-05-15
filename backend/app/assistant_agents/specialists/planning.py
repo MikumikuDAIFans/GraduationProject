@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import re
 
 from app.assistant_agents.contracts import (
@@ -34,7 +34,7 @@ class PlanningSpecialist:
             elif understanding.intent == "plan_task_schedule":
                 proposal = self._build_task_schedule_proposal(understanding.slots)
             else:
-                proposal = self._build_task_proposal(understanding.slots)
+                proposal = self._build_task_proposal(context, understanding.slots)
             if proposal:
                 state.proposals.append(proposal)
         return state
@@ -72,7 +72,7 @@ class PlanningSpecialist:
             summary += f"，地点：{location_name}"
         if diagnostics["risk_summaries"]:
             summary += "；" + "；".join(diagnostics["risk_summaries"])
-        rationale = "结束时间未明确，先按 1小时估算，可在确认前修改。" if "default_event_duration_60_minutes" in assumptions else None
+        rationale = "结束时间未明确，先按 1 小时估算，可在确认前修改。" if "default_event_duration_60_minutes" in assumptions else None
         options = self._build_event_options(
             base_payload=payload,
             base_summary=summary,
@@ -80,6 +80,7 @@ class PlanningSpecialist:
             diagnostics=diagnostics,
             start_time=start_time,
             end_time=end_time,
+            broad_time_period=slots.get("broad_time_period"),
         )
         return ProposalDraft(
             proposal_type="event_creation",
@@ -99,6 +100,7 @@ class PlanningSpecialist:
         diagnostics: dict,
         start_time: datetime,
         end_time: datetime,
+        broad_time_period: str | None = None,
     ) -> list[ProposalOptionDraft]:
         duration = end_time - start_time
         if diagnostics["direct_conflicts"]:
@@ -163,6 +165,15 @@ class PlanningSpecialist:
                 ),
             ]
 
+        broad_options = self._build_broad_time_event_options(
+            base_payload=base_payload,
+            duration=duration,
+            date=start_time.date(),
+            broad_time_period=broad_time_period,
+        )
+        if broad_options:
+            return broad_options
+
         return [
             ProposalOptionDraft(
                 option_id="A",
@@ -172,6 +183,49 @@ class PlanningSpecialist:
                 rationale=base_rationale or diagnostics.get("travel_rationale") or diagnostics.get("adjacent_rationale"),
             )
         ]
+
+    def _build_broad_time_event_options(
+        self,
+        *,
+        base_payload: dict,
+        duration: timedelta,
+        date,
+        broad_time_period: str | None,
+    ) -> list[ProposalOptionDraft]:
+        period_slots = {
+            "morning": [("09:00", "上午早些时候"), ("10:30", "上午中段"), ("11:30", "临近中午")],
+            "noon": [("12:00", "中午开始"), ("12:30", "午间中段"), ("13:00", "午后衔接")],
+            "afternoon": [("14:00", "下午早些时候"), ("15:30", "下午中段"), ("17:00", "下午晚些时候")],
+            "evening": [("18:00", "傍晚开始"), ("19:00", "晚间常规时段"), ("20:30", "晚间稍晚时段")],
+            "night": [("19:00", "晚上早些时候"), ("20:00", "晚上中段"), ("21:00", "晚上稍晚时段")],
+            "late_night": [("00:30", "凌晨早段"), ("01:30", "凌晨中段"), ("02:30", "凌晨稍晚时段")],
+        }
+        slots = period_slots.get(str(broad_time_period or ""))
+        if not slots:
+            return []
+
+        options: list[ProposalOptionDraft] = []
+        for index, (start_text, title) in enumerate(slots, start=1):
+            option_id = chr(64 + index)
+            hour, minute = [int(part) for part in start_text.split(":", 1)]
+            option_start = datetime.combine(date, datetime.min.time()).replace(hour=hour, minute=minute)
+            option_end = option_start + duration
+            option_payload = dict(base_payload)
+            option_payload["start_time"] = option_start.isoformat()
+            option_payload["end_time"] = option_end.isoformat()
+            options.append(
+                ProposalOptionDraft(
+                    option_id=option_id,
+                    title=title,
+                    summary=(
+                        f"方案{option_id}：{option_start.strftime('%m-%d %H:%M')}-"
+                        f"{option_end.strftime('%H:%M')} 安排“{base_payload['title']}”"
+                    ),
+                    actions=[{"type": "create_event", "payload": option_payload}],
+                    rationale="你只给了大概时段，我先给出几个可选开始时间，确认前不会写入。",
+                )
+            )
+        return options
 
     def _event_planning_diagnostics(
         self,
@@ -346,7 +400,7 @@ class PlanningSpecialist:
                 return "两条日程之间无间隔，若涉及地点变更建议预留缓冲时间"
         return None
 
-    def _build_task_proposal(self, slots: dict) -> ProposalDraft | None:
+    def _build_task_proposal(self, context: AssistantAgentContext, slots: dict) -> ProposalDraft | None:
         content = slots.get("content")
         if not content:
             return None
@@ -360,6 +414,11 @@ class PlanningSpecialist:
             "preferred_period": slots.get("preferred_period"),
             "status": "pending",
         }
+        if slots.get("wants_schedule_options"):
+            scheduled_proposal = self._build_new_task_schedule_options(context=context, slots=slots, task_payload=payload)
+            if scheduled_proposal is not None:
+                return scheduled_proposal
+
         summary = f"建议先创建任务“{content}”，进入待排程/待跟进状态"
         if slots.get("deadline"):
             summary += f"，截止时间：{slots['deadline']}"
@@ -379,6 +438,131 @@ class PlanningSpecialist:
                 )
             ],
         )
+
+    def _build_new_task_schedule_options(
+        self,
+        *,
+        context: AssistantAgentContext,
+        slots: dict,
+        task_payload: dict,
+    ) -> ProposalDraft | None:
+        content = slots.get("content")
+        if not content:
+            return None
+        plans = self._new_task_schedule_plan_specs(context=context, slots=slots)
+        if not plans:
+            return None
+
+        options: list[ProposalOptionDraft] = []
+        for option_id, title, blocks, rationale in plans:
+            task_copy = dict(task_payload)
+            task_copy["can_split"] = True
+            task_copy["estimated_duration_minutes"] = sum(
+                int((end - start).total_seconds() // 60)
+                for start, end in blocks
+            )
+            events = [
+                {
+                    "title": f"{content}（第{index}/{len(blocks)}段）" if len(blocks) > 1 else str(content),
+                    "start_time": start.isoformat(),
+                    "end_time": end.isoformat(),
+                    "event_type": "focus_block",
+                }
+                for index, (start, end) in enumerate(blocks, start=1)
+            ]
+            block_summary = "；".join(
+                f"{start.strftime('%m-%d %H:%M')}-{end.strftime('%H:%M')}"
+                for start, end in blocks
+            )
+            summary = f"创建任务“{content}”，并安排 {len(blocks)} 个专注时段：{block_summary}"
+            options.append(
+                ProposalOptionDraft(
+                    option_id=option_id,
+                    title=title,
+                    summary=summary,
+                    actions=[
+                        {
+                            "type": "create_task_with_events",
+                            "payload": {
+                                "task": task_copy,
+                                "events": events,
+                            },
+                        }
+                    ],
+                    rationale=rationale,
+                )
+            )
+
+        summary = f"建议为任务“{content}”选择一种拆分排程方式"
+        return ProposalDraft(
+            proposal_type="task_creation",
+            summary=summary,
+            recommended_option_id="A",
+            is_time_sensitive=True,
+            payload_json={
+                "source": "conductor_v2",
+                "proposal_shape": "task_creation_with_schedule_options",
+                "schedule_window": slots.get("schedule_window"),
+                "option_count": len(options),
+            },
+            options=options,
+        )
+
+    def _new_task_schedule_plan_specs(
+        self,
+        *,
+        context: AssistantAgentContext,
+        slots: dict,
+    ) -> list[tuple[str, str, list[tuple[datetime, datetime]], str]]:
+        start_date = self._task_schedule_start_date(context=context, window=slots.get("schedule_window"))
+        dates = [start_date + timedelta(days=offset) for offset in range(0, 7)]
+        preferred_period = slots.get("preferred_period")
+
+        def block(day_offset: int, hour: int, minute: int, duration_minutes: int) -> tuple[datetime, datetime]:
+            start = datetime.combine(dates[day_offset], datetime.min.time()).replace(hour=hour, minute=minute)
+            return start, start + timedelta(minutes=duration_minutes)
+
+        if preferred_period == "morning":
+            core_hour = 9
+            compact_hour = 8
+            late_hour = 10
+        elif preferred_period == "evening":
+            core_hour = 19
+            compact_hour = 18
+            late_hour = 20
+        else:
+            core_hour = 15
+            compact_hour = 14
+            late_hour = 17
+
+        return [
+            (
+                "A",
+                "分散稳步推进",
+                [block(0, core_hour, 30, 60), block(1, core_hour, 30, 60), block(2, core_hour, 30, 60)],
+                "每天保留一个中等强度时段，负担较低，适合复习类任务。",
+            ),
+            (
+                "B",
+                "集中两段完成",
+                [block(0, compact_hour, 0, 120), block(2, compact_hour, 0, 120)],
+                "减少切换成本，适合希望少占用天数但仍留出复盘间隔的安排。",
+            ),
+            (
+                "C",
+                "前轻后重冲刺",
+                [block(0, late_hour, 0, 60), block(1, late_hour, 0, 90), block(2, late_hour, 0, 120)],
+                "先热身再增加投入，适合临近目标前逐步加压。",
+            ),
+        ]
+
+    def _task_schedule_start_date(self, *, context: AssistantAgentContext, window: str | None) -> date:
+        current = context.now.date()
+        if window == "tomorrow":
+            return current + timedelta(days=1)
+        if window == "next_week":
+            return current + timedelta(days=(7 - current.weekday()))
+        return current
 
     def _build_task_schedule_proposal(self, slots: dict) -> ProposalDraft | None:
         task_id = slots.get("target_id")
@@ -453,11 +637,16 @@ class PlanningSpecialist:
             start_time = datetime.fromisoformat(start_raw)
             end_raw = slots.get("new_end_time")
             end_time = datetime.fromisoformat(end_raw) if end_raw else self._derive_rescheduled_end(context, int(event_id), start_time)
+            location_name = slots.get("location_name")
             update_payload = {
                 "start_time": start_time.isoformat(),
                 "end_time": end_time.isoformat(),
             }
+            if location_name:
+                update_payload["location_name"] = location_name
             summary = f"建议把日程“{title}”改到 {start_time.strftime('%m-%d %H:%M')}-{end_time.strftime('%H:%M')}"
+            if location_name:
+                summary += f"，地点：{location_name}"
             return ProposalDraft(
                 proposal_type="event_reschedule",
                 summary=summary,

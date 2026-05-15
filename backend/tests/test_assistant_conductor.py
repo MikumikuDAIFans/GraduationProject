@@ -92,6 +92,18 @@ class StaticUnderstandingExtractor:
         return dict(self.payload)
 
 
+class InvalidUnderstandingExtractor:
+    enabled = True
+
+    async def extract_message_understanding(self, **_kwargs):
+        return {
+            "intent": "invent_calendar",
+            "goal_type": "event",
+            "title": "错误结构",
+            "confidence": 0.9,
+        }
+
+
 def _event(
     event_id: int,
     title: str,
@@ -191,6 +203,19 @@ def test_conductor_falls_back_to_rule_location_for_clear_event() -> None:
     assert proposal.options[0].actions[0]["payload"]["location_name"] == "学校"
 
 
+def test_conductor_falls_back_when_llm_understanding_schema_is_invalid() -> None:
+    result = run_conductor(
+        "明天下午3点我要去学校和同学见面",
+        semantic_extractor=InvalidUnderstandingExtractor(),
+    )
+
+    assert result.decision == "proposal"
+    assert result.understanding is not None
+    assert result.understanding.slots["title"] == "和同学见面"
+    assert result.understanding.slots["location_name"] == "学校"
+    assert result.understanding.slots["semantic_source"] == "llm_missing"
+
+
 def test_conductor_falls_back_to_location_before_group_meeting_verb() -> None:
     result = run_conductor("明天下午三点去学校开组会")
 
@@ -218,6 +243,27 @@ def test_conductor_falls_back_to_location_after_chinese_time_range_separator() -
     assert payload["location_name"] == "培训室"
     assert payload["start_time"] == "2026-05-04T10:00:00"
     assert payload["end_time"] == "2026-05-04T11:00:00"
+
+
+def test_conductor_broad_afternoon_destination_event_proposes_time_options() -> None:
+    result = run_conductor("下午我想去图书馆")
+
+    assert result.decision == "proposal"
+    assert result.understanding is not None
+    assert result.understanding.slots["broad_time_period"] == "afternoon"
+    proposal = result.proposals[0]
+    assert len(proposal.options) >= 3
+    assert [option.option_id for option in proposal.options[:3]] == ["A", "B", "C"]
+    starts = [
+        option.actions[0]["payload"]["start_time"]
+        for option in proposal.options[:3]
+    ]
+    assert starts == [
+        "2026-05-02T14:00:00",
+        "2026-05-02T15:30:00",
+        "2026-05-02T17:00:00",
+    ]
+    assert all("大概时段" in (option.rationale or "") for option in proposal.options[:3])
 
 
 def test_assistant_service_assigns_stable_unique_proposal_labels() -> None:
@@ -539,6 +585,35 @@ def test_conductor_proposes_clear_task_with_orchestration_reply() -> None:
     assert "不会直接写入任务" in (result.reply or "")
 
 
+def test_conductor_task_arrangement_request_proposes_three_split_options() -> None:
+    result = run_conductor("这周帮我安排复习英语", now=datetime(2026, 5, 15, 9, 0))
+
+    assert result.decision == "proposal"
+    assert result.understanding is not None
+    assert result.understanding.intent == "create_task"
+    assert result.understanding.slots["content"] == "复习英语"
+    assert result.understanding.slots["schedule_window"] == "this_week"
+    assert result.understanding.slots["wants_schedule_options"] is True
+    proposal = result.proposals[0]
+    assert proposal.proposal_type == "task_creation"
+    assert proposal.payload_json["proposal_shape"] == "task_creation_with_schedule_options"
+    assert [option.option_id for option in proposal.options] == ["A", "B", "C"]
+    assert len({option.title for option in proposal.options}) == 3
+    for option in proposal.options:
+        assert option.actions[0]["type"] == "create_task_with_events"
+        payload = option.actions[0]["payload"]
+        assert payload["task"]["content"] == "复习英语"
+        assert payload["task"]["can_split"] is True
+        assert len(payload["events"]) >= 2
+        assert all(event["event_type"] == "focus_block" for event in payload["events"])
+        assert all("linked_task_id" not in event for event in payload["events"])
+    assert len(proposal.options[0].actions[0]["payload"]["events"]) == 3
+    assert len(proposal.options[1].actions[0]["payload"]["events"]) == 2
+    assert "方案 A" in (result.reply or "")
+    assert "方案 B" in (result.reply or "")
+    assert "方案 C" in (result.reply or "")
+
+
 def test_conductor_uses_orchestration_clarification_for_incomplete_event() -> None:
     result = run_conductor("我要去学校和同学见面")
 
@@ -655,6 +730,49 @@ def test_conductor_merges_create_event_directive_with_recent_clarification_slots
     assert result.understanding.slots["location_name"] == "学校"
     assert result.understanding.slots["start_time"].startswith("2026-05-12T13:00:00")
     assert result.understanding.slots["end_time"].startswith("2026-05-12T22:00:00")
+
+
+def test_conductor_treats_dated_destination_as_incomplete_event() -> None:
+    result = run_conductor("下个月的一号去学校", now=datetime(2026, 5, 15, 9, 0))
+
+    assert result.decision == "clarification"
+    assert result.understanding is not None
+    assert result.understanding.intent == "create_event"
+    assert result.understanding.slots["title"] == "去学校"
+    assert result.understanding.slots["location_name"] == "学校"
+    assert "start_time" in result.understanding.missing_fields
+    assert "开始时间" in (result.reply or "")
+
+
+def test_conductor_merges_event_followup_from_conversation_state() -> None:
+    result = run_conductor(
+        "下午1点开始",
+        now=datetime(2026, 5, 15, 9, 0),
+        external_context={
+            "conversation_state": {
+                "active_goal": {
+                    "type": "create_event",
+                    "status": "collecting_slots",
+                    "known_slots": {
+                        "title": "去学校",
+                        "date": "2026-06-01",
+                        "location_name": "学校",
+                    },
+                    "missing_fields": ["start_time"],
+                    "source_message": "下个月的一号去学校",
+                }
+            }
+        },
+    )
+
+    assert result.decision == "proposal"
+    assert result.understanding is not None
+    assert result.understanding.slots["title"] == "去学校"
+    assert result.understanding.slots["location_name"] == "学校"
+    assert result.understanding.slots["start_time"].startswith("2026-06-01T13:00:00")
+    proposal = result.proposals[0]
+    assert proposal.options[0].actions[0]["payload"]["title"] == "去学校"
+    assert proposal.options[0].actions[0]["payload"]["start_time"].startswith("2026-06-01T13:00:00")
 
 
 def test_conductor_clarifies_generic_study_task() -> None:
@@ -836,6 +954,244 @@ def test_conductor_inherits_afternoon_context_for_bare_hour_reschedule_target() 
     assert start_time.hour == 16
     assert start_time.date().isoformat() == "2026-05-03"
     assert "可确认的改期方案" in (result.reply or "")
+
+
+def test_conductor_reschedules_event_with_gaiwei_wording() -> None:
+    result = run_conductor("把约会时间改为8点", events=[_event(12, "约会", hour=18)])
+
+    assert result.decision == "proposal"
+    proposal = result.proposals[0]
+    assert proposal.proposal_type == "event_reschedule"
+    assert proposal.related_event_id == 12
+    update = proposal.options[0].actions[0]["payload"]["update"]
+    start_time = datetime.fromisoformat(update["start_time"])
+    assert start_time.hour == 20
+    assert start_time.date().isoformat() == "2026-05-03"
+
+
+def test_conductor_event_followup_inherits_previous_next_month_date() -> None:
+    result = run_conductor(
+        "下午1点开始",
+        history=[
+            _message("user", "下个月的一号去学校"),
+            _message("assistant", "这个日程还缺少开始时间。"),
+        ],
+        now=datetime(2026, 5, 15, 9, 0),
+    )
+
+    assert result.decision == "proposal"
+    proposal = result.proposals[0]
+    assert proposal.proposal_type == "event_creation"
+    action = proposal.options[0].actions[0]
+    payload = action["payload"]
+    assert payload["title"] == "去学校"
+    assert payload["location_name"] == "学校"
+    assert datetime.fromisoformat(payload["start_time"]) == datetime(2026, 6, 1, 13, 0)
+
+
+def test_conductor_treats_timed_dating_as_event_without_fake_location() -> None:
+    result = run_conductor("明天晚上6点去约会", now=datetime(2026, 5, 15, 9, 0))
+
+    assert result.decision == "proposal"
+    proposal = result.proposals[0]
+    assert proposal.proposal_type == "event_creation"
+    payload = proposal.options[0].actions[0]["payload"]
+    assert payload["title"] in {"约会", "去约会"}
+    assert payload["start_time"].startswith("2026-05-16T18:00:00")
+    assert payload.get("location_name") in {None, ""}
+
+
+def test_conductor_does_not_merge_independent_timed_dating_with_previous_school_request() -> None:
+    result = run_conductor(
+        "明天晚上6点去约会",
+        history=[
+            _message("user", "下个月的一号去学校"),
+            _message("assistant", "这个日程还缺少开始时间。"),
+            _message("user", "下午1点开始"),
+            _message("assistant", "P1：建议创建日程“去学校”：06-01 13:00-14:00。"),
+        ],
+        now=datetime(2026, 5, 15, 9, 0),
+    )
+
+    assert result.decision == "proposal"
+    proposal = result.proposals[0]
+    payload = proposal.options[0].actions[0]["payload"]
+    assert payload["title"] in {"约会", "去约会"}
+    assert payload["start_time"].startswith("2026-05-16T18:00:00")
+    assert payload.get("location_name") in {None, ""}
+
+
+def test_conductor_does_not_merge_independent_timed_study_with_previous_library_request() -> None:
+    result = run_conductor(
+        "后天晚上8点复习英语",
+        history=[
+            _message("user", "明天下午3点去图书馆自习"),
+            _message("assistant", "P1：建议创建日程“去图书馆自习”：05-16 15:00-16:00，地点：图书馆。"),
+        ],
+        now=datetime(2026, 5, 15, 9, 0),
+    )
+
+    assert result.decision == "proposal"
+    proposal = result.proposals[0]
+    payload = proposal.options[0].actions[0]["payload"]
+    assert payload["title"] == "复习英语"
+    assert payload["start_time"].startswith("2026-05-17T20:00:00")
+    assert payload.get("location_name") in {None, ""}
+
+
+def test_conductor_protects_timed_dating_when_llm_misreads_as_reschedule() -> None:
+    result = run_conductor(
+        "明天晚上6点去约会",
+        now=datetime(2026, 5, 15, 9, 0),
+        external_context={"active_target": {"proposal_id": 101, "proposal_type": "event_creation"}},
+        semantic_extractor=StaticUnderstandingExtractor(
+            {
+                "intent": "reschedule_event",
+                "goal_type": "event",
+                "missing_fields": ["target_event"],
+                "ambiguities": ["target_event_not_found"],
+                "confidence": 0.88,
+            }
+        ),
+    )
+
+    assert result.decision == "proposal"
+    assert result.understanding is not None
+    assert result.understanding.intent == "create_event"
+    payload = result.proposals[0].options[0].actions[0]["payload"]
+    assert payload["title"] in {"约会", "去约会"}
+    assert payload["start_time"].startswith("2026-05-16T18:00:00")
+    assert payload.get("location_name") in {None, ""}
+
+
+def test_conductor_treats_explicit_schedule_word_with_ri_cheng_as_event_not_task_schedule() -> None:
+    result = run_conductor(
+        "请帮我安排真实逐条日程03，时间是5月23号下午11点到12点，地点真实地点3",
+        now=datetime(2026, 5, 15, 9, 0),
+    )
+
+    assert result.decision == "proposal"
+    proposal = result.proposals[0]
+    assert proposal.proposal_type == "event_creation"
+    payload = proposal.options[0].actions[0]["payload"]
+    assert "真实逐条日程03" in payload["title"]
+    assert payload["location_name"] == "真实地点3"
+    assert payload["start_time"].startswith("2026-05-23T23:00:00")
+
+
+def test_conductor_reschedules_exact_numbered_event_title_with_location_update() -> None:
+    result = run_conductor(
+        "把生产级批量日程10改到5月30号晚上7点到8点，地点改到新测试地点",
+        events=[
+            _event_window(
+                10,
+                "生产级批量日程10",
+                datetime(2026, 5, 30, 17, 0),
+                datetime(2026, 5, 30, 18, 0),
+                location_name="测试地点5",
+            ),
+            _event_window(
+                11,
+                "生产级批量日程11",
+                datetime(2026, 5, 30, 18, 0),
+                datetime(2026, 5, 30, 19, 0),
+                location_name="测试地点5",
+            ),
+        ],
+    )
+
+    assert result.decision == "proposal"
+    assert result.understanding is not None
+    assert result.understanding.slots["target_id"] == 10
+    proposal = result.proposals[0]
+    assert proposal.proposal_type == "event_reschedule"
+    assert proposal.related_event_id == 10
+    assert "生产级批量日程10" in proposal.summary
+    assert "生产级批量日程11" not in proposal.summary
+    action = proposal.options[0].actions[0]
+    assert action["type"] == "reschedule_event"
+    assert action["payload"]["event_id"] == 10
+    update = action["payload"]["update"]
+    assert datetime.fromisoformat(update["start_time"]) == datetime(2026, 5, 30, 19, 0)
+    assert datetime.fromisoformat(update["end_time"]) == datetime(2026, 5, 30, 20, 0)
+    assert update["location_name"] == "新测试地点"
+
+
+def test_conductor_reschedule_destination_date_does_not_hide_exact_title_target() -> None:
+    result = run_conductor(
+        "把真实逐条日程10改到6月20号16:00到17:00，地点改到最终测试地点A",
+        events=[
+            _event_window(
+                10,
+                "处理真实逐条日程10",
+                datetime(2026, 5, 30, 9, 0),
+                datetime(2026, 5, 30, 10, 0),
+                location_name="真实地点3",
+            ),
+            _event_window(
+                51,
+                "参加真实逐条日程51",
+                datetime(2026, 6, 20, 10, 0),
+                datetime(2026, 6, 20, 11, 0),
+                location_name="真实地点2",
+            ),
+            _event_window(
+                52,
+                "真实逐条日程52",
+                datetime(2026, 6, 20, 11, 0),
+                datetime(2026, 6, 20, 12, 0),
+                location_name="真实地点3",
+            ),
+        ],
+    )
+
+    assert result.decision == "proposal"
+    proposal = result.proposals[0]
+    assert proposal.proposal_type == "event_reschedule"
+    assert proposal.related_event_id == 10
+    action = proposal.options[0].actions[0]
+    assert action["payload"]["event_id"] == 10
+    update = action["payload"]["update"]
+    assert update["start_time"].startswith("2026-06-20T16:00:00")
+    assert update["location_name"] == "最终测试地点A"
+
+
+def test_conductor_protects_reschedule_when_llm_misreads_numbered_update_as_creation() -> None:
+    result = run_conductor(
+        "把生产级批量日程10改到5月30号晚上7点到8点，地点改到新测试地点",
+        events=[
+            _event_window(
+                10,
+                "生产级批量日程10",
+                datetime(2026, 5, 30, 17, 0),
+                datetime(2026, 5, 30, 18, 0),
+                location_name="测试地点5",
+            )
+        ],
+        semantic_extractor=StaticUnderstandingExtractor(
+            {
+                "intent": "create_event",
+                "goal_type": "event",
+                "title": "生产级批量日程10",
+                "start_time": "2026-05-30T19:00:00",
+                "end_time": "2026-05-30T20:00:00",
+                "location_name": "新测试地点",
+                "missing_fields": [],
+                "ambiguities": [],
+                "confidence": 0.95,
+            }
+        ),
+    )
+
+    assert result.decision == "proposal"
+    assert result.understanding is not None
+    assert result.understanding.intent == "reschedule_event"
+    proposal = result.proposals[0]
+    assert proposal.proposal_type == "event_reschedule"
+    assert proposal.related_event_id == 10
+    action = proposal.options[0].actions[0]
+    assert action["type"] == "reschedule_event"
+    assert action["payload"]["event_id"] == 10
 
 
 def test_conductor_clarifies_ambiguous_event_update_target() -> None:
@@ -1490,6 +1846,58 @@ def test_assistant_service_persists_conductor_proposals_in_proposal_mode() -> No
     assert target_session_id == 1
     assert target_payload["active_proposal_id"] == 101
     assert target_payload["state_json"]["active_target"]["proposal_id"] == 101
+
+
+def test_assistant_service_persists_and_injects_event_conversation_state() -> None:
+    service = AssistantService()
+    service.settings.assistant_conductor_mode = "proposal"
+    active_target_payloads = []
+
+    class FakeThreadStateRepository:
+        state = None
+
+        async def get_active_target_state(self, *, user_id, session_id):
+            return self.state
+
+        async def upsert_active_target_state(self, *, user_id, session_id, payload):
+            active_target_payloads.append((user_id, session_id, payload))
+            self.state = SimpleNamespace(id=404, updated_at=datetime(2026, 5, 15, 9, 0), **payload)
+            return self.state
+
+    service.thread_state_repository = FakeThreadStateRepository()  # type: ignore[assignment]
+    result = run_conductor("下个月的一号去学校", now=datetime(2026, 5, 15, 9, 0))
+
+    asyncio.run(
+        service._persist_conversation_state_from_conductor(
+            user_id="demo-user",
+            session_id=1,
+            result=result,
+            user_message="下个月的一号去学校",
+            external_context={},
+        )
+    )
+
+    assert active_target_payloads
+    payload = active_target_payloads[-1][2]
+    state_json = payload["state_json"]
+    conversation_state = state_json["conversation_state"]
+    active_goal = conversation_state["active_goal"]
+    assert active_goal["type"] == "create_event"
+    assert active_goal["status"] == "collecting_slots"
+    assert active_goal["known_slots"]["title"] == "去学校"
+    assert active_goal["known_slots"]["location_name"] == "学校"
+    assert active_goal["known_slots"]["date"] == "2026-06-01"
+    assert "start_time" in active_goal["missing_fields"]
+
+    enriched = asyncio.run(
+        service._with_active_target_context(
+            user_id="demo-user",
+            session_id=1,
+            external_context={},
+        )
+    )
+
+    assert enriched["conversation_state"]["active_goal"]["known_slots"]["title"] == "去学校"
 
 
 def test_assistant_service_confirms_active_proposal_from_text() -> None:
@@ -3272,6 +3680,96 @@ def test_send_message_stream_proposal_mode_progress_followup_empty_state_stays_o
         assert chunks[-1]["type"] == "done"
         assert chunks[-1]["full_reply"] == "目前没有新的进度变化。"
         assert messages[-1]["role"] == "assistant"
+
+    asyncio.run(scenario())
+
+
+def test_send_message_stream_persists_inline_blocks_from_proposal_protocol() -> None:
+    async def scenario() -> None:
+        service = AssistantService()
+        messages = []
+
+        class FakeRepository:
+            async def create_message(self, **kwargs):
+                messages.append(kwargs)
+                return SimpleNamespace(id=len(messages), **kwargs)
+
+            async def list_messages(self, session_id):
+                return []
+
+        async def fake_resolve_session(**_kwargs):
+            return SimpleNamespace(id=1, title="Chat", context_json={})
+
+        async def fake_list_events(**_kwargs):
+            return []
+
+        async def fake_get_profile(_user_id):
+            return SimpleNamespace(timezone="Asia/Shanghai")
+
+        async def fake_list_tasks(**_kwargs):
+            return []
+
+        async def fake_build_external_context(**_kwargs):
+            return {}
+
+        async def fake_with_memory_context(**kwargs):
+            return kwargs["external_context"]
+
+        async def fake_with_active_target(**kwargs):
+            return kwargs["external_context"]
+
+        async def fake_protocol(**_kwargs):
+            proposal = SimpleNamespace(
+                id=202,
+                status="pending",
+                proposal_type="event_creation",
+                summary="建议创建修订后的日程",
+                recommended_option_id="A",
+                selected_option_id=None,
+                payload_json={
+                    "protocol_label": "P1",
+                    "options": [
+                        {
+                            "option_id": "A",
+                            "title": "改到晚上8点",
+                            "summary": "今晚 20:00-21:00",
+                            "actions": [],
+                        }
+                    ],
+                },
+            )
+            service._queue_inline_render_block_from_proposal(proposal)
+            return "我已根据你的修改生成新的待确认方案，旧方案不会再执行。"
+
+        async def noop_autorename(**_kwargs):
+            return None
+
+        service.repository = FakeRepository()  # type: ignore[assignment]
+        service._resolve_session = fake_resolve_session  # type: ignore[method-assign]
+        service.event_repository.list_events = fake_list_events  # type: ignore[method-assign]
+        service.profile_repository.get_profile = fake_get_profile  # type: ignore[method-assign]
+        service.task_service.list_tasks = fake_list_tasks  # type: ignore[method-assign]
+        service._build_external_context = fake_build_external_context  # type: ignore[method-assign]
+        service._with_assistant_memory_context = fake_with_memory_context  # type: ignore[method-assign]
+        service._with_active_target_context = fake_with_active_target  # type: ignore[method-assign]
+        service._maybe_handle_proposal_text_protocol = fake_protocol  # type: ignore[method-assign]
+        service._maybe_autorename_session = noop_autorename  # type: ignore[method-assign]
+
+        chunks = [
+            chunk
+            async for chunk in service.send_message_stream(
+                user_id="demo-user",
+                payload=AssistantMessageCreate(session_id=1, message="把方案A改到晚上8点"),
+            )
+        ]
+
+        done = chunks[-1]
+        assistant_message = messages[-1]
+        assert done["type"] == "done"
+        assert done["render_blocks"][0]["type"] == "proposal_options"
+        assert done["render_blocks"][0]["payload"]["proposal_id"] == 202
+        assert assistant_message["role"] == "assistant"
+        assert assistant_message["render_blocks_json"] == done["render_blocks"]
 
     asyncio.run(scenario())
 
