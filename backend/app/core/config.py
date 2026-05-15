@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     project_version: str = "0.1.0"
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     slow_request_threshold_ms: int = Field(default=1200, alias="SLOW_REQUEST_THRESHOLD_MS")
+    debug_console_enabled: bool = Field(default=False, alias="DEBUG_CONSOLE_ENABLED")
     cors_allowed_origins: str = Field(
         default=(
             "http://localhost:5173,http://127.0.0.1:5173,"

@@ -228,6 +228,7 @@ def test_conductor_falls_back_to_location_before_group_meeting_verb() -> None:
     assert payload["title"] == "开组会"
     assert payload["location_name"] == "学校"
     assert proposal.options[0].rationale == "结束时间未明确，先按 1 小时估算，可在确认前修改。"
+    assert "默认1小时" in (result.reply or "")
 
 
 def test_conductor_falls_back_to_location_after_chinese_time_range_separator() -> None:
@@ -422,6 +423,34 @@ def test_conductor_clarifies_school_medical_location_conflict() -> None:
     assert "medical_location_conflict" in result.understanding.ambiguities
     assert "校医院" in (result.reply or "")
     assert "校外医院" in (result.reply or "")
+
+
+def test_conductor_allows_school_medical_event_when_place_alias_is_confirmed() -> None:
+    result = run_conductor(
+        "后天上午去学校体检",
+        external_context={
+            "assistant_memory": {
+                "source": "confirmed_long_term_memory",
+                "places": ["学校: 学校 = 测试学校地址"],
+            }
+        },
+        semantic_extractor=StaticUnderstandingExtractor(
+            {
+                "intent": "create_event",
+                "goal_type": "event",
+                "title": "体检",
+                "location_name": "学校",
+                "confidence": 0.92,
+            }
+        ),
+    )
+
+    assert result.decision == "proposal"
+    assert result.proposals
+    assert "medical_location_conflict" not in (result.understanding.ambiguities if result.understanding else [])
+    payload = result.proposals[0].options[0].actions[0]["payload"]
+    assert payload["title"] == "体检"
+    assert payload["location_name"] == "学校"
 
 
 def test_conductor_uses_medical_location_clarification_reply_as_event_context() -> None:

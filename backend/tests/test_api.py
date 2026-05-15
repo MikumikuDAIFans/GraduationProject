@@ -5,11 +5,14 @@ from datetime import datetime, timezone
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import OperationalError
 
 from app.api import deps
 from app.api.routes import assistant as assistant_routes
+from app.api.routes import debug as debug_routes
 from app.api.router import api_router
 from app.main import create_app
+from app.services.debug_observability import debug_observability
 
 
 class FakeAssistantService:
@@ -517,6 +520,75 @@ def test_health_endpoint() -> None:
     assert "enabled" in ai_response.json()
     assert perf_response.status_code == 200
     assert "avg_request_ms" in perf_response.json()
+
+
+def test_debug_observability_endpoints() -> None:
+    debug_observability.clear()
+    debug_observability.record_llm_trace(
+        provider="deepseek",
+        model="model",
+        purpose="api-test",
+        status="success",
+        request_payload={"api_key": "sk-secret", "prompt": "hello"},
+        raw_response={"choices": [{"message": {"content": "ok"}}]},
+        parsed_result={"text": "ok"},
+    )
+    client = TestClient(create_app())
+
+    overview = client.get("/api/debug/system/overview")
+    traces = client.get("/api/debug/llm/traces")
+    trace_id = traces.json()["items"][0]["trace_id"]
+    trace = client.get(f"/api/debug/llm/traces/{trace_id}")
+    websocket = client.get("/api/debug/websocket/summary")
+    database = client.get("/api/debug/database/summary")
+    sample = client.post("/api/debug/llm/traces/sample")
+
+    assert overview.status_code == 200
+    assert overview.json()["llm"]["total"] >= 1
+    assert traces.status_code == 200
+    assert traces.json()["items"][0]["request_payload_redacted"]["api_key"] == "[REDACTED]"
+    assert trace.status_code == 200
+    assert trace.json()["trace_id"] == trace_id
+    assert websocket.status_code == 200
+    assert "active_connections" in websocket.json()
+    assert database.status_code == 200
+    assert "counts" in database.json()
+    assert sample.status_code == 200
+    assert sample.json()["request_payload_redacted"]["api_key"] == "[REDACTED]"
+    assert sample.json()["request_payload_redacted"]["Authorization"] == "[REDACTED]"
+
+
+def test_debug_database_summary_degrades_when_table_missing(monkeypatch) -> None:
+    async def fail_scalar(*_args, **_kwargs):
+        raise OperationalError("select count(*)", {}, Exception("no such table"))
+
+    async def noop_rollback(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("sqlalchemy.ext.asyncio.AsyncSession.scalar", fail_scalar)
+    monkeypatch.setattr("sqlalchemy.ext.asyncio.AsyncSession.rollback", noop_rollback)
+
+    client = TestClient(create_app())
+    response = client.get("/api/debug/database/summary")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "degraded"
+    assert body["counts"]["events"] == -1
+    assert "events" in body["errors"]
+
+
+def test_debug_endpoints_hidden_in_production_without_flag(monkeypatch) -> None:
+    class ProductionSettings:
+        app_env = "production"
+        debug_console_enabled = False
+
+    monkeypatch.setattr(debug_routes, "get_settings", lambda: ProductionSettings())
+
+    client = TestClient(create_app())
+    response = client.get("/api/debug/system/overview")
+
+    assert response.status_code == 404
 
 
 def test_cors_allows_localhost_dev_ports() -> None:

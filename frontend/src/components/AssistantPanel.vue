@@ -388,7 +388,9 @@ function markProposalSubmitted(proposalId: number) {
 
 function sendProposalPrompt(proposal: AssistantProposal, message: string) {
   markProposalSubmitted(proposal.id);
+  draft.value = message;
   emit("send", message);
+  draft.value = "";
 }
 
 function sendMemoryPrompt(candidate: AssistantMemoryCandidate, message: string) {
@@ -634,6 +636,98 @@ watch(
             >
               {{ t("assistantPanel.rejectMemoryCandidate") }}
             </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="visibleProposals.length || loadingProposals" class="shrink-0 border-b border-border bg-surface-2 px-3 py-3">
+      <div class="mb-2 flex items-center justify-between gap-3">
+        <p class="text-xs font-semibold text-ink">{{ t("assistantPanel.pendingProposals") }}</p>
+        <span v-if="loadingProposals" class="text-[10px] text-ink-3">{{ t("common.loading") }}</span>
+      </div>
+
+      <div class="assistant-proposal-list max-h-40 space-y-2 overflow-y-auto sm:max-h-56">
+        <div
+          v-for="proposal in visibleProposals"
+          :key="proposal.id"
+          class="rounded-lg border border-border bg-white px-3 py-2.5 shadow-card"
+        >
+          <div class="flex items-start justify-between gap-2">
+            <div class="min-w-0">
+              <div class="flex flex-wrap items-center gap-1.5">
+                <span class="text-[10px] font-bold uppercase tracking-widest text-accent">
+                  {{ proposalProtocolLabel(proposal) }}
+                </span>
+                <span class="rounded-full border px-2 py-0.5 text-[10px] font-semibold" :class="proposalStatusClass(proposal.status)">
+                  {{ proposalStatusLabel(proposal.status) }}
+                </span>
+              </div>
+              <p class="assistant-proposal-summary mt-1 text-xs font-semibold leading-snug text-ink">
+                {{ proposal.summary }}
+              </p>
+            </div>
+          </div>
+
+          <div v-if="proposalOptions(proposal).length" class="mt-2 space-y-1.5 border-t border-border pt-2">
+            <div
+              v-for="option in proposalOptions(proposal)"
+              :key="option.option_id"
+              class="rounded-lg border border-border bg-surface-2 px-2.5 py-1.5"
+            >
+              <p class="assistant-proposal-option-title text-[11px] font-semibold text-ink">
+                {{ option.option_id }}. {{ option.title }}
+              </p>
+              <p class="assistant-proposal-detail mt-0.5 text-[11px] leading-snug text-ink-3">
+                {{ option.summary }}
+              </p>
+              <p v-if="option.rationale" class="assistant-proposal-rationale mt-0.5 text-[10px] leading-snug text-ink-3">
+                {{ option.rationale }}
+              </p>
+            </div>
+          </div>
+
+          <div class="mt-2 flex flex-wrap gap-2 border-t border-border pt-2">
+            <button
+              v-for="option in proposalOptions(proposal)"
+              :key="`confirm-${proposal.id}-${option.option_id}`"
+              type="button"
+              class="rounded-lg bg-positive px-2.5 py-1 text-[11px] font-semibold text-white transition hover:bg-positive-hover disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="sending || proposalBusyId === proposal.id || !canConfirmProposal(proposal)"
+              @click="sendProposalPrompt(proposal, buildProposalConfirmPrompt(proposal, option.option_id))"
+            >
+              {{ t("common.confirm") }} {{ option.option_id }}
+            </button>
+            <button
+              v-if="proposal.status === 'execution_failed'"
+              type="button"
+              class="rounded-lg border border-warn/30 px-2.5 py-1 text-[11px] font-semibold text-warn transition hover:bg-warn-light disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="sending || proposalBusyId === proposal.id"
+              @click="sendProposalPrompt(proposal, buildProposalRetryPrompt(proposal))"
+            >
+              {{ t("assistantPanel.retryProposal") }}
+            </button>
+            <button
+              type="button"
+              class="rounded-lg border border-danger/20 px-2.5 py-1 text-[11px] font-semibold text-danger transition hover:bg-danger-light disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="sending || proposalBusyId === proposal.id || !canConfirmProposal(proposal)"
+              @click="sendProposalPrompt(proposal, buildProposalRejectPrompt(proposal))"
+            >
+              {{ t("assistantPanel.rejectProposal") }}
+            </button>
+          </div>
+
+          <div v-if="proposal.status === 'execution_failed'" class="mt-2 border-t border-border pt-2">
+            <p class="text-[11px] font-semibold text-danger">{{ proposal.execution_error || t("assistantPanel.proposalFailed") }}</p>
+            <div v-if="proposalExecutionSummary(proposal).length" class="mt-1 space-y-1">
+              <p
+                v-for="(action, actionIndex) in proposalExecutionSummary(proposal)"
+                :key="`${proposal.id}-execution-${actionIndex}`"
+                class="text-[10px] text-ink-3"
+              >
+                {{ action.type }}
+              </p>
+            </div>
           </div>
         </div>
       </div>

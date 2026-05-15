@@ -19,6 +19,11 @@ class WorkspaceUpdateManager:
     def __init__(self) -> None:
         self._connections: dict[str, set[WebSocket]] = defaultdict(set)
         self._lock = asyncio.Lock()
+        self._last_broadcast_at: float | None = None
+        self._last_broadcast_ms: float | None = None
+        self._last_broadcast_user_id: str | None = None
+        self._last_broadcast_socket_count = 0
+        self._broadcast_failures = 0
 
     async def connect(self, user_id: str, websocket: WebSocket) -> None:
         await websocket.accept()
@@ -67,12 +72,32 @@ class WorkspaceUpdateManager:
             
         for socket in stale:
             await self.disconnect(user_id, socket)
-            
+        self._last_broadcast_at = time.time()
+        self._last_broadcast_ms = (time.perf_counter() - start_time) * 1000
+        self._last_broadcast_user_id = user_id
+        self._last_broadcast_socket_count = len(sockets) - len(stale)
+        self._broadcast_failures += len(stale)
+
         logger.bind(component="ws.broadcast").info(
             "Broadcasted snapshot to {count} clients in {ms:.2f}ms", 
             count=len(sockets) - len(stale), 
             ms=(time.perf_counter() - start_time) * 1000
         )
+
+    def summary(self) -> dict[str, object]:
+        total_connections = sum(len(items) for items in self._connections.values())
+        return {
+            "active_connections": total_connections,
+            "users": [
+                {"user_id": user_id, "connections": len(items)}
+                for user_id, items in self._connections.items()
+            ],
+            "last_broadcast_at": self._last_broadcast_at,
+            "last_broadcast_ms": round(self._last_broadcast_ms or 0.0, 2),
+            "last_broadcast_user_id": self._last_broadcast_user_id,
+            "last_broadcast_socket_count": self._last_broadcast_socket_count,
+            "broadcast_failures": self._broadcast_failures,
+        }
 
 
 async def build_workspace_snapshot(user_id: str) -> dict[str, object]:

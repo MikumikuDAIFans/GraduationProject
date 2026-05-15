@@ -885,7 +885,12 @@ class UnderstandingSpecialist:
             ambiguities.append("event_time_window_too_broad")
         elif not location_name and re.search(r"去|到|在", message):
             ambiguities.append("location_unclear")
-        if location_name and re.search(r"体检|看医生|就医|医院|门诊|诊所", message) and re.search(r"学校", location_name):
+        if (
+            location_name
+            and re.search(r"体检|看医生|就医|医院|门诊|诊所", message)
+            and re.search(r"学校", location_name)
+            and not self._has_confirmed_place_alias(context, location_name)
+        ):
             ambiguities.append("medical_location_conflict")
             missing_fields.append("location_detail")
             can_propose = False
@@ -921,6 +926,26 @@ class UnderstandingSpecialist:
             language=language,
             orchestration=orchestration,
         )
+
+    def _has_confirmed_place_alias(self, context: AssistantAgentContext, location_name: str | None) -> bool:
+        if not location_name:
+            return False
+        assistant_memory = (context.external_context or {}).get("assistant_memory")
+        if not isinstance(assistant_memory, dict):
+            return False
+        entries = assistant_memory.get("places")
+        if not isinstance(entries, list):
+            return False
+        alias_pattern = re.escape(location_name.strip())
+        for raw_entry in entries:
+            if not isinstance(raw_entry, str):
+                continue
+            entry = raw_entry.strip()
+            if re.search(rf"(?:^|[:：\s]){alias_pattern}\s*(?:=|＝|是|位于|在)\s*", entry):
+                return True
+            if re.search(rf"^.*?-\s*{alias_pattern}\s*(?:=|＝|是|位于|在)\s*", entry):
+                return True
+        return False
 
     async def _extract_message_semantics_with_llm(
         self,

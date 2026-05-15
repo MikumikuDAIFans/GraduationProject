@@ -44,6 +44,8 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 
 async def init_db(engine: AsyncEngine | None = None) -> None:
     """Create all tables for a fresh local database."""
+    from app import models as _models  # noqa: F401
+
     active_engine = engine or get_engine()
     async with active_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

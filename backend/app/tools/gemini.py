@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator
 
@@ -13,6 +14,7 @@ from loguru import logger
 from app.core.config import get_settings
 from app.core.error_handler import GeminiAPIError
 from app.schemas.assistant_understanding import validate_message_understanding_payload
+from app.services.debug_observability import debug_observability
 
 
 class GeminiClient:
@@ -29,6 +31,7 @@ class GeminiClient:
 
     def __init__(self) -> None:
         self.settings = get_settings()
+        self.trace_context: dict[str, Any] = {}
 
     @property
     def enabled(self) -> bool:
@@ -215,6 +218,7 @@ class GeminiClient:
             if not self._provider_enabled(provider):
                 continue
             try:
+                self.trace_context["_fallback_attempt"] = bool(errors)
                 if provider == "deepseek":
                     return await self._generate_text_deepseek(prompt)
                 if provider == "gemini":
@@ -228,7 +232,20 @@ class GeminiClient:
                     error=str(exc),
                 )
                 continue
+            finally:
+                self.trace_context.pop("_fallback_attempt", None)
         self.__class__._last_generation_failed_all = True
+        debug_observability.record_llm_trace(
+            provider="all",
+            model="configured-provider-chain",
+            purpose=self.trace_context.get("purpose") or "generate_text",
+            status="fallback_failed",
+            request_payload={"prompt": prompt, "provider_order": self._provider_order()},
+            error="; ".join(errors or ["no configured provider"]),
+            request_id=self.trace_context.get("request_id"),
+            session_id=self.trace_context.get("session_id"),
+            message_id=self.trace_context.get("message_id"),
+        )
         raise GeminiAPIError(
             "AI 服务暂时不可用，所有已配置模型都调用失败。",
             details={"errors": errors or ["no configured provider"]},
@@ -329,6 +346,7 @@ class GeminiClient:
                 details={"circuit_open_until": self._circuit_open_until.isoformat() if self._circuit_open_until else None},
             )
         for attempt in range(1, max_retries + 1):
+            started_at = time.perf_counter()
             try:
                 async with httpx.AsyncClient(timeout=timeout) as client:
                     response = await client.post(
@@ -340,11 +358,39 @@ class GeminiClient:
                         json=payload,
                     )
                     response.raise_for_status()
+                    data = response.json()
                     self._record_success()
-                    return response.json()
+                    debug_observability.record_llm_trace(
+                        provider=provider,
+                        model=model,
+                        purpose=self.trace_context.get("purpose") or "openai_chat",
+                        status="fallback_success" if self.trace_context.get("_fallback_attempt") else "success",
+                        request_payload=payload,
+                        raw_response=data,
+                        parsed_result=self._extract_openai_text_preview(data),
+                        attempt=attempt,
+                        started_at=started_at,
+                        request_id=self.trace_context.get("request_id"),
+                        session_id=self.trace_context.get("session_id"),
+                        message_id=self.trace_context.get("message_id"),
+                    )
+                    return data
             except (httpx.TimeoutException, httpx.HTTPError, json.JSONDecodeError) as exc:
                 last_error = exc
                 self._record_failure(max_failures=max_retries)
+                debug_observability.record_llm_trace(
+                    provider=provider,
+                    model=model,
+                    purpose=self.trace_context.get("purpose") or "openai_chat",
+                    status="timeout" if isinstance(exc, httpx.TimeoutException) else "error",
+                    request_payload=payload,
+                    error=str(exc),
+                    attempt=attempt,
+                    started_at=started_at,
+                    request_id=self.trace_context.get("request_id"),
+                    session_id=self.trace_context.get("session_id"),
+                    message_id=self.trace_context.get("message_id"),
+                )
                 if attempt >= max_retries:
                     break
                 logger.bind(component="llm", provider=provider, model=model).warning(
@@ -369,6 +415,7 @@ class GeminiClient:
                 details={"circuit_open_until": self._circuit_open_until.isoformat() if self._circuit_open_until else None},
             )
         for attempt in range(1, self.settings.gemini_max_retries + 1):
+            started_at = time.perf_counter()
             try:
                 async with httpx.AsyncClient(timeout=timeout) as client:
                     response = await client.post(
@@ -377,11 +424,39 @@ class GeminiClient:
                         json=payload,
                     )
                     response.raise_for_status()
+                    data = response.json()
                     self._record_success()
-                    return response.json()
+                    debug_observability.record_llm_trace(
+                        provider="gemini",
+                        model=self.settings.gemini_model,
+                        purpose=self.trace_context.get("purpose") or "gemini",
+                        status="fallback_success" if self.trace_context.get("_fallback_attempt") else "success",
+                        request_payload=payload,
+                        raw_response=data,
+                        parsed_result=self._extract_gemini_text_preview(data),
+                        attempt=attempt,
+                        started_at=started_at,
+                        request_id=self.trace_context.get("request_id"),
+                        session_id=self.trace_context.get("session_id"),
+                        message_id=self.trace_context.get("message_id"),
+                    )
+                    return data
             except (httpx.TimeoutException, httpx.HTTPError, json.JSONDecodeError) as exc:
                 last_error = exc
                 self._record_failure(max_failures=self.settings.gemini_max_retries)
+                debug_observability.record_llm_trace(
+                    provider="gemini",
+                    model=self.settings.gemini_model,
+                    purpose=self.trace_context.get("purpose") or "gemini",
+                    status="timeout" if isinstance(exc, httpx.TimeoutException) else "error",
+                    request_payload=payload,
+                    error=str(exc),
+                    attempt=attempt,
+                    started_at=started_at,
+                    request_id=self.trace_context.get("request_id"),
+                    session_id=self.trace_context.get("session_id"),
+                    message_id=self.trace_context.get("message_id"),
+                )
                 if attempt >= self.settings.gemini_max_retries:
                     break
                 logger.bind(component="gemini").warning(
@@ -419,6 +494,20 @@ class GeminiClient:
             cls._consecutive_failures = 0
             return False
         return True
+
+    def _extract_openai_text_preview(self, data: dict[str, Any]) -> dict[str, Any]:
+        choices = data.get("choices") or []
+        if not choices:
+            return {"text": None}
+        message = choices[0].get("message") or {}
+        return {"text": message.get("content") or choices[0].get("text")}
+
+    def _extract_gemini_text_preview(self, data: dict[str, Any]) -> dict[str, Any]:
+        candidates = data.get("candidates") or []
+        if not candidates:
+            return {"text": None}
+        parts = candidates[0].get("content", {}).get("parts", [])
+        return {"text": "".join(part.get("text", "") for part in parts if part.get("text"))}
 
     def _build_event_semantics_prompt(
         self,
@@ -675,4 +764,18 @@ User message:
         if candidate.startswith("```"):
             candidate = candidate.strip("`")
             candidate = candidate.replace("json", "", 1).strip()
-        return json.loads(candidate)
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            debug_observability.record_llm_trace(
+                provider="parser",
+                model="json",
+                purpose=self.trace_context.get("purpose") or "parse_json",
+                status="parse_error",
+                raw_response=text,
+                error=str(exc),
+                request_id=self.trace_context.get("request_id"),
+                session_id=self.trace_context.get("session_id"),
+                message_id=self.trace_context.get("message_id"),
+            )
+            raise

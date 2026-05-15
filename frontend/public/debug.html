@@ -3,809 +3,608 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Personal Affairs Assistant - Debug Console</title>
+  <title>Debug Console</title>
   <link rel="icon" href="data:,">
   <style>
     :root {
-      --bg-primary: #f8fafc;
-      --bg-secondary: #ffffff;
-      --bg-tertiary: #f1f5f9;
-      --bg-hover: #e2e8f0;
-      --text-primary: #0f172a;
-      --text-secondary: #64748b;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --panel-2: #eef2f6;
+      --line: #d9e0e8;
+      --text: #111827;
+      --muted: #667085;
       --accent: #2563eb;
-      --success: #059669;
-      --warning: #d97706;
-      --error: #dc2626;
-      --border: #dbe2ea;
-      --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
-      --shadow-md: 0 10px 24px rgba(15, 23, 42, 0.08);
+      --ok: #047857;
+      --warn: #b45309;
+      --bad: #b91c1c;
+      --shadow: 0 8px 22px rgba(15, 23, 42, 0.08);
     }
-    
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    
+
+    * { box-sizing: border-box; }
     body {
-      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-      background: var(--bg-primary);
-      color: var(--text-primary);
-      line-height: 1.6;
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
     }
-    
-    .header {
-      background: var(--bg-secondary);
-      border-bottom: 1px solid var(--border);
-      padding: 1rem 2rem;
+    button, input, select { font: inherit; }
+    code, pre { font-family: Consolas, "SFMono-Regular", monospace; }
+
+    .shell { min-height: 100vh; display: flex; flex-direction: column; }
+    .topbar {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      box-shadow: var(--shadow-sm);
+      gap: 16px;
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+      position: sticky;
+      top: 0;
+      z-index: 5;
     }
-    
-    .header h1 {
-      font-size: 1.25rem;
-      font-weight: 600;
+    .brand h1 { margin: 0; font-size: 18px; }
+    .brand p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+    .top-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .status-pill {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 5px 10px;
+      font-size: 12px;
+      color: var(--muted);
+      background: var(--panel-2);
     }
-    
-    .header .status {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
+    .status-pill.ok { color: var(--ok); background: #ecfdf5; border-color: #bbf7d0; }
+    .status-pill.bad { color: var(--bad); background: #fef2f2; border-color: #fecaca; }
+    .btn {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 7px 10px;
+      background: var(--panel);
+      color: var(--text);
+      cursor: pointer;
     }
-    
-    .status-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      animation: pulse 2s infinite;
+    .btn:hover { border-color: var(--accent); }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: white; }
+    .btn.danger { color: var(--bad); border-color: #fecaca; background: #fff7f7; }
+
+    .layout { display: grid; grid-template-columns: 270px minmax(0, 1fr); min-height: 0; flex: 1; }
+    .sidebar {
+      border-right: 1px solid var(--line);
+      background: var(--panel);
+      padding: 14px;
+      overflow-y: auto;
     }
-    
-    .status-dot.connected { background: var(--success); }
-    .status-dot.disconnected { background: var(--error); }
-    
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.5; }
+    .sidebar h2 { margin: 14px 0 8px; font-size: 12px; text-transform: uppercase; color: var(--muted); letter-spacing: .06em; }
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      margin-bottom: 8px;
+      background: var(--panel-2);
     }
-    
+    .metric .label { color: var(--muted); font-size: 12px; }
+    .metric .value { font-size: 22px; font-weight: 700; margin-top: 2px; overflow-wrap: anywhere; }
+    .metric .value.ok { color: var(--ok); }
+    .metric .value.warn { color: var(--warn); }
+    .metric .value.bad { color: var(--bad); }
+
     .tabs {
       display: flex;
-      background: var(--bg-secondary);
-      border-bottom: 1px solid var(--border);
-      padding: 0 2rem;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
     }
-    
     .tab {
-      padding: 0.75rem 1.5rem;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 7px 11px;
+      background: var(--panel);
       cursor: pointer;
-      border-bottom: 2px solid transparent;
-      transition: all 0.2s;
-      color: var(--text-secondary);
+      color: var(--muted);
+      font-size: 13px;
     }
-    
-    .tab:hover { color: var(--text-primary); background: rgba(37, 99, 235, 0.04); }
-    .tab.active {
-      color: var(--accent);
-      border-bottom-color: var(--accent);
-    }
-    
-    .main {
-      display: flex;
-      height: calc(100vh - 120px);
-    }
-    
-    .sidebar {
-      width: 280px;
-      background: var(--bg-secondary);
-      border-right: 1px solid var(--border);
-      padding: 1rem;
-      overflow-y: auto;
-      box-shadow: inset -1px 0 0 rgba(15, 23, 42, 0.03);
-    }
-    
-    .sidebar h3 {
-      font-size: 0.875rem;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: var(--text-secondary);
-      margin-bottom: 0.75rem;
-    }
-    
-    .metric-card {
-      background: var(--bg-tertiary);
-      border-radius: 0.5rem;
-      padding: 0.75rem;
-      margin-bottom: 0.75rem;
-      border: 1px solid var(--border);
-      box-shadow: var(--shadow-sm);
-    }
-    
-    .metric-card .label {
-      font-size: 0.75rem;
-      color: var(--text-secondary);
-      margin-bottom: 0.25rem;
-    }
-    
-    .metric-card .value {
-      font-size: 1.5rem;
-      font-weight: 700;
-      font-family: 'Consolas', 'Monaco', monospace;
-    }
-    
-    .metric-card .value.success { color: var(--success); }
-    .metric-card .value.warning { color: var(--warning); }
-    .metric-card .value.error { color: var(--error); }
-    
-    .content {
-      flex: 1;
-      padding: 1rem 2rem;
-      overflow-y: auto;
-    }
-    
-    .panel { display: none; }
+    .tab.active { color: white; background: var(--accent); border-color: var(--accent); }
+    .content { min-width: 0; overflow: auto; }
+    .panel { display: none; padding: 16px; }
     .panel.active { display: block; }
-    
-    .log-entry {
-      padding: 0.5rem 0;
-      border-bottom: 1px solid var(--border);
-      font-family: 'Consolas', 'Monaco', monospace;
-      font-size: 0.875rem;
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      overflow: hidden;
     }
-    
-    .log-entry .timestamp {
-      color: var(--text-secondary);
-      margin-right: 0.5rem;
-    }
-    
-    .log-entry .level {
-      display: inline-block;
-      padding: 0.125rem 0.5rem;
-      border-radius: 0.25rem;
-      font-size: 0.75rem;
-      font-weight: 600;
-      margin-right: 0.5rem;
-    }
-    
-    .log-entry .level.info { background: #dbeafe; color: #1d4ed8; }
-    .log-entry .level.warn { background: #fef3c7; color: #b45309; }
-    .log-entry .level.error { background: #fee2e2; color: #b91c1c; }
-    .log-entry .level.debug { background: #e2e8f0; color: #334155; }
-    
-    .btn {
-      padding: 0.5rem 1rem;
-      border: none;
-      border-radius: 0.375rem;
-      cursor: pointer;
-      font-weight: 500;
-      transition: all 0.2s;
-    }
-    
-    .btn-primary {
-      background: var(--accent);
-      color: white;
-      box-shadow: var(--shadow-sm);
-    }
-    
-    .btn-primary:hover { background: #2563eb; }
-    
-    .btn-danger {
-      background: var(--error);
-      color: white;
-      box-shadow: var(--shadow-sm);
-    }
-    
-    .btn-danger:hover { background: #dc2626; }
-    
-    .btn-secondary {
-      background: var(--bg-tertiary);
-      color: var(--text-primary);
-      border: 1px solid var(--border);
-    }
-    
-    .btn-secondary:hover { background: var(--bg-hover); }
-    
-    .request-item {
-      background: var(--bg-tertiary);
-      border-radius: 0.5rem;
-      padding: 1rem;
-      margin-bottom: 0.75rem;
-      border-left: 3px solid var(--accent);
-      border: 1px solid var(--border);
-      box-shadow: var(--shadow-sm);
-    }
-    
-    .request-item.slow { border-left-color: var(--warning); }
-    .request-item.failed { border-left-color: var(--error); }
-    
-    .request-header {
+    .card h3 {
+      margin: 0;
+      padding: 12px;
+      border-bottom: 1px solid var(--line);
+      font-size: 14px;
       display: flex;
       justify-content: space-between;
-      align-items: center;
-      margin-bottom: 0.5rem;
+      gap: 10px;
     }
-    
-    .request-method {
-      font-weight: 600;
-      font-size: 0.875rem;
+    .card-body { padding: 12px; }
+    .toolbar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+    .toolbar input, .toolbar select {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 10px;
+      background: white;
+      min-width: 180px;
     }
-    
-    .request-duration {
-      font-family: monospace;
-      font-size: 0.875rem;
+    .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: white; }
+    table { width: 100%; border-collapse: collapse; min-width: 680px; }
+    th, td { padding: 9px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; font-size: 13px; }
+    th { color: var(--muted); background: #f9fafb; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+    tr:last-child td { border-bottom: 0; }
+    .badge { display: inline-block; border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 700; }
+    .badge.ok { color: var(--ok); background: #ecfdf5; }
+    .badge.warn { color: var(--warn); background: #fffbeb; }
+    .badge.bad { color: var(--bad); background: #fef2f2; }
+    .badge.neutral { color: var(--muted); background: var(--panel-2); }
+    details { border: 1px solid var(--line); border-radius: 8px; background: white; margin-bottom: 8px; }
+    summary { cursor: pointer; padding: 10px 12px; font-weight: 600; }
+    pre {
+      margin: 0;
+      padding: 12px;
+      overflow: auto;
+      max-height: 460px;
+      background: #0f172a;
+      color: #e5e7eb;
+      font-size: 12px;
+      line-height: 1.55;
     }
-    
-    .request-path {
-      color: var(--text-secondary);
-      font-size: 0.875rem;
+    .empty { color: var(--muted); padding: 20px; text-align: center; }
+    .mono { font-family: Consolas, "SFMono-Regular", monospace; font-size: 12px; overflow-wrap: anywhere; }
+    .split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+
+    @media (max-width: 860px) {
+      .layout { grid-template-columns: 1fr; }
+      .sidebar { border-right: 0; border-bottom: 1px solid var(--line); }
+      .grid, .split { grid-template-columns: 1fr; }
+      .topbar { align-items: flex-start; flex-direction: column; }
+      .panel { padding: 10px; }
+      table { min-width: 560px; }
     }
-    
-    .toolbar {
-      display: flex;
-      gap: 0.5rem;
-      margin-bottom: 1rem;
-    }
-    
-    .empty-state {
-      text-align: center;
-      padding: 3rem;
-      color: var(--text-secondary);
-    }
-    
-    .empty-state svg {
-      width: 64px;
-      height: 64px;
-      margin: 0 auto 1rem;
-      opacity: 0.5;
-    }
-    
-    table {
-      width: 100%;
-      border-collapse: collapse;
-    }
-    
-    th, td {
-      padding: 0.75rem;
-      text-align: left;
-      border-bottom: 1px solid var(--border);
-    }
-    
-    th {
-      font-size: 0.75rem;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: var(--text-secondary);
-      background: #f8fafc;
-    }
-    
-    .badge {
-      display: inline-block;
-      padding: 0.125rem 0.5rem;
-      border-radius: 9999px;
-      font-size: 0.75rem;
-      font-weight: 600;
-    }
-    
-    .badge-green { background: #dcfce7; color: #166534; }
-    .badge-yellow { background: #fef3c7; color: #92400e; }
-    .badge-red { background: #fee2e2; color: #991b1b; }
   </style>
 </head>
 <body>
-  <div class="header">
-    <h1>🔧 Debug Console</h1>
-    <div class="status">
-      <div class="status-dot disconnected" id="statusDot"></div>
-      <span id="statusText">Disconnected</span>
-    </div>
-  </div>
-  
-  <div class="tabs">
-    <div class="tab active" data-tab="logs">Logs</div>
-    <div class="tab" data-tab="requests">Requests</div>
-    <div class="tab" data-tab="performance">Performance</div>
-    <div class="tab" data-tab="system">System</div>
-  </div>
-  
-  <div class="main">
-    <div class="sidebar">
-      <h3>Quick Stats</h3>
-      <div class="metric-card">
-        <div class="label">Total Requests</div>
-        <div class="value" id="totalRequests">0</div>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <h1>Debug Console</h1>
+        <p id="apiBaseLabel">API: -</p>
       </div>
-      <div class="metric-card">
-        <div class="label">Avg Response Time</div>
-        <div class="value" id="avgResponseTime">-</div>
+      <div class="top-actions">
+        <span id="connectionStatus" class="status-pill bad">Disconnected</span>
+        <span id="lastRefresh" class="status-pill">Last refresh: -</span>
+        <button class="btn primary" id="refreshBtn">Refresh</button>
+        <button class="btn" id="toggleAutoBtn">Pause auto refresh</button>
+        <button class="btn danger" id="clearBtn">Clear logs/traces</button>
       </div>
-      <div class="metric-card">
-        <div class="label">Error Rate (window)</div>
-        <div class="value" id="errorRate">-</div>
-        <div style="font-size:0.7rem;color:var(--text-secondary);margin-top:0.2rem;">All requests in log window</div>
-      </div>
-      <div class="metric-card">
-        <div class="label">Error Rate (last 5 min)</div>
-        <div class="value" id="recentErrorRate">-</div>
-        <div style="font-size:0.7rem;color:var(--text-secondary);margin-top:0.2rem;">Current live failures only</div>
-      </div>
-      <div class="metric-card">
-        <div class="label">Active Connections</div>
-        <div class="value" id="activeConnections">-</div>
-      </div>
-      
-      <h3 style="margin-top: 1.5rem;">Actions</h3>
-      <button class="btn btn-primary" style="width: 100%; margin-bottom: 0.5rem;" onclick="refreshMetrics()">Refresh Metrics</button>
-      <button class="btn btn-secondary" style="width: 100%; margin-bottom: 0.5rem;" onclick="clearLogs()">Clear Logs</button>
-      <button class="btn btn-secondary" style="width: 100%; margin-bottom: 0.5rem;" onclick="clearRequestLog()">Clear Request Log</button>
-      <button id="toggleStreamBtn" class="btn btn-danger" style="width: 100%;">Toggle Log Stream</button>
-      <div style="margin-top:1rem;padding:0.75rem;background:var(--bg-tertiary);border-radius:0.5rem;border:1px solid var(--border);font-size:0.7rem;color:var(--text-secondary);">
-        <strong style="color:var(--text-primary);">About error rates:</strong><br>
-        "Window" rate includes all historical requests in the log (may contain legacy path errors from older routes). "Last 5 min" reflects the current live session only.
-      </div>
-    </div>
-    
-    <div class="content">
-      <div class="panel active" id="logsPanel">
-        <div class="toolbar">
-          <input type="text" id="logFilter" placeholder="Filter logs..." style="flex: 1; padding: 0.5rem; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 0.375rem; color: var(--text-primary);" oninput="filterLogs()">
-          <select id="logLevelFilter" onchange="filterLogs()" style="padding: 0.5rem; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 0.375rem; color: var(--text-primary);">
-            <option value="all">All Levels</option>
-            <option value="info">Info</option>
-            <option value="warn">Warning</option>
-            <option value="error">Error</option>
-            <option value="debug">Debug</option>
-          </select>
+    </header>
+
+    <div class="layout">
+      <aside class="sidebar">
+        <h2>Overview</h2>
+        <div class="metric"><div class="label">Request error rate</div><div id="metricErrorRate" class="value">-</div></div>
+        <div class="metric"><div class="label">Recent error rate</div><div id="metricRecentErrorRate" class="value">-</div></div>
+        <div class="metric"><div class="label">Slow requests</div><div id="metricSlow" class="value">-</div></div>
+        <div class="metric"><div class="label">LLM success rate</div><div id="metricLlm" class="value">-</div></div>
+        <div class="metric"><div class="label">Active WebSocket</div><div id="metricWs" class="value">-</div></div>
+        <div class="metric"><div class="label">DB pool active</div><div id="metricDb" class="value">-</div></div>
+        <h2>Settings</h2>
+        <div class="metric">
+          <div class="label">API base</div>
+          <input id="apiBaseInput" style="width:100%;margin-top:6px;border:1px solid var(--line);border-radius:8px;padding:7px;" />
+          <button class="btn" id="saveApiBaseBtn" style="width:100%;margin-top:8px;">Save API base</button>
         </div>
-        <div id="logContainer">
-          <div class="empty-state">
-            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-            <p>No logs yet. Click "Toggle Log Stream" to start streaming.</p>
+      </aside>
+
+      <main class="content">
+        <nav class="tabs" id="tabs"></nav>
+
+        <section id="overviewPanel" class="panel active">
+          <div class="grid">
+            <div class="card"><h3>System overview</h3><div class="card-body" id="overviewSummary"></div></div>
+            <div class="card"><h3>LLM summary</h3><div class="card-body" id="llmSummary"></div></div>
+            <div class="card"><h3>WebSocket summary</h3><div class="card-body" id="wsSummary"></div></div>
+            <div class="card"><h3>Database summary</h3><div class="card-body" id="databaseSummary"></div></div>
           </div>
-        </div>
-      </div>
-      
-      <div class="panel" id="requestsPanel">
-        <div class="toolbar">
-          <input type="text" id="requestFilter" placeholder="Filter requests..." style="flex: 1; padding: 0.5rem; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 0.375rem; color: var(--text-primary);" oninput="filterRequests()">
-          <select id="requestSort" onchange="sortRequests()" style="padding: 0.5rem; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 0.375rem; color: var(--text-primary);">
-            <option value="time">Sort by Time</option>
-            <option value="duration">Sort by Duration</option>
-            <option value="status">Sort by Status</option>
-          </select>
-        </div>
-        <div id="requestContainer">
-          <div class="empty-state">
-            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-            <p>No requests recorded. Make some API calls to see them here.</p>
+        </section>
+
+        <section id="requestsPanel" class="panel">
+          <div class="toolbar">
+            <input id="requestFilter" placeholder="Filter by path/status/request id" />
+            <select id="requestSort">
+              <option value="time">Sort by time</option>
+              <option value="duration">Sort by duration</option>
+              <option value="status">Sort by status</option>
+            </select>
           </div>
-        </div>
-      </div>
-      
-      <div class="panel" id="performancePanel">
-        <h2 style="margin-bottom: 1rem;">Database Connection Pool</h2>
-        <table id="dbPoolTable">
-          <thead>
-            <tr>
-              <th>Metric</th>
-              <th>Value</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr><td>Loading...</td><td></td><td></td></tr>
-          </tbody>
-        </table>
-        
-        <h2 style="margin: 2rem 0 1rem;">Cache Statistics</h2>
-        <table id="cacheStatsTable">
-          <thead>
-            <tr>
-              <th>Metric</th>
-              <th>Value</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr><td>Loading...</td><td></td><td></td></tr>
-          </tbody>
-        </table>
-      </div>
-      
-      <div class="panel" id="systemPanel">
-        <h2 style="margin-bottom: 1rem;">System Information</h2>
-        <table id="systemInfoTable">
-          <thead>
-            <tr>
-              <th>Component</th>
-              <th>Details</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr><td>Loading...</td><td></td><td></td></tr>
-          </tbody>
-        </table>
-      </div>
+          <div id="requestsTable"></div>
+        </section>
+
+        <section id="assistantPanel" class="panel">
+          <div class="toolbar">
+            <input id="assistantSessionFilter" placeholder="Session id optional" />
+            <button class="btn" id="loadAssistantBtn">Load assistant trace</button>
+          </div>
+          <div class="split">
+            <div class="card"><h3>Messages</h3><div class="card-body" id="assistantMessages"></div></div>
+            <div class="card"><h3>Related proposals</h3><div class="card-body" id="assistantProposals"></div></div>
+          </div>
+        </section>
+
+        <section id="llmPanel" class="panel">
+          <div class="toolbar">
+            <input id="llmFilter" placeholder="Filter provider/status/purpose/text" />
+            <select id="llmStatusFilter">
+              <option value="">All statuses</option>
+              <option value="success">success</option>
+              <option value="fallback_success">fallback_success</option>
+              <option value="error">error</option>
+              <option value="timeout">timeout</option>
+              <option value="parse_error">parse_error</option>
+              <option value="fallback_failed">fallback_failed</option>
+            </select>
+            <button class="btn" id="sampleLlmTraceBtn">Add sample trace</button>
+          </div>
+          <div id="llmTraces"></div>
+        </section>
+
+        <section id="proposalsPanel" class="panel">
+          <div class="toolbar">
+            <input id="proposalDedupFilter" placeholder="Dedup key optional" />
+            <button class="btn" id="loadProposalsBtn">Load proposals</button>
+          </div>
+          <div id="proposalDiagnostics"></div>
+        </section>
+
+        <section id="websocketPanel" class="panel">
+          <div class="card"><h3>WebSocket diagnostics</h3><div class="card-body" id="wsDiagnostics"></div></div>
+        </section>
+
+        <section id="databasePanel" class="panel">
+          <div class="grid">
+            <div class="card"><h3>Database tables</h3><div class="card-body" id="dbTables"></div></div>
+            <div class="card"><h3>DB pool</h3><div class="card-body" id="dbPool"></div></div>
+          </div>
+        </section>
+
+        <section id="externalPanel" class="panel">
+          <div class="grid">
+            <div class="card"><h3>Cache</h3><div class="card-body" id="cacheStats"></div></div>
+            <div class="card"><h3>System</h3><div class="card-body" id="systemInfo"></div></div>
+          </div>
+        </section>
+
+        <section id="acceptancePanel" class="panel">
+          <div id="acceptanceRuns"></div>
+        </section>
+
+        <section id="logsPanel" class="panel">
+          <div id="logsContainer"></div>
+        </section>
+      </main>
     </div>
   </div>
 
   <script>
-    const API_BASE = resolveApiBase();
-    let logStream = null;
-    let logs = [];
-    let requests = [];
-    let metricsInterval = null;
+    const tabs = [
+      ["overview", "Overview"],
+      ["requests", "Requests"],
+      ["assistant", "Assistant Trace"],
+      ["llm", "LLM Traces"],
+      ["proposals", "Proposals"],
+      ["websocket", "WebSocket"],
+      ["database", "Database"],
+      ["external", "Cache & External"],
+      ["acceptance", "Acceptance Runs"],
+      ["logs", "Logs"]
+    ];
+    const state = {
+      apiBase: resolveApiBase(),
+      autoRefresh: true,
+      timer: null,
+      eventSource: null,
+      overview: null,
+      requests: [],
+      llmTraces: [],
+      logs: []
+    };
 
     function resolveApiBase() {
       const params = new URLSearchParams(window.location.search);
-      const fromQuery = params.get('apiBase');
-      if (fromQuery) {
-        localStorage.setItem('debugConsoleApiBase', fromQuery);
-        return fromQuery.replace(/\/$/, '');
+      const query = params.get("apiBase");
+      if (query) {
+        localStorage.setItem("debugConsoleApiBase", query.replace(/\/$/, ""));
+        return query.replace(/\/$/, "");
       }
-
-      const fromStorage = localStorage.getItem('debugConsoleApiBase');
-      if (fromStorage) {
-        return fromStorage.replace(/\/$/, '');
-      }
-
-      if (window.location.protocol.startsWith('http') && window.location.port === '8000') {
-        return `${window.location.origin}/api`;
-      }
-
-      return 'http://127.0.0.1:8000/api';
+      return (localStorage.getItem("debugConsoleApiBase") || "http://127.0.0.1:8000/api").replace(/\/$/, "");
     }
-    
-    // Auto-refresh metrics every 5 seconds
-    function startAutoRefresh() {
-      if (metricsInterval) clearInterval(metricsInterval);
-      metricsInterval = setInterval(refreshMetrics, 5000);
-    }
-    
-    // Initialize on page load
-    window.addEventListener('DOMContentLoaded', () => {
-      // Tab switching
-      document.querySelectorAll('.tab').forEach(tab => {
-        tab.addEventListener('click', () => {
-          document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-          document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-          tab.classList.add('active');
-          document.getElementById(tab.dataset.tab + 'Panel').classList.add('active');
+
+    function setupTabs() {
+      const host = document.getElementById("tabs");
+      host.innerHTML = tabs.map(([id, label], index) =>
+        `<button class="tab ${index === 0 ? "active" : ""}" data-tab="${id}">${escapeHtml(label)}</button>`
+      ).join("");
+      host.querySelectorAll(".tab").forEach(button => {
+        button.addEventListener("click", () => {
+          document.querySelectorAll(".tab").forEach(item => item.classList.remove("active"));
+          document.querySelectorAll(".panel").forEach(item => item.classList.remove("active"));
+          button.classList.add("active");
+          document.getElementById(`${button.dataset.tab}Panel`).classList.add("active");
         });
       });
-      
-      refreshMetrics();
-      startAutoRefresh();
-      startLogStream(); // Auto-start log streaming
-      document.getElementById('toggleStreamBtn').textContent = 'Stop Log Stream';
-      
-      // Toggle log stream button handler
-      document.getElementById('toggleStreamBtn').addEventListener('click', () => {
-        if (logStream) {
-          logStream.close();
-          logStream = null;
-          document.getElementById('statusDot').className = 'status-dot disconnected';
-          document.getElementById('statusText').textContent = 'Disconnected';
-          document.getElementById('toggleStreamBtn').textContent = 'Start Log Stream';
-        } else {
-          startLogStream();
-          document.getElementById('toggleStreamBtn').textContent = 'Stop Log Stream';
-        }
-      });
-    });
-    
-    // Fetch metrics
-    async function refreshMetrics() {
-      try {
-        const [dbPool, cacheStats, requestsData] = await Promise.all([
-          fetchJson(`${API_BASE}/debug/db-pool`),
-          fetchJson(`${API_BASE}/debug/cache-stats`),
-          fetchJson(`${API_BASE}/debug/requests`, { requests: [] })
-        ]);
-        
-        updateDbPoolTable(dbPool);
-        updateCacheStatsTable(cacheStats);
-        updateSystemInfo({ dbPool, cacheStats });
-        
-        // Update requests array and render
-        if (requestsData && requestsData.requests) {
-          requests = requestsData.requests;
-          renderRequests();
-        }
-        updateQuickStats();
-      } catch (err) {
-        console.error('Failed to fetch metrics:', err);
-      }
     }
 
-    async function fetchJson(url, fallback = null) {
+    async function fetchJson(path, fallback = null, options = {}) {
       try {
-        const response = await fetch(url);
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
+        const response = await fetch(`${state.apiBase}${path}`, options);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        setConnection(true);
         return await response.json();
-      } catch (err) {
-        console.error(`Failed to fetch ${url}:`, err);
+      } catch (error) {
+        console.error(`debug fetch failed ${path}`, error);
+        setConnection(false);
         return fallback;
       }
     }
-    
-    function updateDbPoolTable(data) {
-      const tbody = document.querySelector('#dbPoolTable tbody');
-      if (!data) {
-        tbody.innerHTML = '<tr><td colspan="3">Unable to fetch data</td></tr>';
-        return;
-      }
-      
-      tbody.innerHTML = `
-        <tr><td>Pool Size</td><td>${data.pool_size || '-'}</td><td><span class="badge badge-green">OK</span></td></tr>
-        <tr><td>Active Connections</td><td>${data.active_connections || 0}</td><td>${getStatusBadge(data.active_connections, data.pool_size)}</td></tr>
-        <tr><td>Idle Connections</td><td>${data.idle_connections || 0}</td><td><span class="badge badge-green">OK</span></td></tr>
-        <tr><td>Overflow</td><td>${data.overflow || 0}</td><td>${data.overflow > 0 ? '<span class="badge badge-yellow">High</span>' : '<span class="badge badge-green">OK</span>'}</td></tr>
-      `;
-    }
-    
-    function updateCacheStatsTable(data) {
-      const tbody = document.querySelector('#cacheStatsTable tbody');
-      if (!data) {
-        tbody.innerHTML = '<tr><td colspan="3">Cache not available</td></tr>';
-        return;
-      }
-      
-      tbody.innerHTML = `
-        <tr><td>Hit Rate</td><td>${data.hit_rate || '0%'}</td><td>${getHitRateBadge(data.hit_rate)}</td></tr>
-        <tr><td>Total Hits</td><td>${data.hits || 0}</td><td><span class="badge badge-green">OK</span></td></tr>
-        <tr><td>Total Misses</td><td>${data.misses || 0}</td><td><span class="badge badge-green">OK</span></td></tr>
-        <tr><td>Memory Usage</td><td>${data.used_memory || '-'}</td><td><span class="badge badge-green">OK</span></td></tr>
-      `;
-    }
-    
-    function updateSystemInfo(data) {
-      const tbody = document.querySelector('#systemInfoTable tbody');
-      const backendHealthy = Boolean(data.dbPool);
-      const cacheHealthy = Boolean(data.cacheStats && data.cacheStats.status === 'connected');
-      tbody.innerHTML = `
-        <tr><td>Backend API</td><td>${API_BASE}</td><td><span class="badge ${backendHealthy ? 'badge-green' : 'badge-red'}">${backendHealthy ? 'Running' : 'Unavailable'}</span></td></tr>
-        <tr><td>Database</td><td>SQLite (Async)</td><td><span class="badge ${backendHealthy ? 'badge-green' : 'badge-red'}">${backendHealthy ? 'Connected' : 'Unknown'}</span></td></tr>
-        <tr><td>Cache</td><td>Redis</td><td><span class="badge ${cacheHealthy ? 'badge-green' : 'badge-red'}">${cacheHealthy ? 'Connected' : 'Disconnected'}</span></td></tr>
-        <tr><td>Task Queue</td><td>Celery</td><td><span class="badge badge-green">Active</span></td></tr>
-      `;
-    }
-    
-    function getStatusBadge(active, max) {
-      if (!max) return '<span class="badge badge-green">OK</span>';
-      const ratio = active / max;
-      if (ratio > 0.8) return '<span class="badge badge-red">Critical</span>';
-      if (ratio > 0.6) return '<span class="badge badge-yellow">Warning</span>';
-      return '<span class="badge badge-green">OK</span>';
-    }
-    
-    function getHitRateBadge(rate) {
-      if (!rate) return '<span class="badge badge-red">Low</span>';
-      const num = parseFloat(rate);
-      if (num > 80) return '<span class="badge badge-green">Good</span>';
-      if (num > 50) return '<span class="badge badge-yellow">Fair</span>';
-      return '<span class="badge badge-red">Poor</span>';
-    }
-    
-    function updateQuickStats() {
-      document.getElementById('totalRequests').textContent = requests.length;
-      const avgEl = document.getElementById('avgResponseTime');
-      const errorEl = document.getElementById('errorRate');
-      const recentEl = document.getElementById('recentErrorRate');
 
-      const now = Date.now();
-      const fiveMinMs = 5 * 60 * 1000;
-      const recentRequests = requests.filter(r => {
-        const ts = r.timestamp ? new Date(r.timestamp).getTime() : 0;
-        return Number.isFinite(ts) && now - ts <= fiveMinMs;
-      });
-
-      if (requests.length > 0) {
-        const avg = requests.reduce((sum, r) => sum + (r.duration || 0), 0) / requests.length;
-        avgEl.textContent = `${avg.toFixed(0)}ms`;
-        avgEl.className = `value ${avg > 1200 ? 'error' : avg > 600 ? 'warning' : 'success'}`;
-
-        // Window error rate (all history)
-        const errors = requests.filter(r => r.status >= 400).length;
-        const errorRate = ((errors / requests.length) * 100).toFixed(1);
-        errorEl.textContent = `${errorRate}%`;
-        errorEl.className = `value ${parseFloat(errorRate) > 5 ? 'error' : parseFloat(errorRate) > 2 ? 'warning' : 'success'}`;
-
-        // Recent (5 min) error rate
-        if (recentRequests.length > 0) {
-          const recentErrors = recentRequests.filter(r => r.status >= 400).length;
-          const recentRate = ((recentErrors / recentRequests.length) * 100).toFixed(1);
-          recentEl.textContent = `${recentRate}%`;
-          recentEl.className = `value ${parseFloat(recentRate) > 5 ? 'error' : parseFloat(recentRate) > 2 ? 'warning' : 'success'}`;
-        } else {
-          recentEl.textContent = '0.0%';
-          recentEl.className = 'value success';
-        }
-      } else {
-        avgEl.textContent = '-';
-        avgEl.className = 'value';
-        errorEl.textContent = '0.0%';
-        errorEl.className = 'value success';
-        recentEl.textContent = '0.0%';
-        recentEl.className = 'value success';
-      }
-
-      const activeConnectionsEl = document.getElementById('activeConnections');
-      const activeConnections = recentRequests.length;
-      activeConnectionsEl.textContent = String(activeConnections);
-      activeConnectionsEl.className = `value ${activeConnections > 20 ? 'warning' : 'success'}`;
-    }
-
-    function clearRequestLog() {
-      requests = [];
+    async function refreshAll() {
+      const [overview, requests, llm, proposals, ws, db, dbPool, cache, system, acceptance] = await Promise.all([
+        fetchJson("/debug/system/overview", null),
+        fetchJson("/debug/requests", { requests: [] }),
+        fetchJson("/debug/llm/traces", { items: [], summary: {} }),
+        fetchJson("/debug/assistant/proposals", null),
+        fetchJson("/debug/websocket/summary", null),
+        fetchJson("/debug/database/summary", null),
+        fetchJson("/debug/db-pool", null),
+        fetchJson("/debug/cache-stats", null),
+        fetchJson("/debug/system", null),
+        fetchJson("/debug/acceptance-runs", { items: [] })
+      ]);
+      state.overview = overview;
+      state.requests = requests.requests || [];
+      state.llmTraces = llm.items || [];
+      renderOverview(overview, llm.summary || {}, ws, db, dbPool);
       renderRequests();
-      updateQuickStats();
+      renderLlmTraces();
+      renderProposalDiagnostics(proposals);
+      renderObject("wsDiagnostics", ws);
+      renderObject("dbTables", db);
+      renderObject("dbPool", dbPool);
+      renderObject("cacheStats", cache);
+      renderObject("systemInfo", system);
+      renderAcceptance(acceptance.items || []);
+      document.getElementById("lastRefresh").textContent = `Last refresh: ${new Date().toLocaleTimeString()}`;
     }
-    
-    // Log streaming
-    
-    function startLogStream() {
-      if (logStream) {
-        logStream.close();
-      }
-      
-      const eventSource = new EventSource(`${API_BASE}/debug/logs`);
-      logStream = eventSource;
-      
-      eventSource.onopen = () => {
-        document.getElementById('statusDot').className = 'status-dot connected';
-        document.getElementById('statusText').textContent = 'Connected';
-        document.getElementById('toggleStreamBtn').textContent = 'Stop Log Stream';
-      };
-      
-      eventSource.onmessage = (event) => {
-        try {
-          const log = JSON.parse(event.data);
-          // Skip heartbeats and connection messages
-          if (log.type === 'heartbeat' || log.type === 'connected') {
-            return;
-          }
-          addLog(log);
-        } catch (err) {
-          console.error('Failed to parse log:', err);
-        }
-      };
-      
-      eventSource.onerror = (err) => {
-        // EventSource.readyState: 0=connecting, 1=open, 2=closed
-        if (eventSource.readyState === 2) {
-          // Manually closed
-          document.getElementById('statusDot').className = 'status-dot disconnected';
-          document.getElementById('statusText').textContent = 'Disconnected';
-          document.getElementById('toggleStreamBtn').textContent = 'Start Log Stream';
-        } else if (eventSource.readyState === 0) {
-          // Reconnecting (normal behavior)
-          document.getElementById('statusDot').className = 'status-dot disconnected';
-          document.getElementById('statusText').textContent = 'Connecting...';
-        }
-        // Don't call close() - let EventSource auto-reconnect
-      };
+
+    function renderOverview(overview, llmSummary, ws, db, dbPool) {
+      const requestInfo = overview?.requests || {};
+      const metrics = overview?.metrics || {};
+      const llmRate = Number(llmSummary.success_rate || 0);
+      setMetric("metricErrorRate", `${requestInfo.error_rate ?? 0}%`, Number(requestInfo.error_rate || 0));
+      setMetric("metricRecentErrorRate", `${requestInfo.recent_error_rate ?? 0}%`, Number(requestInfo.recent_error_rate || 0));
+      setMetric("metricSlow", requestInfo.slow_count ?? "-", Number(requestInfo.slow_count || 0));
+      setMetric("metricLlm", `${llmRate}%`, llmRate >= 95 ? 0 : 20);
+      setMetric("metricWs", ws?.active_connections ?? "-", 0);
+      setMetric("metricDb", dbPool?.active_connections ?? "-", Number(dbPool?.active_connections || 0));
+      renderObject("overviewSummary", { environment: overview?.environment, metrics, requests: requestInfo });
+      renderObject("llmSummary", llmSummary);
+      renderObject("wsSummary", ws);
+      renderObject("databaseSummary", db);
     }
-    
-    function addLog(log) {
-      logs.unshift(log);
-      if (logs.length > 1000) logs.pop();
-      renderLogs();
+
+    function setMetric(id, value, severity) {
+      const node = document.getElementById(id);
+      node.textContent = value;
+      node.className = `value ${severity > 10 ? "bad" : severity > 0 ? "warn" : "ok"}`;
     }
-    
-    function renderLogs() {
-      const container = document.getElementById('logContainer');
-      const filter = document.getElementById('logFilter').value.toLowerCase();
-      const levelFilter = document.getElementById('logLevelFilter').value;
-      
-      const filtered = logs.filter(log => {
-        if (levelFilter !== 'all' && log.level?.toLowerCase() !== levelFilter) return false;
-        if (filter && !JSON.stringify(log).toLowerCase().includes(filter)) return false;
-        return true;
-      });
-      
-      if (filtered.length === 0) {
-        container.innerHTML = `
-          <div class="empty-state">
-            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-            <p>No logs match the current filter.</p>
-          </div>
-        `;
-        return;
-      }
-      
-      container.innerHTML = filtered.slice(0, 100).map(log => `
-        <div class="log-entry">
-          <span class="timestamp">${formatTimestamp(log.timestamp)}</span>
-          <span class="level ${log.level?.toLowerCase()}">${log.level || 'INFO'}</span>
-          <span>${escapeHtml(log.message || '')}</span>
-        </div>
-      `).join('');
-    }
-    
-    function filterLogs() {
-      renderLogs();
-    }
-    
-    function clearLogs() {
-      logs = [];
-      renderLogs();
-    }
-    
-    // Request tracking - batch update to avoid excessive re-rendering
-    function updateRequests(newRequests) {
-      requests = newRequests.slice(0, 500);
-      renderRequests();
-      updateQuickStats();
-    }
-    
+
     function renderRequests() {
-      const container = document.getElementById('requestContainer');
-      const filter = document.getElementById('requestFilter').value.toLowerCase();
-      
-      const filtered = requests.filter(req => {
-        if (filter && !JSON.stringify(req).toLowerCase().includes(filter)) return false;
-        return true;
-      });
-      
-      if (filtered.length === 0) {
-        container.innerHTML = `
-          <div class="empty-state">
-            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-            <p>No requests match the current filter.</p>
-          </div>
-        `;
+      const filter = document.getElementById("requestFilter").value.toLowerCase();
+      const sort = document.getElementById("requestSort").value;
+      let items = [...state.requests];
+      if (filter) items = items.filter(item => JSON.stringify(item).toLowerCase().includes(filter));
+      if (sort === "duration") items.sort((a, b) => Number(b.duration || 0) - Number(a.duration || 0));
+      if (sort === "status") items.sort((a, b) => Number(b.status || 0) - Number(a.status || 0));
+      document.getElementById("requestsTable").innerHTML = table(
+        ["Time", "Method", "Path", "Status", "Duration", "Request id"],
+        items.slice(0, 200).map(item => [
+          shortTime(item.timestamp),
+          item.method,
+          `<span class="mono">${escapeHtml(item.path || "")}</span>`,
+          statusBadge(item.status),
+          `${item.duration ?? "-"}ms`,
+          `<span class="mono">${escapeHtml(item.request_id || "-")}</span>`
+        ])
+      );
+    }
+
+    async function loadAssistantTrace() {
+      const sessionId = document.getElementById("assistantSessionFilter").value.trim();
+      const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+      const data = await fetchJson(`/debug/assistant/traces${query}`, { messages: [], proposals: [] });
+      document.getElementById("assistantMessages").innerHTML = renderDetails(data.messages || [], "message");
+      document.getElementById("assistantProposals").innerHTML = renderDetails(data.proposals || [], "proposal");
+    }
+
+    function renderLlmTraces() {
+      const textFilter = document.getElementById("llmFilter").value.toLowerCase();
+      const statusFilter = document.getElementById("llmStatusFilter").value;
+      let items = [...state.llmTraces];
+      if (statusFilter) items = items.filter(item => item.status === statusFilter);
+      if (textFilter) items = items.filter(item => JSON.stringify(item).toLowerCase().includes(textFilter));
+      document.getElementById("llmTraces").innerHTML = items.length
+        ? items.map(item => `
+          <details>
+            <summary>${badgeForStatus(item.status)} ${escapeHtml(item.provider)} / ${escapeHtml(item.model)} · ${escapeHtml(item.purpose)} · ${item.duration_ms}ms · <span class="mono">${escapeHtml(item.trace_id)}</span></summary>
+            <div class="split">
+              <div>${jsonBlock("Request payload", item.request_payload_redacted)}</div>
+              <div>${jsonBlock("Raw response", item.raw_response_redacted)}</div>
+            </div>
+            ${jsonBlock("Parsed result / error", { parsed_result: item.parsed_result, error: item.error, fallback_from_trace_id: item.fallback_from_trace_id })}
+          </details>
+        `).join("")
+        : `<div class="empty">No LLM traces yet.</div>`;
+    }
+
+    function renderProposalDiagnostics(data) {
+      if (!data) {
+        document.getElementById("proposalDiagnostics").innerHTML = `<div class="empty">No proposal diagnostics.</div>`;
         return;
       }
-      
-      container.innerHTML = filtered.slice(0, 50).map(req => {
-        const isSlow = req.duration > 1000;
-        const isFailed = req.status >= 400;
-        const cls = isFailed ? 'failed' : isSlow ? 'slow' : '';
-        
-        return `
-          <div class="request-item ${cls}">
-            <div class="request-header">
-              <span class="request-method">${req.method || 'GET'}</span>
-              <span class="request-duration">${req.duration || '-'}ms</span>
-            </div>
-            <div class="request-path">${escapeHtml(req.path || '-')}</div>
-            <div style="margin-top: 0.5rem; font-size: 0.75rem; color: var(--text-secondary);">
-              Status: ${req.status || '-'} | Time: ${formatTimestamp(req.timestamp)}
-            </div>
-          </div>
-        `;
-      }).join('');
+      document.getElementById("proposalDiagnostics").innerHTML = `
+        <div class="grid">
+          <div class="card"><h3>Status counts</h3><div class="card-body">${jsonBlock("", data.status_counts || {})}</div></div>
+          <div class="card"><h3>Execution failures</h3><div class="card-body">${renderDetails(data.recent_execution_failures || [], "failure")}</div></div>
+        </div>
+        <div class="card" style="margin-top:12px;"><h3>Recent transitions</h3><div class="card-body">${renderDetails(data.recent_transitions || [], "proposal")}</div></div>
+      `;
     }
-    
-    function filterRequests() {
-      renderRequests();
+
+    async function loadProposals() {
+      const dedup = document.getElementById("proposalDedupFilter").value.trim();
+      const data = await fetchJson(`/debug/assistant/proposals${dedup ? `?dedup_key=${encodeURIComponent(dedup)}` : ""}`, null);
+      renderProposalDiagnostics(data);
     }
-    
-    function sortRequests() {
-      const sortBy = document.getElementById('requestSort').value;
-      if (sortBy === 'duration') {
-        requests.sort((a, b) => (b.duration || 0) - (a.duration || 0));
-      } else if (sortBy === 'status') {
-        requests.sort((a, b) => (b.status || 0) - (a.status || 0));
-      } else {
-        requests.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-      }
-      renderRequests();
+
+    function renderAcceptance(items) {
+      document.getElementById("acceptanceRuns").innerHTML = items.length
+        ? renderDetails(items, "run")
+        : `<div class="empty">No acceptance runs recorded in this backend process.</div>`;
     }
-    
-    // Utilities
-    function formatTimestamp(ts) {
-      if (!ts) return '-';
-      const d = new Date(ts);
-      return d.toLocaleTimeString('zh-CN', { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+
+    function startLogStream() {
+      if (state.eventSource) state.eventSource.close();
+      state.eventSource = new EventSource(`${state.apiBase}/debug/logs`);
+      state.eventSource.onopen = () => setConnection(true);
+      state.eventSource.onerror = () => setConnection(false);
+      state.eventSource.onmessage = event => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === "heartbeat" || data.type === "connected") return;
+          state.logs.unshift(data);
+          state.logs = state.logs.slice(0, 300);
+          renderLogs();
+        } catch (error) {
+          console.warn("invalid log event", error);
+        }
+      };
     }
-    
-    function escapeHtml(text) {
-      const div = document.createElement('div');
-      div.textContent = text;
-      return div.innerHTML;
+
+    function renderLogs() {
+      document.getElementById("logsContainer").innerHTML = state.logs.length
+        ? renderDetails(state.logs, "log")
+        : `<div class="empty">No live logs yet.</div>`;
     }
+
+    async function clearAll() {
+      await fetchJson("/debug/logs/clear", {}, { method: "POST" });
+      state.logs = [];
+      state.llmTraces = [];
+      renderLogs();
+      await refreshAll();
+    }
+
+    async function addSampleLlmTrace() {
+      await fetchJson("/debug/llm/traces/sample", {}, { method: "POST" });
+      await refreshAll();
+    }
+
+    function renderObject(id, data) {
+      document.getElementById(id).innerHTML = data ? jsonBlock("", data) : `<div class="empty">Unavailable</div>`;
+    }
+
+    function renderDetails(items, label) {
+      if (!items.length) return `<div class="empty">No ${escapeHtml(label)} items.</div>`;
+      return items.map((item, index) => `
+        <details>
+          <summary>${escapeHtml(label)} ${index + 1} ${item.status ? badgeForStatus(item.status) : ""} ${item.id ? `<span class="mono">#${escapeHtml(String(item.id))}</span>` : ""}</summary>
+          ${jsonBlock("", item)}
+        </details>
+      `).join("");
+    }
+
+    function jsonBlock(title, value) {
+      const heading = title ? `<div style="font-weight:700;margin:8px 0 4px;">${escapeHtml(title)}</div>` : "";
+      return `${heading}<pre>${escapeHtml(JSON.stringify(value ?? null, null, 2))}</pre>`;
+    }
+
+    function table(headers, rows) {
+      if (!rows.length) return `<div class="empty">No rows.</div>`;
+      return `<div class="table-wrap"><table><thead><tr>${headers.map(item => `<th>${escapeHtml(item)}</th>`).join("")}</tr></thead><tbody>${rows.map(row => `<tr>${row.map(cell => `<td>${cell ?? ""}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+    }
+
+    function statusBadge(status) {
+      const num = Number(status || 0);
+      const cls = num >= 500 ? "bad" : num >= 400 ? "warn" : "ok";
+      return `<span class="badge ${cls}">${escapeHtml(String(status ?? "-"))}</span>`;
+    }
+
+    function badgeForStatus(status) {
+      const value = String(status || "unknown");
+      const cls = value.includes("success") || value === "executed" ? "ok" : value.includes("error") || value.includes("failed") || value === "timeout" ? "bad" : "neutral";
+      return `<span class="badge ${cls}">${escapeHtml(value)}</span>`;
+    }
+
+    function shortTime(value) {
+      if (!value) return "-";
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleTimeString();
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
+    }
+
+    function setConnection(ok) {
+      const node = document.getElementById("connectionStatus");
+      node.className = `status-pill ${ok ? "ok" : "bad"}`;
+      node.textContent = ok ? "Connected" : "Disconnected";
+    }
+
+    function scheduleAutoRefresh() {
+      if (state.timer) clearInterval(state.timer);
+      state.timer = setInterval(() => {
+        if (state.autoRefresh) void refreshAll();
+      }, 5000);
+    }
+
+    document.addEventListener("DOMContentLoaded", () => {
+      setupTabs();
+      document.getElementById("apiBaseLabel").textContent = `API: ${state.apiBase}`;
+      document.getElementById("apiBaseInput").value = state.apiBase;
+      document.getElementById("refreshBtn").addEventListener("click", () => void refreshAll());
+      document.getElementById("clearBtn").addEventListener("click", () => void clearAll());
+      document.getElementById("saveApiBaseBtn").addEventListener("click", () => {
+        state.apiBase = document.getElementById("apiBaseInput").value.replace(/\/$/, "");
+        localStorage.setItem("debugConsoleApiBase", state.apiBase);
+        document.getElementById("apiBaseLabel").textContent = `API: ${state.apiBase}`;
+        startLogStream();
+        void refreshAll();
+      });
+      document.getElementById("toggleAutoBtn").addEventListener("click", event => {
+        state.autoRefresh = !state.autoRefresh;
+        event.target.textContent = state.autoRefresh ? "Pause auto refresh" : "Resume auto refresh";
+      });
+      document.getElementById("requestFilter").addEventListener("input", renderRequests);
+      document.getElementById("requestSort").addEventListener("change", renderRequests);
+      document.getElementById("llmFilter").addEventListener("input", renderLlmTraces);
+      document.getElementById("llmStatusFilter").addEventListener("change", renderLlmTraces);
+      document.getElementById("sampleLlmTraceBtn").addEventListener("click", () => void addSampleLlmTrace());
+      document.getElementById("loadAssistantBtn").addEventListener("click", () => void loadAssistantTrace());
+      document.getElementById("loadProposalsBtn").addEventListener("click", () => void loadProposals());
+      startLogStream();
+      scheduleAutoRefresh();
+      void refreshAll().then(loadAssistantTrace);
+    });
   </script>
 </body>
 </html>

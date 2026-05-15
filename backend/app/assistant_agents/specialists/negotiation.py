@@ -78,6 +78,8 @@ class NegotiationSpecialist:
         target = target_label or "这个日程"
         lines = [f"我先把“{target}”整理成可确认的新日程方案（现在不会直接写入日程）："]
         lines.extend(self._format_proposal_lines(proposals))
+        if self._has_default_duration_assumption(proposals):
+            lines.append("未说明结束时间时，我会默认1小时；确认前你仍然可以修改开始时间、结束时间或持续时长。")
         lines.append("确认后我才会创建日程；如果标题、时间、地点要改，直接告诉我修改点。")
         lines.extend(self._format_protocol_tail(proposals))
         return "\n".join(lines)
@@ -139,6 +141,16 @@ class NegotiationSpecialist:
                     option_line += f"（{option.rationale}）"
                 lines.append(option_line)
         return lines
+
+    def _has_default_duration_assumption(self, proposals: list[ProposalDraft]) -> bool:
+        for proposal in proposals:
+            assumptions = proposal.payload_json.get("assumptions") if isinstance(proposal.payload_json, dict) else None
+            if isinstance(assumptions, list) and "default_event_duration_60_minutes" in assumptions:
+                return True
+            for option in proposal.options:
+                if option.rationale and ("1 小时" in option.rationale or "默认1小时" in option.rationale):
+                    return True
+        return False
 
     def _format_protocol_tail(self, proposals: list[ProposalDraft]) -> list[str]:
         if not proposals:
