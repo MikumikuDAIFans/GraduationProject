@@ -4,12 +4,12 @@
 
 - Plan ID: `debug-console-observability-upgrade-v1`
 - Version: `v1`
-- Last updated: `2026-05-16 00:00 +08:00`
+- Last updated: `2026-05-16 02:45 +08:00`
 - Canonical progress file: `E:\GraduationProject\docs\development\DEBUG_CONSOLE_OBSERVABILITY_UPGRADE_TASK_BOOK_V1.md`
 - Related handoff file: `none`
 - Current branch: `codex/assistant-browser-acceptance`
-- Current active phase: `Phase 1: 现状审计与监测目标锁定`
-- Execution readiness: `drafting`
+- Current active phase: `Phase 8: 浏览器级验收与最终全功能复测`
+- Execution readiness: `passed`
 
 ## 目标
 
@@ -366,7 +366,7 @@
 - Phase 7: completed。生产环境默认隐藏 debug API；redaction 覆盖 API key、Authorization、token、cookie、secret，并保留安全的 usage token count。
 - Phase 8: completed。浏览器验收报告已生成。
 - Validation status: `passed`。
-  - `backend pytest -q`: `497 passed, 3 warnings`
+  - `backend pytest -q`: `498 passed, 3 warnings`
   - `frontend npm run test`: `2 files / 3 tests passed`
   - `frontend npm run build`: passed
   - `backend pip check`: passed
@@ -383,4 +383,4 @@
 
 ## 下一步动作
 
-进入后续增强：补 trace 导出/复制复现信息、时间线视图、持久化 trace，并在全系统业务验收中继续用该监测台追踪真实 assistant/proposal 场景。
+当前任务书已达到完成定义。后续增强可单独开 P2 任务：补 trace 导出/复制复现信息、时间线视图和持久化 trace。
