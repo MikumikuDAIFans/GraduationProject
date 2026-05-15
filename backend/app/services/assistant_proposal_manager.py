@@ -106,7 +106,11 @@ class AssistantProposalManager:
             if proposal.status == "executed" or not self.execute_on_confirm:
                 return proposal
             if proposal.status == "execution_pending":
-                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="proposal execution is already pending")
+                return await self._recover_or_resume_execution_pending(
+                    user_id=user_id,
+                    proposal=proposal,
+                    option_id=option_id,
+                )
             return await self._execute_confirmed_proposal(user_id=user_id, proposal=proposal, option_id=option_id)
 
         if not self.execute_on_confirm:
@@ -274,6 +278,19 @@ class AssistantProposalManager:
             return None
         old_start, old_end = original
         reference = self._revision_reference(message=message, old_start=old_start)
+        if re.search(r"缩短\s*半小时|提前\s*半小时\s*结束|少\s*半小时", message):
+            duration = old_end - old_start if old_end > old_start else timedelta(minutes=60)
+            end_time = old_start + max(duration - timedelta(minutes=30), timedelta(minutes=30))
+            return {"start_time": old_start.isoformat(), "end_time": end_time.isoformat()}
+        if re.search(r"(?:开到|结束到|结束时间\s*(?:改到|改成|到)?\s*[\d一二两三四五六七八九十]{1,3}\s*(?:点|时))", message):
+            end_time = self._extract_single_time(message, reference=reference)
+            if end_time is None:
+                return None
+            if end_time <= old_start:
+                end_time = end_time + timedelta(hours=12)
+                if end_time <= old_start:
+                    end_time = end_time + timedelta(days=1)
+            return {"start_time": old_start.isoformat(), "end_time": end_time.isoformat()}
         start_time, end_time = self.text_runtime._extract_time_range(message, reference=reference)
         start_time = start_time or self._extract_single_time(message, reference=reference)
         if start_time is None:
@@ -380,8 +397,10 @@ class AssistantProposalManager:
         base_date = self.text_runtime._extract_target_date(message, reference.date())
         token_match = TIME_TOKEN_PATTERN.search(message)
         if token_match:
-            start_time, _period = self.text_runtime._parse_time_token(token_match.group(0), base_date)
+            start_time, period = self.text_runtime._parse_time_token(token_match.group(0), base_date)
             if start_time:
+                if period is None and reference.hour >= 12 and 1 <= start_time.hour < 12:
+                    start_time = start_time.replace(hour=start_time.hour + 12)
                 return start_time
         digit_match = re.search(
             r"(?P<period>凌晨|早上|上午|中午|下午|傍晚|晚上|今晚|今早|明早|明晚)?\s*"
@@ -395,6 +414,8 @@ class AssistantProposalManager:
         minute_raw = digit_match.group("minute") or ""
         minute = 30 if minute_raw == "半" else int(minute_raw.replace("分", "") or 0)
         hour = self.text_runtime._apply_period(hour, period)
+        if period is None and reference.hour >= 12 and 1 <= hour < 12:
+            hour += 12
         return datetime.combine(base_date, datetime.min.time()).replace(hour=hour, minute=minute)
 
     def _build_revised_summary(self, *, proposal: AssistantProposal, payload_json: dict[str, Any]) -> str:
@@ -614,6 +635,49 @@ class AssistantProposalManager:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="proposal not found")
         self._log_transition(pending, executed, reason="execution_success")
         return executed
+
+    async def _recover_or_resume_execution_pending(
+        self,
+        *,
+        user_id: str,
+        proposal: AssistantProposal,
+        option_id: str,
+    ) -> AssistantProposal:
+        payload_json = proposal.payload_json or {}
+        execution = payload_json.get("execution") if isinstance(payload_json, dict) else None
+        if isinstance(execution, dict):
+            result = execution.get("result")
+            if isinstance(result, dict) and result.get("status") == "executed":
+                update_payload: dict[str, Any] = {
+                    "status": "executed",
+                    "execution_error": None,
+                    "executed_at": datetime.now(timezone.utc),
+                }
+                if result.get("related_task_id") is not None:
+                    update_payload["related_task_id"] = result.get("related_task_id")
+                if result.get("related_event_id") is not None:
+                    update_payload["related_event_id"] = result.get("related_event_id")
+                updated = await self.repository.update_proposal(proposal.id, user_id=user_id, payload=update_payload)
+                if updated is None:
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="proposal not found")
+                self._log_transition(proposal, updated, reason="execution_recovered")
+                return updated
+
+        started_at = proposal.execution_started_at
+        if started_at is not None:
+            now = datetime.now(timezone.utc)
+            comparable_started = started_at
+            if comparable_started.tzinfo is None:
+                comparable_started = comparable_started.replace(tzinfo=timezone.utc)
+            if now - comparable_started < timedelta(seconds=15):
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="proposal execution is already pending")
+
+        return await self._execute_confirmed_proposal(
+            user_id=user_id,
+            proposal=proposal,
+            option_id=option_id,
+            is_retry=True,
+        )
 
     def _mark_execution_pending(self, payload_json: dict[str, Any], option_id: str, *, is_retry: bool) -> dict[str, Any]:
         payload = deepcopy(payload_json)

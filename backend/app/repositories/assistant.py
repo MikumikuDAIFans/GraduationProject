@@ -124,6 +124,7 @@ class AssistantRepository(AsyncRepository[AssistantSession]):
         role: str,
         content: str,
         tool_calls_json: list[dict[str, Any]] | None = None,
+        render_blocks_json: list[dict[str, Any]] | None = None,
     ) -> AssistantMessage:
         async with self.session_factory() as session:
             message = AssistantMessage(
@@ -131,6 +132,7 @@ class AssistantRepository(AsyncRepository[AssistantSession]):
                 role=role,
                 content=content,
                 tool_calls_json=tool_calls_json,
+                render_blocks_json=render_blocks_json,
             )
             session.add(message)
             await session.commit()

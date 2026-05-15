@@ -103,6 +103,101 @@ def test_revise_event_creation_rewrites_action_time(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
+def test_revise_event_creation_inherits_afternoon_context_for_bare_hour(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        manager, engine = await _make_manager(tmp_path)
+        try:
+            original = await manager.create_proposal(
+                user_id="local-user",
+                payload=AssistantProposalCreate(
+                    proposal_type="event_creation",
+                    summary="建议创建日程“论文组会”：05-07 15:00-16:30",
+                    payload_json={
+                        "options": [
+                            {
+                                "option_id": "A",
+                                "title": "按建议创建日程",
+                                "summary": "建议创建日程“论文组会”：05-07 15:00-16:30",
+                                "actions": [
+                                    {
+                                        "type": "create_event",
+                                        "payload": {
+                                            "title": "论文组会",
+                                            "start_time": "2026-05-07T15:00:00",
+                                            "end_time": "2026-05-07T16:30:00",
+                                            "location_name": "学校",
+                                        },
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                ),
+            )
+
+            revised = await manager.revise_proposal(
+                user_id="local-user",
+                proposal_id=original.id,
+                message="改成4点开始",
+            )
+
+            payload = revised.payload_json["options"][0]["actions"][0]["payload"]
+            assert payload["start_time"] == "2026-05-07T16:00:00"
+            assert payload["end_time"] == "2026-05-07T17:30:00"
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def test_revise_event_creation_can_change_only_end_time_with_runs_until_phrase(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        manager, engine = await _make_manager(tmp_path)
+        try:
+            original = await manager.create_proposal(
+                user_id="local-user",
+                payload=AssistantProposalCreate(
+                    proposal_type="event_creation",
+                    summary="建议创建日程“论文组会”：05-07 15:00-16:00",
+                    payload_json={
+                        "options": [
+                            {
+                                "option_id": "A",
+                                "title": "按建议创建日程",
+                                "summary": "建议创建日程“论文组会”：05-07 15:00-16:00",
+                                "actions": [
+                                    {
+                                        "type": "create_event",
+                                        "payload": {
+                                            "title": "论文组会",
+                                            "start_time": "2026-05-07T15:00:00",
+                                            "end_time": "2026-05-07T16:00:00",
+                                            "location_name": "学校",
+                                        },
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                ),
+            )
+
+            revised = await manager.revise_proposal(
+                user_id="local-user",
+                proposal_id=original.id,
+                message="P1 开到5点",
+            )
+
+            payload = revised.payload_json["options"][0]["actions"][0]["payload"]
+            assert payload["start_time"] == "2026-05-07T15:00:00"
+            assert payload["end_time"] == "2026-05-07T17:00:00"
+            assert "15:00-17:00" in revised.summary
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+
 def test_revise_event_creation_rewrites_title_and_location(tmp_path: Path) -> None:
     async def scenario() -> None:
         manager, engine = await _make_manager(tmp_path)

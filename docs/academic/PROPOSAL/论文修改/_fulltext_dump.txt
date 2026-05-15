@@ -1,0 +1,841 @@
+[2]|Normal|2026届毕业生
+[3]|Normal|毕业设计说明书
+[7]|Normal|题  目: 基于多Agent协同的智能个人事务助理系统
+[8]|Normal|院系名称：  明德书院 专业班级： 智能2406班
+[9]|Normal|学生姓名： 张嘉洋   学  号：  241188100623
+[10]|Normal|指导教师：  任笑真   教师职称：   教授
+[12]|Normal|2025年 5 月 23 日
+[14]|Normal|摘  要
+[15]|ThesisBody|个人事务管理系统如果只停留在“记录日程”和“展示界面”层面，很难体现智能助理的价值。用户在真实使用时往往只会说出一段不太规整的话，例如“明天下午去学校上课，记得提醒我早点出门”，其中既包含时间、地点，也可能包含任务目标、出发提醒和后续跟进要求。针对这类场景，本文设计并实现了一套基于多Agent协同的智能个人事务助理系统，重点研究自然语言事务理解、候选方案生成、协商确认、确认后执行以及主动跟进等环节。系统不是直接把用户输入转换成写库动作，而是先将其整理成可解释、可确认、可追踪的事务提案。
+[16]|ThesisBody|在智能体模型设计上，本文采用“Conductor + Specialist Registry + Proposal Manager + Action Executor”的分层协同结构。Conductor 负责统一调度，Understanding Specialist 负责结构化抽取用户目标、约束和模糊点，Task-or-Event Clarifier 判断请求更接近任务还是一次性日程，Planning Specialist 根据已有日程、任务期限、地点和通勤条件生成候选方案，Negotiation Specialist 将内部方案转化为可供用户确认或修改的协商文本，Action Executor 只处理已经确认的写操作。为了避免传统 Chatbot 直接执行带来的误写入问题，系统引入 AssistantProposal 作为唯一执行入口，所有创建、重排、延期和完成标记都必须经过用户确认。
+[17]|ThesisBody|在算法层面，本文将一次事务请求拆解为规则预处理、Gemini 结构化兜底、类型判定、上下文补全、候选方案评分、协商状态流转和执行幂等控制几个步骤。实际实现中没有采用 Qwen、DeepSeek 等多模型混合路由，而是使用 Google Gemini 2.5 Flash 作为统一语言模型入口；常见时间、地点、动作词和 proposal 后续回复先由规则解析，规则置信度不足或表达较复杂时再调用 Gemini 进行结构化补全。规划部分通过时间匹配度、冲突惩罚、通勤可行性、截止时间压力和用户偏好等因素对候选方案排序；协商部分用 pending、accepted、execution_pending、executed、execution_failed、superseded 等状态描述提案生命周期；主动能力则通过 AssistantSignal 记录 deadline 风险、日程冲突、出发检查和晨间/睡前节律等触发原因，再转化为待确认 proposal。
+[18]|ThesisBody|工程实现上，后端采用 Python 3.11、FastAPI、Async SQLAlchemy、Alembic、Redis 和 Celery 组织接口、数据迁移、缓存和定时扫描，前端采用 Vue 3、TypeScript、Pinia 和 FullCalendar 实现工作台。模型服务通过自定义 GeminiClient 调用 Gemini API，嵌入检索使用 Google text-embedding-004 作为习惯与偏好检索的辅助能力。测试结果表明，系统能够完成清晰日程创建、模糊任务澄清、多方案协商、重复确认幂等、主动风险信号生成、长期记忆候选确认等功能。相比只展示前端界面的个人事务系统，本文的主要工作在于把多智能体职责、模型抽取结果、规划算法和协商状态机真正接入了事务执行链路，使个人助理从被动问答逐步转向可协商、可确认、可跟进的智能事务管理系统。
+[19]|ThesisBody|从最后实现的情况来看，多Agent协同并不是简单把系统分成几个角色就可以了，更重要的是这些角色之间的信息怎么传、状态怎么保留、工具调用后怎么回到界面里。本文完成的这个原型，算是给后面继续做长期记忆、个性化学习和多端协同打下了一个比较完整的工程基础。
+[21]|ThesisBody|关键词：多智能体系统；个人事务管理；工作流编排；自然语言理解；智能调度
+[23]|Normal|Intelligent Personal Affairs Assistant System Based on Multi-Agent
+Collaboration
+[24]|Normal|Abstract
+[25]|ThesisBody|Personal task management is no longer only about recording events. In real use, a user may express a task in an informal sentence that includes time, location, reminders, travel needs and follow-up actions at the same time. This thesis designs and implements an intelligent personal affairs assistant system based on multi-agent collaboration. The main purpose is to transform such informal natural language input into explainable, confirmable and traceable proposals, instead of directly converting every user message into database writes.
+[26]|ThesisBody|The system adopts a Conductor-oriented collaboration architecture. The Conductor coordinates several specialists, including Understanding, Task-or-Event Clarification, Planning, Proposal Management, Negotiation and Memory. In the actual implementation, these specialists are not independent processes communicating through an A2A protocol. They are sequentially orchestrated by the Conductor and exchange intermediate results through a shared ConductorState object. All write operations must first become proposals and can be executed only after user confirmation.
+[27]|ThesisBody|The backend is implemented with Python 3.11, FastAPI, Async SQLAlchemy, Alembic, Redis and Celery. SQLite is used for the prototype database. The frontend is built with Vue 3, TypeScript, Pinia and FullCalendar. The language model layer uses Google Gemini 2.5 Flash through a custom asynchronous Gemini client. The embedding and retrieval layer uses Google text-embedding-004 and ChromaDB only as an auxiliary layer for user habits and preferences. The system does not implement Qwen or DeepSeek routing in the current version.
+[28]|ThesisBody|Tests show that the system can handle clear schedule requests, vague task requests, proposal confirmation, idempotent repeated confirmation, proactive signals and memory update candidates. The main contribution of this thesis is not only the frontend workspace, but also the proposal-first, confirmation-before-write collaboration mechanism that connects natural language understanding, planning, negotiation, action execution and follow-up tracking in one engineering process.
+[31]|Normal|Keywords: Multi-Agent Systems; Personal Task Management; Workflow Orchestration; Natural Language Understanding; Intelligent Scheduling
+[33]|Normal|目 次
+[34]|ThesisTOC|摘  要	I
+[35]|ThesisTOC|Abstract	II
+[36]|ThesisTOC|1 引言	1
+[37]|ThesisTOC|1.1 研究背景与意义	1
+[38]|ThesisTOC|1.2 国内外研究现状	1
+[39]|ThesisTOC|1.3 研究内容与目标	3
+[40]|ThesisTOC|1.4 论文结构安排	3
+[41]|ThesisTOC|2 相关技术基础	4
+[42]|ThesisTOC|2.1 多智能体系统理论	4
+[43]|ThesisTOC|2.2 大语言模型技术	5
+[44]|ThesisTOC|2.3 工作流引擎技术	6
+[45]|ThesisTOC|2.4 前端响应式设计技术	7
+[46]|ThesisTOC|3 系统需求分析与总体设计	9
+[47]|ThesisTOC|3.1 需求分析	9
+[48]|ThesisTOC|3.2 系统总体架构设计	10
+[49]|ThesisTOC|3.3 多Agent协同机制设计	13
+[50]|ThesisTOC|3.4 数据库设计	20
+[51]|ThesisTOC|4 系统详细设计与实现	23
+[52]|ThesisTOC|4.1 后端架构设计与实现	23
+[53]|ThesisTOC|4.2 前端界面设计与实现	26
+[54]|ThesisTOC|4.3 多Agent协同流程实现	30
+[55]|ThesisTOC|4.4 性能优化策略实现	34
+[56]|ThesisTOC|5 系统测试与结果分析	36
+[57]|ThesisTOC|5.1 测试环境与测试方法	36
+[58]|ThesisTOC|5.2 功能测试结果	36
+[59]|ThesisTOC|5.3 性能测试结果	38
+[60]|ThesisTOC|6 结论与展望	41
+[61]|ThesisTOC|6.1 研究工作总结	41
+[62]|ThesisTOC|6.2 主要创新点	41
+[63]|ThesisTOC|6.3 不足与改进方向	42
+[64]|ThesisTOC|6.4 未来研究展望	42
+[65]|ThesisTOC|致谢	43
+[66]|ThesisTOC|参考文献	44
+[67]|ThesisTOC|附录A 系统实现补充说明	43
+[68]|ThesisTOC|附录B 数据实体补充说明	52
+[69]|ThesisTOC|附录C 多智能体核心算法补充说明	54
+[71]|ThesisHeading1|1 引言
+[72]|ThesisHeading2|1.1 研究背景与意义
+[73]|ThesisBody|移动互联网普及之后，个人事务管理看起来方便了，但实际要处理的事情反而更碎了。日常生活里不只是记一个会议时间，还会碰到待办、通勤、提醒、临时改时间，以及一些零散信息要整理的情况。传统日历或者备忘录也能用，只是很多时候需要用户先把事情拆成标题、时间、地点这些字段，再手动填进去。真正使用的时候，用户脑子里想的往往不是这么规整的一张表。
+[74]|ThesisBody|这几年大语言模型和智能体技术发展得比较快，个人事务管理也因此有了新的实现方式。用户不一定要先想好标题、时间、地点，再一点点保存；有时候直接把自己的想法说出来，系统先理解意思，再补上缺的内容，最后把安排写入日程。也就是说，这类工具开始从单纯记录，慢慢转向帮用户把事情处理完。[1-5]
+[75]|ThesisBody|不过个人事务这个场景并没有想象中那么简单。很多安排表面上只是一句话，真正要落到系统里时，就会涉及已有日程会不会冲突、地点之间要不要通勤、任务是不是比较紧急、是否需要提前提醒等问题。如果这些能力还是分散在不同模块里，用户就要来回切换，系统给出的结果也容易对不上。因此，把这些处理过程放在一条比较顺的流程里，是本文比较关注的问题。
+[76]|ThesisBody|从实际使用上看，这类系统可以少一些手工记录和反复确认，让用户的时间安排不至于太分散。从论文研究角度看，个人事务管理又刚好会用到自然语言理解、工作流编排、上下文感知和多Agent协同这些内容，所以它不只是一个简单应用，也有一定的工程实现和研究讨论价值。
+[77]|ThesisHeading2|1.2 国内外研究现状
+[78]|ThesisHeading3|1.2.1 国外研究现状
+[79]|ThesisBody|国外在个人事务管理工具方面做得比较早。早期的产品基本还是规则式日历和提醒软件，主要做法就是让用户通过固定表单录入事件，再到时间后弹出提醒。这类系统可以解决日程记录这类基本问题，但智能程度不高，说到底还是把纸质记事换成了电子形式。[3]
+[80]|ThesisBody|后来智能语音助手和大语言模型逐渐成熟，相关研究才开始更多讨论语义理解和主动协助。很多系统不再只接受表单字段，而是尝试从一句自然语言里判断用户想做什么，再结合位置、历史习惯和上下文给出安排建议。与此同时，多智能体和任务规划方面的研究也在继续推进，这些内容给复杂事务拆分和协同处理提供了方法基础。[4-5]
+[81]|ThesisHeading3|1.2.2 国内研究现状
+[82]|ThesisBody|国内在智能助理和事务管理方面推进得也比较快。互联网企业和终端厂商已经在语音助手、智能办公、日程服务等方向积累了不少经验，像提醒、查询、语音创建日程这些能力，现在已经比较常见。随着大模型在中文场景中的使用越来越多，研究重点也开始转到中文语义解析、场景化推荐以及任务能不能真正执行完这些问题上。
+[83]|ThesisBody|和国外一些英文场景相比，国内相关研究还要多考虑中文表达本身的问题。中文日常说话经常会省略主语、时间说得比较模糊，甚至一句话里同时带着好几个要求。这样一来，系统如果不能稳定识别意图、抽取字段，并在缺信息时继续补问，就很难真正用起来。
+[84]|ThesisHeading3|1.2.3 研究现状分析
+[85]|ThesisBody|把已有研究放在一起看，个人事务管理大概有几个变化。输入方式不再只依赖表单，而是开始更多使用自然语言；系统也不再只是被动记录，而是会主动给出一些协助；服务内容也从单一日程，慢慢扩展到任务、提醒、通勤和信息汇总这些更完整的事务流程。[1-5]
+[86]|ThesisBody|不过目前的方案还没有完全成熟。比较明显的一点是，很多系统虽然有聊天入口，但聊天结束以后，结果不一定能变成可以追踪、可以修改的安排。还有一些研究把重点放在模型能力上，对状态怎么流转、出错后怎么恢复、多端页面怎么联动这些工程问题关注不够。再加上中文日常表达本来就容易含糊，轻量多端场景也不好做，所以本文才从多Agent协同这个角度继续设计和实现。
+[87]|ThesisHeading2|1.3 研究内容与目标
+[88]|ThesisHeading3|1.3.1 研究内容
+[89]|ThesisBody|本文的研究对象是智能个人事务助理系统，主要围绕几个方面展开。一个是业务闭环，也就是事件、任务、提醒和摘要这些内容不能只分散存在，而是要能够连成一条可以执行的链路。另一个是多角色协同，会话协调、上下文获取、调度判断和动作执行之间要能接得上。最后还要落到工程实现上，通过前后端分离、异步任务和外部工具接入，把前面的设计做成一个能运行、能测试的原型。
+[90]|ThesisBody|所以这篇论文并不是只列出系统有哪些功能，而是更想说明这些功能具体怎么做出来。后面在系统设计和实现部分，会把工作流节点、数据对象、前端界面联动等内容写得细一些，尽量不只停留在概念层面。
+[91]|ThesisHeading3|1.3.2 研究目标
+[92]|ThesisBody|本文最直接的目标，是做出一套可以运行的智能个人事务助理原型。这个原型需要能够接收自然语言输入，完成事件和任务管理，也要能判断时间冲突、给出安排建议，并在有需要的时候生成出发提醒和后续跟进信息。
+[93]|ThesisBody|进一步来说，本文也想通过这个系统看看，多Agent协同放到个人事务管理里到底合不合适。只有当角色分工、业务状态、外部工具调用和界面反馈能够连在一起时，这种方法才不只是概念上的设计，这也是本文想验证的重点。
+[94]|ThesisHeading2|1.4 论文结构安排
+[95]|ThesisBody|全文一共分为六章。第一章主要写研究背景、国内外研究情况和本文目标；第二章介绍后面会用到的相关技术；第三章写系统需求、总体架构、多Agent协同机制和数据库设计；第四章把后端、前端和协同流程的实现展开说明；第五章是系统测试和结果分析；第六章则对本次毕业设计进行总结，并写出后面还可以继续改的地方。
+[96]|ThesisHeading1|2 相关技术基础
+[97]|ThesisHeading2|2.1 多智能体系统理论
+[98]|ThesisHeading3|2.1.1 多智能体系统基本概念
+[99]|ThesisBody|多智能体系统可以理解为让多个分工不同的智能角色一起处理同一个任务。每个角色负责的内容不一样，拿到的信息也可能不一样，但最后都要服务于同一个目标。和只用一个智能体相比，这种方式在处理步骤比较多、信息来源比较分散的问题时，会更容易把任务拆开。[1-2]
+[100]|ThesisBody|放到个人事务管理里，这种思路比较容易理解。一次很普通的请求，可能同时涉及语义理解、时间安排、地点判断和后续提醒，如果都塞到一个模块里处理，调试起来会比较麻烦。把复杂任务分给不同角色，并不是为了形式上看起来更像多Agent，而是为了让每一步都能单独控制和检查。
+[101]|ThesisHeading3|2.1.2 多智能体系统架构
+[102]|ThesisBody|多智能体系统常见的组织方式，大体可以分成集中协调、分布协作，以及两者结合的层次化结构。集中协调由上层节点统一路由和汇总，更适合目标明确、链路较短的场景；分布协作则强调角色之间的平等交互，更适用于开放环境中的持续协商。[1-2]
+[103]|ThesisBody|本文最终采用的是更贴近工程落地的监督式协同思路。系统保留一个统一的会话协调入口，用来识别意图和决定执行路径；但到了具体计算阶段，又把调度、上下文和事务执行分别交给不同角色处理。这样做既保留了整体控制，也让后续维护和扩展更方便。
+[104]|ThesisHeading3|2.1.3 智能体协作机制
+[105]|ThesisBody|智能体协作并不是简单地互相调用几次接口，关键在于状态怎么共享、中间结果怎么传递、异常怎么处理。要是没有统一状态，就算每个角色单独看都没问题，串起来时也可能出现字段缺失、重复调用或者结果互相冲突的情况。[1-2]
+[106]|ThesisBody|基于这个考虑，本文把统一状态对象放在协作流程的中心位置。每个节点只读取自己需要的内容，再把新结果补回状态中。这样处理后，不只是减少了临时参数的堆叠，也让补问、回退和异常降级时已有信息能够被保留下来。
+[107]|ThesisBody|实际工程中，本文没有把各智能体实现成独立进程，也没有使用独立的 A2A 消息队列。系统采用的是更适合毕业设计原型的中控顺序编排方式：AssistantConductor 负责决定调用顺序，SpecialistRegistry 负责注册可用模块，ConductorState 负责保存中间语义对象、活跃 proposal、候选方案和记忆摘要。每个 Specialist 返回 SpecialistResult，其中包含 specialist_name、confidence、result_type、summary、payload 和 suggested_next_step。这样的输入输出契约既能体现多角色分工，也避免了过度工程化。
+[108]|ThesisHeading3|2.1.4 在个人事务管理中的应用
+[109]|ThesisBody|个人事务管理本身就带有明显的多步骤特征，所以很适合用多智能体思路来组织。会话协调主要理解请求，调度角色负责安排时间，上下文角色补充地点和天气，事务执行角色负责写入结果，提醒角色则继续跟进。角色一旦是按业务流程来划分，复杂输入也更容易被拆开处理。
+[110]|ThesisHeading2|2.2 大语言模型技术
+[111]|ThesisHeading3|2.2.1 大语言模型发展历程
+[112]|ThesisBody|大语言模型的发展对人机交互影响很明显。早期自然语言处理主要依靠规则和特征工程，能处理的表达比较有限。后来深度学习和预训练方法逐渐成熟，语言模型对上下文的理解能力增强了不少，开始可以从比较开放的表达中抽取含义、补全缺失信息，并给出更自然的回复。[9-12]
+[113]|ThesisBody|近几年大规模预训练模型进一步提高了语言理解和生成效果，这一点对个人事务助理尤其重要。因为用户在真实场景中的表达往往并不规整，时间、地点和动作条件也可能混在一句话里。没有比较强的语义理解能力，很多请求其实根本没办法稳定落地。
+[114]|ThesisHeading3|2.2.2 大语言模型关键技术
+[115]|ThesisBody|大语言模型之所以能用在事务管理里，并不是因为它只会生成一段通顺的话，更主要的是它能结合上下文判断用户意图、抽取信息，并理解一些条件限制。通过预训练、提示设计和任务约束，模型可以从一句比较随意的表达里识别出安排对象、时间范围和执行条件。[13-18]
+[116]|ThesisBody|当然，模型能力本身并不能直接等同于可执行结果。要是没有外部工具校验和业务规则约束，模型很可能给出看起来合理、实际上却没法执行的答案。所以在本系统里，大语言模型更适合用来作为理解和组织能力的主要，而不是独自做完全部业务判断。
+[117]|ThesisHeading3|2.2.3 大语言模型在任务管理中的应用
+[118]|ThesisBody|在个人事务系统中，大语言模型首先承担的是语言理解工作。它需要判断用户是在创建事件、安排任务、修改时间还是查询已有内容，同时把自然语言里的时间、地点等表达转换成结构化字段。[4,10,12]
+[119]|ThesisBody|除此之外，它也很适合处理解释和反馈。比如系统需要补问、需要说明冲突原因，或者想把推荐方案说得更自然一些时，语言模型都能明显改善交互体验。因此，本文把它主要放在会话协调和结果组织这两个环节使用。
+[120]|ThesisHeading3|2.2.4 大语言模型的局限性
+[121]|ThesisBody|大语言模型并不是没有边界。它会出现事实不准确、时间理解偏差、上下文遗失以及工具调用不稳定等问题，而这些问题一旦落到事务管理场景里，就会直接影响事件安排和提醒结果。因此，系统不能把最终执行完全交给模型，而是要通过多Agent分工、外部工具校验和业务约束来降低不确定性。[19-25]
+[122]|ThesisHeading3|2.2.5 大语言模型接入方式与实现边界
+[123]|ThesisBody|从项目实际实现来看，本文系统采用的是单一大语言模型接入方式，即通过 GeminiClient 调用 Google Gemini 2.5 Flash。系统配置中保留 LLM_PROVIDER、GEMINI_MODEL 等字段，主要是为了后续替换或扩展模型提供入口，但本次毕业设计没有实现 Qwen、DeepSeek 或其他模型之间的自动路由。因此论文中对模型层的描述必须以“单模型 + 规则保护 + 可扩展配置”为准，不能把未来可能扩展的能力写成已经完成的功能。
+[124]|ThesisBody|在具体流程中，模型不直接拥有事件、任务和提醒的写权限。它主要用于补全结构化理解、组织协商文本和处理较复杂的自然语言表达。时间合法性、冲突判断、候选方案评分、proposal 状态变化和最终数据库写入都由后端服务控制。这样处理虽然牺牲了一部分端到端自动生成的自由度，但能减少模型幻觉和误执行，对个人事务管理这类需要可靠落库的场景更合适。
+[125]|ThesisHeading2|2.3 工作流引擎技术
+[126]|ThesisHeading3|2.3.1 工作流引擎基本概念
+[127]|ThesisBody|工作流引擎主要用来把一组前后相关的处理步骤串起来，让系统能够按一定顺序推进任务。在传统业务系统里，它更多处理状态流转和流程控制；放到智能系统里以后，还要考虑模型调用、工具调用，以及出错时怎么回退这些问题。[7-8]
+[128]|ThesisBody|在个人事务管理里，工作流的重要性会更明显。一次用户请求通常要先理解，再判断要不要补问，随后获取上下文并完成执行。中间只要少了一步，或者顺序一乱，最终结果就可能前后不一致。
+[129]|ThesisHeading3|2.3.2 LangGraph工作流引擎
+[130]|ThesisBody|LangGraph 提供了一种把语言模型节点、工具节点和状态对象组织成图结构的方法。和单纯的链式调用相比，图结构更适合用来表达条件分支、回退路径和多节点协同，因此在智能体系统中很有适配性。[8]
+[131]|ThesisBody|本文中使用这类工作流思路，主要是因为个人事务场景里天然存在补问分支、按需调用上下文以及执行后回写等复杂路径。用图式编排来描述这些关系，会比简单串联步骤更直观，后续加新能力也更方便。
+[132]|ThesisHeading3|2.3.3 改进型工作流架构
+[133]|ThesisBody|为了更贴合事务管理场景，本文在通用工作流思路上又做了三点调整：一个是把状态对象放在主要位置，避免节点之间依赖大量临时参数。另一个是把外部上下文调用改成按需触发，减少无效访问。还有一个是在执行结果回写后统一刷新工作台，让前端不同区域保持一致。[6-8]。
+[134]|ThesisBody|这样改完之后，工作流不只是能跑通，也更接近日常使用时的真实需求。简单请求可以尽快返回，复杂请求也能保持比较清楚的执行路径，同时还能保留一定的可观测性。
+[135]|ThesisHeading3|2.3.4 工作流引擎在本系统中的作用
+[136]|ThesisBody|放到本系统里，工作流引擎基本承担的是总调度角色。它把会话协调、上下文获取、调度判断、动作执行和反馈生成串成一条完整链路，必要时还要把流程引向补问或降级分支。没有这层组织，多Agent协同很难真正落成可运行的事务处理系统。
+[137]|ThesisHeading3|2.3.5 ReAct 子图与工作流回退
+[138]|ThesisBody|除 proposal-first 的助手链路外，系统还保留了基于 LangGraph 的 ReAct 子图作为复杂任务的条件分支。ReActSubgraph 采用 Thought-Action-Observation 的循环形式，最多执行有限轮工具调用，并通过工具注册机制接入日程、任务、上下文等服务。需要说明的是，它不是一个独立运行的“自主智能体进程”，而是旧 workflow 中的一个可选子图。当前系统以 Conductor proposal mode 为优先路径，ReAct 子图更多承担回退和复杂工具调用探索作用。
+[139]|ThesisHeading2|2.4 前端响应式设计技术
+[140]|ThesisHeading3|2.4.1 响应式设计概念
+[141]|ThesisBody|响应式设计强调的，不只是页面尺寸变化后的适配，更重要的是同一套界面逻辑要能适应不同设备和交互环境。对个人事务系统来说，用户既可能在电脑上查看完整日程，也可能在手机上快速确认提醒，所以界面不能只是简单缩放，而是要重新组织信息层级。
+[142]|ThesisHeading3|2.4.2 Vue 3框架特性
+[143]|ThesisBody|Vue 3 很适合用来建立这种由多个区域组成、交互频繁也状态联动明显的工作台界面。它比较方便做组件拆分、状态共享和渐进式页面组织，这样日历、助手、摘要和提醒等模块既能分开开发，又能围绕同一状态协同更新。
+[144]|ThesisHeading3|2.4.3 移动端适配技术
+[145]|ThesisBody|移动端适配并不只是改一改样式，更关键的是调整交互顺序。本文在完成中保留了跨端封装路径，使系统可以在桌面浏览器、移动端壳层和桌面壳层之间共享主要业务逻辑，这样后续维护成本会低很多。
+[146]|ThesisHeading3|2.4.4 前后端通信技术
+[147]|ThesisBody|前后端通信既要支持事件、任务和资料的常规读写，也要兼顾提醒、摘要和快照的及时刷新。所以系统除了普通接口通信之外，还保留了面向实时更新的消息推送能力，让前端能更快感知后端状态变化。
+[149]|ThesisHeading1|3 系统需求分析与总体设计
+[150]|ThesisHeading2|3.1 需求分析
+[151]|ThesisHeading3|3.1.1 功能需求
+[152]|ThesisBody|本系统面向的是个人事务管理这种经常发生、内容零散，而且会不断变化的日常场景。和传统日历软件相比，用户很多时候不会先把所有字段都想好再填表，而是直接说一句需求，比如哪天要开会、晚上想安排学习，或者想知道几点出门比较合适。也正因为这样，系统不能只是记录，还要先理解用户的话，再把这些零散意图整理成结构化动作，最后在同一个工作台里展示出来。
+[153]|ThesisBody|从业务边界来看，系统处理的也不只是一个事件这么简单。很多安排背后还连着地点解析、通勤估算、空档判断、提醒生成和后续跟进。要是只做其中一小段，用户最后还是得自己补齐，所以本文把完整流程处理放在了比单点功能更重要的位置。
+[154]|ThesisBody|结合当前原型的完成情况，系统主要业务可以概括为日程管理、任务管理、对话协助、智能建议、上下文感知、主动提醒和外部同步几个方面。表3.1对这些需求作了归纳。
+[156]|ThesisCaption|表3.1 系统核心业务需求
+[159]|ThesisHeading3|3.1.2 非功能需求
+[160]|ThesisBody|除了功能本身，系统还必须满足毕业设计场景下的可用性和后续维护便利性要求。用户的使用方式往往是频繁、零碎、随时发起的，如果界面反馈太慢，体验会很差；但如果一味追求快，又省掉了必要的上下文判断，结果就可能出错。因此，这个系统在设计时一直要在响应速度、处理准确性和外部调用成本之间做平衡。
+[161]|ThesisBody|非功能需求并不是附在业务后面的补充条目，它们直接决定系统能不能稳定运行。表3.2列出了本文在性能、稳定性、扩展性和跨端适配等方面的主要要求。
+[162]|ThesisCaption|表3.2 系统非功能需求
+[164]|ThesisHeading2|3.2 系统总体架构设计
+[165]|ThesisHeading3|3.2.1 架构设计原则
+[166]|ThesisBody|系统总体架构围绕一个比较直接的目标展开，也就是把用户说的一句话最后变成可以执行的安排。为了避免界面、业务逻辑和智能流程混在一起，本文采用分层的组织方式。界面层负责交互和状态展示，服务层处理事件、任务、同步和提醒这些相对稳定的业务，智能协同层负责理解请求并组织工具调用，数据和基础设施层则提供存储、缓存、队列和外部服务支持。
+[167]|ThesisBody|这样分层并不是为了把结构画得更完整，而是为了减少改动时的连锁影响。比如后续如果要替换地图服务，或者新增习惯学习模块，改动主要会集中在工具接入层和工作流节点，不至于把日历视图和基础数据结构一起牵动。对于毕业设计规模的原型来说，这种边界相对清楚的组织方式更利于调试、展示和后续扩展。
+[168]|ThesisHeading3|3.2.2 总体架构
+[169]|ThesisBody|实际运行时，系统由前端工作台、后端接口服务、缓存与队列服务、异步执行进程以及外部能力接口共同组成。前端处理展示日历、任务、建议和提醒，后端接收请求并调度业务服务，Redis 承担缓存和消息相关功能，Celery 处理周期性提醒扫描与异步任务执行，高德地图、和风天气和 Google Calendar 则补充地点、环境和外部同步能力。
+[171]|ThesisCaption|图3.1 系统总体架构示意图
+[172]|ThesisBody|在这套结构里，智能协同层起的是承上启下的作用。它一边接收界面的自然语言输入和用户操作，一边按照任务类型去调用事件服务、任务服务和上下文服务，再把结果统一回写到工作台。也就是说，这个系统不只是追求回答出来，而是更看重能不能形成可执行结果、能不能稳定回显到界面上。
+[173]|ThesisHeading3|3.2.3 技术架构选型
+[174]|ThesisBody|技术选型主要遵循两个原则。第一，尽量用轻量、清晰、便于演示的技术组合，避免引入和毕业设计规模不太匹配的复杂依赖；第二，关键环节最好能替换，这样后续无论是模型能力、同步方式还是部署路径，都还有继续调整的空间。基于这个考虑，后端采用 FastAPI、SQLAlchemy 和 Alembic，前端采用 Vue 3、TypeScript、Pinia 和 FullCalendar，异步任务则由 Redis 与 Celery 配合完成。
+[176]|ThesisBody|表3.3列出了本系统的主要技术选型及其作用。这里更重要的并不是技术名词本身，而是它们是否真的服务于事务管理这个具体问题。
+[177]|ThesisCaption|表3.3 主要技术选型与作用
+[179]|ThesisHeading2|3.3 多Agent协同机制设计
+[180]|ThesisHeading3|3.3.1 从工作流节点到多Agent协同模型
+[181]|ThesisBody|原有助理链路更像一条固定的工作流：用户消息进入后，系统先做意图分类，再补充上下文，最后调用事件或任务服务。这种方式可以跑通基本功能，但它有一个明显问题，就是“理解、规划、协商、执行”几个环节混在同一条链里，导致论文中看起来更像前端系统和普通接口系统，而不像基于多Agent协同的事务助理。为了让智能体部分真正成立，本文在总体设计中将助手拆成一个中控编排者和若干专职模块。实际代码中的核心不是多个模型互相通信，而是 AssistantConductor 顺序调度 Understanding、Task-or-Event Clarifier、Planning、ProposalManager、Negotiation 和 Memory 等 Specialist，再由 Action Executor 处理确认后的写入。
+[182]|ThesisBody|Conductor 的作用类似事务助理中的总调度者。它不直接创建日程，也不直接修改任务，而是负责判断当前输入是普通问答、创建请求、查询请求、修改请求、主动风险信号，还是某个待确认提案的后续回复。判断完成后，Conductor 再从 Specialist Registry 中选择需要参与的专职模块。比如用户说“明天下午三点去学校上政治课”，Conductor 会先调用 Understanding Specialist 抽取时间和地点，再让 Task-or-Event Clarifier 判断它更像一次性日程，接着交给 Planning Specialist 生成可执行方案，最后由 Negotiation Specialist 组织成一条等待用户确认的 proposal。
+[183]|ThesisBody|这种设计和单一模型直接回复的区别在于，模型生成内容不再等同于系统执行结果。语言模型更多承担“理解和组织”的角色，真正的写入动作必须等到 proposal 被用户确认以后，才交给 Action Executor 调用事件、任务或提醒服务。换句话说，系统允许智能体提出建议，但不允许智能体绕过用户确认直接改变事务状态。这个原则解决了个人事务场景中比较敏感的误执行问题，也让后续测试可以明确检查“不确认不落库”和“重复确认不重复写入”。
+[184]|ThesisCaption|表3.5 多Agent角色分工与输出结果
+[185]|ThesisHeading3|3.3.2 自然语言理解模型设计
+[186]|ThesisBody|自然语言理解部分不再只使用关键词匹配。原因很简单，个人事务表达往往不规整，用户可能说“明天下午帮我安排一下复习”，也可能说“后天去学校，别忘了早点叫我”。如果只按“创建日程”“查询任务”之类的关键词硬分，系统很容易把任务安排、一次性日程、提醒请求混在一起。本文采用结构化抽取模型，把用户的一句话转成一个中间语义对象，再由后续智能体继续处理。
+[187]|ThesisBody|结构化抽取对象主要包含 request_type、goal、constraints、missing_fields、ambiguities 和 confidence 几个部分。request_type 表示请求类型，例如 schedule_request、task_plan_request、query_request、revise_proposal 等；goal 保存用户真正想完成的目标，而不是简单保存原句；constraints 用来放时间、地点、持续时长、固定性、优先级、deadline 等限制；missing_fields 记录当前还缺哪些关键字段；ambiguities 记录可能造成误执行的模糊点；confidence 则给 Conductor 判断是否进入澄清提供依据。
+[188]|ThesisBody|在完成方式上，本文采用“规则优先、Gemini 兜底、保守合并”的结构化理解策略。常见的日期词、时间段、地点介词、任务动作词、proposal 编号和确认/拒绝/修改表达，优先由规则解析器处理；当规则结果置信度不足、表达较长或包含多层约束时，再调用 Gemini 2.5 Flash 按固定 schema 输出结构化对象。系统不会直接把模型输出作为执行命令，而是继续经过字段类型校验、时间合法性校验和业务必要性校验。若模型推测出原句中没有依据的地点或时长，该字段会进入 ambiguities，而不是直接写入 constraints。
+[189]|ThesisCaption|表3.6 结构化理解结果字段说明
+[190]|ThesisBody|例如用户输入“明天下午去学校上政治课”时，系统可抽取得到：目标为“去学校上政治课”，日期为明天，时间范围为下午，地点为学校，事务类型倾向于日程，模糊点是结束时间未知。此时信息虽然不是完全字段齐全，但已经足以生成一个低风险 proposal，因此系统不会反复追问“几点结束”，而是给出一个默认持续时长并提示用户确认或修改。这里体现的是“信息齐全不等于字段齐全”，只要系统能够生成至少一个可解释、低风险、可确认的候选方案，就可以进入提案阶段。
+[191]|ThesisHeading3|3.3.3 任务与日程类型判定
+[192]|ThesisBody|个人事务里最容易混淆的是任务和日程。日程通常有明确开始时间和结束时间，比如“明天下午三点上课”；任务则更像一个目标，例如“这周把数据库复习完”。如果系统把任务当成日程，就可能随便创建一个时间块；如果把日程当成任务，又会丢失固定时间和提醒信息。本文单独设计 Task-or-Event Clarifier，就是为了解决这个问题。
+[193]|ThesisBody|判定时系统会综合四类特征。第一类是时间确定性，如果句子含有明确开始时间、地点和外出动作，通常更接近日程。第二类是目标持续性，如果句子带有“复习、完成、整理、推进”这类需要拆分的动作，并且没有固定时间，就更接近任务。第三类是 deadline 信息，若用户说“周五前写完报告”，系统会把它看成任务，并在后续规划中拆成执行切片。第四类是用户纠正信息，如果用户说“这个是任务，不是单次日程”，系统必须立即废弃或 supersede 原 proposal，并生成新的任务型 proposal。
+[194]|ThesisBody|在无法判断时，系统不应该强行猜测。比如“帮我安排一下复习”只说明了目标，没有科目、deadline 和时间节奏，也不确定用户想创建一个任务还是让系统直接找日历空档。此时 Clarifier 的输出不是一个执行方案，而是一条澄清问题，例如“你是想把它作为待办任务保存，还是希望我直接帮你找几个复习时间块？”这一步看起来会增加一次交互，但能避免把不确定事项错误落库。
+[195]|ThesisHeading3|3.3.4 候选方案生成与评分算法
+[196]|ThesisBody|Planning Specialist 的任务不是直接找到一个看似合适的时间，而是先生成多个候选方案，再按照可解释规则排序。对于一次日程创建请求，候选方案通常包括“按用户原始时间创建”“轻微调整以避开冲突”“拆成出发、事件、复盘几个相关块”等；对于任务安排请求，候选方案可能是“直接创建待排程任务”“在今日空档插入一个专注块”“按 deadline 拆成多天执行切片”。
+[197]|ThesisBody|本文采用的评分思路是把候选方案拆成若干可解释因子，而不是让模型直接说哪个方案最好。候选方案 score 可以写成：Score = 0.30 × 时间匹配度 + 0.25 × 冲突安全度 + 0.15 × 截止时间紧迫度 + 0.15 × 通勤可行性 + 0.10 × 用户偏好匹配度 + 0.05 × 执行简洁度 - 风险惩罚。这个公式中的权重不是永久固定参数，而是系统原型阶段的经验设置，目的是让排序过程能被解释、能调试，也便于后续根据用户习惯调整。
+[198]|ThesisCaption|表3.7 候选方案评分因子
+[199]|ThesisBody|冲突检测采用时间区间重叠判断。设候选时间块为 [s1, e1]，已有事件时间块为 [s2, e2]，当 s1 < e2 且 e1 > s2 时说明两者存在重叠。为了适配真实日程，系统不会只比较事件本身时间，还会把 buffer_before、buffer_after 和 travel_duration 一起扩展到事件占用区间。这样“15:00 上课”和“14:40 才能从上一地点出发”的风险可以提前暴露，而不是等到提醒时才发现来不及。
+[200]|ThesisBody|对于出行类事件，出发时间的估算采用保守公式：departure_time = event_start_time - estimated_travel_duration - safety_buffer。原型阶段 safety_buffer 取 10 分钟，estimated_travel_duration 优先来自地图估算，地图不可用时使用地点记忆或固定保守值。由于本文系统不承诺实时精确定位和未来路况预测，所以规划结果会明确写出“按保守通勤估算”，避免把不确定外部数据包装成精确结论。
+[201]|ThesisHeading3|3.3.5 Proposal 协商状态机设计
+[202]|ThesisBody|老师指出原论文算法部分不足，其中一个关键原因是旧写法从“理解用户”直接跳到了“创建事件”。这种链路缺少协商层，也很难说明多Agent如何配合。本文改进后把 proposal 作为中心对象。Proposal 不是普通聊天消息，而是系统围绕一个目标生成的待决策计划单元，里面包含背景、候选方案、风险说明、推荐方案和可执行动作。只有 proposal 被用户确认，Action Executor 才能开始执行。
+[203]|ThesisCaption|表3.8 Proposal 生命周期状态
+[204]|ThesisBody|协商流程可以概括为：Conductor 识别请求后生成 proposal，Proposal Manager 将其置为 pending，Negotiation Specialist 用自然语言说明方案和风险；用户回复“可以”“按方案A”“改成4点”或“先不要安排”后，Conductor 再识别这条回复是确认、修改还是拒绝。如果当前只有一个活跃 proposal，用户可以不写 P1；如果同时存在多个 proposal，系统不能猜测“可以”指哪一个，必须反问用户确认 P1 还是 P2。
+[205]|ThesisBody|这种设计的意义在于，它把人机协作变成了一个有状态的过程。以前聊天系统只保存 message，系统很难知道用户说“改成4点”是改哪一条；现在每个 proposal 有短标识、状态和 payload，用户后续表达就能映射到明确对象上。对于毕业设计来说，这比单纯写“支持自然语言修改”更具体，也更能说明系统底层是如何维护协商上下文的。
+[206]|ThesisHeading3|3.3.6 主动信号与心跳机制设计
+[207]|ThesisBody|个人助理不应只等用户发消息。本文在被动 proposal 闭环之外，引入 AssistantSignal 描述系统主动发现的问题。Signal 并不等同于通知，它记录的是“为什么系统认为此时值得打扰用户”。例如某个高优先任务临近 deadline 但还没有排程，就产生 deadline_risk signal；两个日程扩展缓冲后发生重叠，就产生 conflict_warning signal；外出事件接近出发时间，就产生 departure_readiness signal；起床后或睡前到达固定节律窗口，则产生 daily_morning_review 或 daily_night_review signal。
+[208]|ThesisBody|Signal 的处理同样不能绕过确认。后台任务只负责发现风险并写入 signal，Initiative Specialist 和 Conductor 再判断是否需要转成 proposal。如果只是普通提示，系统可以显示一条信息；如果需要修改日程或重排任务，就必须生成 proposal 并等待用户确认。为了避免主动系统刷屏，signal 使用 dedup_key 和 cooldown 机制。比如同一个任务在同一天只允许产生一条 deadline_risk，同一组冲突在 4 小时内不重复提醒，同一个外出事件围绕 departure_time 只保留一次有效出发检查。
+[209]|ThesisBody|主动心跳的引入，让系统从“被动 Chatbot”更接近“个人事务助理”。不过本文也明确限制一期主动能力的边界：它可以发现风险、生成建议、提示用户确认，但不能自动帮用户重排日程或标记任务完成。这种保守设计虽然减少了一部分自动化程度，但更适合毕业设计原型，也更容易保证事务数据安全。
+[210]|ThesisHeading3|3.3.7 多Agent协同的安全边界
+[211]|ThesisBody|多Agent系统如果没有边界，很容易变成多个模块互相调用、最后谁都说不清责任。本文给每个关键模块设置了约束。Understanding Specialist 只负责理解，不负责执行；Planning Specialist 只生成候选方案，不决定是否直接写库；Negotiation Specialist 只负责协商表达，不改变业务状态；Action Executor 不再做语义理解，只执行已确认的动作；Memory Specialist 才能写长期记忆文件，其他模块只能提出候选记忆。
+[212]|ThesisBody|系统还保留 legacy、shadow、proposal 三种运行模式。legacy 用于回退到旧助手链路，shadow 会运行新 Conductor 但不改变用户侧结果，proposal 则在 Action Executor 和幂等验证通过后才允许对外启用。这样做的好处是，新智能体机制可以分阶段接入，不会一次性破坏原有系统。对于工程实现而言，这也是降低重构风险的重要措施。
+[213]|ThesisHeading2|3.4 数据库设计
+[214]|ThesisHeading3|3.4.1 数据库设计原则
+[215]|ThesisBody|在新的智能体设计中，数据库不只是保存事件、任务和提醒，还要保存协商过程本身。原有 AssistantSession.context_json 可以临时放一些上下文，但如果所有 proposal、signal 和执行结果都塞进一个 JSON 字段，后续就很难查询、去重、过期和调试。因此本文将运行时协商状态单独建模，把“聊天消息”和“可执行提案”分开保存。
+[216]|ThesisBody|本文数据设计遵循三个原则。第一，业务写入资格必须由 AssistantProposal.status 决定，而不是由会话状态或前端按钮决定。第二，主动触发原因必须由 AssistantSignal 记录，这样用户可以知道系统为什么主动提醒。第三，协商链路需要 AssistantThreadState 保存当前上下文，但 ThreadState 不承担执行判断，避免“上下文状态”和“可执行状态”混淆。
+[217]|ThesisHeading3|3.4.2 核心数据表设计
+[218]|ThesisBody|系统保留用户、事件、任务、提醒、会话消息等基础表，同时新增与智能体闭环直接相关的数据对象。结合项目当前代码，数据库主要包括 user_profile、events、tasks、task_splits、habits、reminders、assistant_sessions、assistant_messages、assistant_proposals、assistant_signals、assistant_thread_states、assistant_memory_update_candidates、schedule_change_logs 等表。其中 assistant_proposals 是待确认方案的核心表，assistant_signals 保存主动触发信号，assistant_thread_states 保存协商线程上下文，assistant_memory_update_candidates 保存待确认长期记忆候选。ChromaDB 不承担主业务存储，只作为习惯和偏好检索的辅助层。
+[219]|ThesisCaption|表3.9 新增智能体运行时数据对象
+[220]|ThesisBody|AssistantProposal 的 payload_json 是系统中最重要的结构化字段。它不只保存一段文字，而是保存 goal、context、options、recommended_option_id、confirmation 和 execution 等信息。goal 记录原始文本和归一化目标；context 记录生成方案时用到的日程、任务、地点、天气或 signal；options 保存方案 A、方案 B、方案 C；confirmation 记录是否必须确认以及允许的回复类型；execution 则记录已选择方案、执行次数、执行结果和错误信息。
+[221]|ThesisCaption|表3.10 Proposal payload_json 结构设计
+[222]|ThesisHeading3|3.4.3 索引、去重与过期设计
+[223]|ThesisBody|由于 proposal 和 signal 会随着对话不断产生，数据库必须支持快速查找当前活跃对象。AssistantProposal 主要建立 user_id + status + created_at、user_id + dedup_key、session_id + status 等索引；AssistantSignal 主要建立 user_id + status + signal_type、user_id + dedup_key 等索引；AssistantThreadState 则建立 user_id + session_id + status 索引。这样前端待确认区、主动建议区和后台扫描任务都能按用户快速取到需要处理的数据。
+[224]|ThesisBody|去重不完全依赖数据库唯一约束，而是在 service 层通过 dedup_key 控制。这样做主要是考虑 SQLite 原型环境对复杂 partial unique 约束支持不如大型数据库稳定。比如 deadline_risk:task:23:2026-05-01 表示某个任务在某一天的 deadline 风险；departure_check:event:81:2026-05-01T08:25 表示某个事件某次出发检查；task_schedule_plan:task:23:evening 表示某个任务某个时间窗内的排程方案。只要同一 dedup_key 的 active proposal 还存在，系统就复用旧 proposal，而不是重复生成。
+[225]|ThesisBody|过期机制主要解决“用户隔了很久才确认旧方案”的问题。普通 pending proposal 默认 24 小时过期，日程创建类 proposal 最晚不能晚于事件开始时间，出发提醒类 proposal 则在 departure_time 后失效。后台定时任务会周期性扫描过期 proposal，将其状态改为 expired。过期 proposal 不允许 confirm，只能重新生成，避免系统根据过时上下文创建错误事件。
+[226]|ThesisHeading3|3.4.4 长期记忆数据边界
+[227]|ThesisBody|长期记忆没有直接设计成一张大表，是因为本系统仍属于研究型原型，地点、偏好和习惯需要能被人工检查。系统将长期偏好写入 preferences.md，将常用地点写入 places.md，将作息习惯写入 habits.md，将用户常用术语写入 glossary.md。Memory Specialist 是唯一允许写这些文件的模块，其他 Specialist 只能提交候选更新。
+[228]|ThesisBody|这种边界可以避免两个问题。第一，避免把“我现在在学校”误写成长期地点偏好；当前所在地只应存在运行时上下文中。第二，避免任意智能体把未经确认的信息长期保存。只有用户明确说“记住学校是某地址”，或者睡前复盘后用户确认某项习惯，系统才会把候选记忆写入对应 md 文件。
+[229]|ThesisHeading1|4 系统详细设计与实现
+[230]|ThesisHeading2|4.1 后端架构设计与实现
+[231]|ThesisHeading3|4.1.1 整体架构设计
+[232]|ThesisBody|后端在原有路由层、服务层、仓储层和工具层的基础上，新增 assistant_agents 目录承载智能体协同逻辑。这样做的目的，是把普通事件/任务 CRUD 与智能体推理过程分开，避免把所有能力继续堆在 assistant.py 中。assistant.py 在新架构中更像 facade，负责根据 ASSISTANT_CONDUCTOR_MODE 选择 legacy、shadow 或 proposal 模式，再把请求交给 Conductor。模型接入层则通过 backend/app/tools/gemini.py 中的 GeminiClient 调用 Google Gemini 2.5 Flash；配置项 LLM_PROVIDER 目前只实际接入 gemini，后续可以扩展，但本系统没有实现 Qwen/DeepSeek 路由。
+[233]|ThesisBody|一次助手请求进入后，后端首先建立 AssistantRuntimeContext，其中包括 user_id、session_id、原始消息、当前活跃 proposal、最近会话消息和必要的 profile 信息。Conductor 读取这个上下文后，调用 Specialist Registry 查询可用 specialist，并根据输入类型决定调用顺序。对于普通聊天或暂不支持的复杂工具调用，系统回退旧链路；对于明确的一期事务请求，系统进入 proposal-first 路径。
+[234]|ThesisCaption|表4.1 后端智能体模块与文件组织
+[235]|ThesisHeading3|4.1.2 Proposal API 与 Manager 实现
+[236]|ThesisBody|Proposal Manager 是后端协商闭环的核心。它提供 list、get、confirm、reject、revise、retry 和 expire 等操作。list 用于前端获取当前 pending、execution_failed 等活跃 proposal；confirm 用于确认某个 option；reject 表示用户拒绝该提案；revise 不会直接覆盖原 proposal，而是生成一个新的 proposal，并把旧 proposal 标记为 superseded；retry 只允许 execution_failed 状态进入；expire 则由后台任务或调试接口触发。
+[237]|ThesisBody|confirm 接口的处理顺序比较严格。第一步，检查 proposal 是否存在且属于当前用户。第二步，检查状态是否仍然允许确认，expired、rejected、superseded 都不能再确认。第三步，检查 option_id 是否存在，因为用户确认的是具体方案而不是整个 proposal。第四步，将状态推进到 accepted，再由 Action Executor 进入 execution_pending。第五步，执行成功后写入 executed 和执行回执，失败则写入 execution_failed 和错误摘要。如果 proposal 已经 executed，重复 confirm 只返回原执行结果，不再调用 Action Executor。
+[238]|ThesisBody|这种实现让幂等性有了落点。比如用户连续点两次确认按钮，或 WebSocket 断线后前端重发确认请求，系统不会重复创建两条日程。proposal 的 payload_json.execution 中会保存 attempt_no、started_at、finished_at、result_summary 和 error 等信息，既能给用户反馈，也能供测试检查。
+[239]|ThesisHeading3|4.1.3 Action Executor 实现
+[240]|ThesisBody|Action Executor 不参与语义理解，它只接受已经确认的 option.actions。结合当前实现，首批稳定接入 proposal-confirm-execute 闭环的是 create_event、create_task 和 create_task_with_events。create_event 调用事件服务创建单个日程；create_task 调用任务服务创建待办；create_task_with_events 则先创建父任务，再为其生成若干普通日程块，用来处理“未来几周每周练车”这类重复意图的简化版本。重排、取消、完成标记等 action_type 在接口和设计上预留，但在当前版本中仍属于后续补齐内容，论文不能把它们写成已经完整落地的能力。
+[241]|ThesisBody|在执行前，Action Executor 会把 proposal 状态置为 execution_pending，并把 selected_option_id 写入执行快照。执行过程中如果事件服务或任务服务抛出异常，系统不会把 proposal 伪装成成功，而是记录 execution_failed 和 last_error。retry 时复用原 selected_option_id，并让 retry_count 加一。这样即使某次外部同步失败，用户也能看到是“执行失败可重试”，而不是对话里只出现一句含糊的失败提示。
+[242]|ThesisHeading3|4.1.4 主动 Signal 服务实现
+[243]|ThesisBody|主动能力由 AssistantSignalManager 和 Celery 定时任务共同完成。SignalManager 负责创建、查询、dismiss、evaluate、proposal_created 等状态变更；Celery 任务负责周期性扫描风险。后台主要扫描 deadline_risk、conflict_warning、departure_readiness，并补充 daily_morning_review、daily_night_review 这类日常节律入口。需要强调的是，扫描任务只生成或复用 signal，不直接生成落库动作；Signal 转 Proposal 后，仍要经过用户确认才能执行。
+[244]|ThesisBody|SignalManager 创建 signal 时会先检查 dedup_key 和 cooldown。如果同一用户、同一 dedup_key 在冷却期内已有 new、evaluated、proposal_created 或 cooling 状态的 signal，就不再创建新的同义 signal。这样可以避免后台任务每隔几分钟都重复提醒同一个冲突。对于调试，系统提供 heartbeat/run 接口，它只生成或复用 signal，不创建 proposal，也不写入日程任务。这个边界保证了主动机制不会绕开协商流程。
+[245]|ThesisHeading3|4.1.5 运行模式与回滚保护
+[246]|ThesisBody|考虑到智能体链路改动较大，系统通过 ASSISTANT_CONDUCTOR_MODE 控制运行模式。legacy 表示完全使用旧助手链路；shadow 表示运行新 Conductor 但不改变用户实际响应，只记录日志和候选结果；proposal 表示启用可确认 proposal 链路。主动系统另由 ASSISTANT_PROACTIVE_MODE 控制，off 表示不主动产生用户可见建议，signals 表示只生成 signal，proposals 表示允许 signal 生成待确认 proposal。
+[247]|ThesisBody|这种模式开关在论文中看起来是工程细节，但对多Agent系统很重要。因为智能体系统并不是一次写完就稳定，必须允许逐步替换旧链路。通过 shadow 模式，开发时可以比较新旧理解结果；通过 legacy 回退，演示时如果遇到不可控问题，可以立即恢复旧功能；通过 proposal 模式，只有在 Action Executor 幂等测试通过后才允许真实写入。
+[248]|ThesisHeading3|4.1.6 模型、API 与运行模式对齐说明
+[249]|ThesisBody|为了避免论文描述超出代码实现，本文将实际运行路径明确限定为三点。第一，语言模型当前只使用 Gemini 2.5 Flash，嵌入模型使用 Google text-embedding-004；不存在 Qwen、DeepSeek 或 BGE-M3 的实际调用。第二，多智能体协作采用 Conductor + SpecialistRegistry + ConductorState 的顺序编排，不是独立进程之间的 A2A 协议通信。第三，RAG 只作为习惯、偏好和事件经验的辅助检索层，长期记忆的主路径是 AssistantMemoryService 管理的 md 文件与 AssistantMemoryUpdateCandidate 候选确认表。
+[250]|ThesisBody|围绕 proposal，后端提供了一组结构化 API：GET /api/assistant/proposals 用于获取当前活跃提案，POST /api/assistant/proposals/{id}/confirm 用于确认具体 option，reject、revise、retry 和 expire 分别处理拒绝、修改、失败重试和过期。Signal 相关接口包括 GET /api/assistant/signals、POST /api/assistant/signals/{id}/dismiss 和 POST /api/assistant/signals/{id}/proposal。长期记忆相关接口包括 GET /api/assistant/memory、GET /api/assistant/memory/candidates，以及候选记忆的 confirm/reject。调试侧还保留 /api/assistant/heartbeat/run 和 /api/debug/assistant/proposals，用来检查心跳信号和 proposal 状态。
+[251]|ThesisBody|系统运行模式包括 legacy、shadow 和 proposal。legacy 保留旧助手链路；shadow 会运行新 Conductor 但不改变用户可见输出，用于观察新链路是否稳定；proposal 则让清晰事务请求生成持久化 pending proposal，并在用户确认后由 Action Executor 执行。该模式切换使系统可以逐步升级，而不是一次性替换旧 workflow。
+[252]|ThesisHeading2|4.2 前端界面设计与实现
+[253]|ThesisHeading3|4.2.1 工作台总体布局设计
+[254]|ThesisBody|前端工作台采用单页集成式布局，尽量把常用操作和重要信息放在同一个页面里。用户进入系统后，可以同时看到日历、会话、摘要、提醒和建议，不用在多个页面之间反复切换。这样设计主要是为了让创建事件、查看结果和确认后续动作都处在同一个界面环境里，使用起来会更连贯。
+[255]|ThesisBody|在交互组织上，前端更强调状态联动，而不是把各模块孤立展示。一次会话请求提交后，系统不只是会在对话区返回处理结果，还会同步刷新日历区域、摘要卡片和提醒信息，让用户能直接看到这次操作对整体安排产生了什么影响。对事务管理场景来说，这种联动式反馈明显比单纯的文本回复更实用。
+[257]|ThesisCaption|图4.1 前端工作台整体界面
+[258]|ThesisBody|工作台首页以日历视图为中心，左侧保留快捷入口和统计信息，右侧承担智能助手与结果展示功能。这个页面既能满足用户查看整体日程的需求，也承担了自然语言交互后结果回显的作用，因此是整个前端系统最主要的操作入口。
+[259]|ThesisHeading3|4.2.2 前端模块详解
+[260]|ThesisBody|助手交互区是用户发起智能事务处理的主要入口。用户在这里输入自然语言描述，系统再以对话形式展示识别结果、补问信息和最终建议。和传统表单录入相比，这种方式更适合用来处理同时包含时间、地点、提醒条件和冲突约束的复合请求，输入成本也会低不少。
+[262]|ThesisCaption|图4.2 助手交互区界面
+[263]|ThesisBody|用户发出请求后，系统会先给出意图识别结果，再结合已有上下文返回结构化建议。比如在创建日程时，界面会同步展示时间、地点和提醒条件，方便用户快速确认或继续补充。
+[264]|ThesisBody|摘要卡片区主要承担信息汇总和快速判断的作用。它并不追求把所有细节一次性展示完整，而是通过卡片化方式呈现当天最值得关注的信息，比如今日概览、近期提醒、天气提示和任务压力等，让用户可以先形成一个整体判断。
+[266]|ThesisCaption|图4.3 摘要卡片区界面
+[267]|ThesisBody|助手摘要的卡片结构把不同来源的信息压缩成便于浏览的模块。用户不用先展开完整日历，也能从概览卡片里快速判断是否存在时间冲突、提醒积压或者事项过密等情况。
+[268]|ThesisBody|日常概览与提醒区用于集中展示临近事项、天气变化、通勤时间和待办进展。这个区域更强调时间敏感信息的连续呈现，让用户能及时判断下一步是该出发、确认，还是继续处理别的事情。对于碎片化使用场景来说，这一模块很实用。
+[270]|ThesisCaption|图4.4 日常概览与提醒区界面
+[271]|ThesisBody|该区域把天气、通勤、任务和提醒统一组织成纵向信息流。用户向下滚动就能依次看到当前更紧迫的事项，不需要在多个独立组件之间反复切换。
+[272]|ThesisBody|建议与结果反馈区主要展示系统给出的时间槽推荐、候选安排方案以及文字说明。当用户说的是帮我找一个合适时间，而不是直接创建事件时，系统会优先把推荐结果放在这一模块里，方便用户先比较再确认。
+[274]|ThesisCaption|图4.5 建议与结果反馈区界面
+[275]|ThesisBody|系统这边会把推荐时间、说明信息和可执行动作分层显示，这样既能保留推荐依据，也方便用户直接确认，对提高智能建议的可解释性和可执行性都有帮助。
+[276]|ThesisHeading3|4.2.3 移动端适配实现
+[277]|ThesisBody|移动端适配的关键，并不是把桌面界面简单缩小，而是重新安排常见操作的出现顺序。考虑到手机端常发生在通勤、走动和碎片时间里，系统把日历查看、助手输入和提醒确认放在更靠前的位置，并采用更紧凑的底部导航结构。这样既保留了工作台的主要能力，也不会让页面一下子堆太多信息。
+[278]|ThesisBody|在完成层面，前端通过响应式布局调整面板宽度和显隐关系，并把一部分二级信息折叠到抽屉或页内切换中。移动端和桌面端共用同一套状态管理逻辑，因此无论在哪一端完成事件修改、任务勾选或提醒确认，刷新后都能保持一致。
+[279]|ThesisHeading2|4.3 多Agent协同流程实现
+[280]|ThesisHeading3|4.3.1 Conductor 调度流程实现
+[281]|ThesisBody|多Agent协同在实现上采用“中控判断 + 顺序编排 + 共享状态”的方式，而不是多个独立智能体并行通信。Conductor 首先判断当前消息是否是对已有 proposal 的回复。如果用户输入“按方案A”“P2 可以”“改成4点”，系统会优先进入 proposal follow-up 路径，而不是重新做普通意图识别。只有当消息不是 proposal 后续回复时，才进入新请求理解流程。
+[282]|ThesisBody|新请求流程大致分为六步。第一步，调用 Understanding Specialist 输出结构化理解结果。第二步，如果事务类型不清，调用 Task-or-Event Clarifier 生成澄清问题。第三步，如果信息足以生成低风险方案，则调用 Planning Specialist 生成 options。第四步，Proposal Manager 将 options 包装成 pending proposal。第五步，Negotiation Specialist 生成用户可读的确认文本。第六步，前端展示待确认 proposal，等待用户下一轮确认。
+[283]|ThesisCaption|表4.2 Conductor 路由条件与处理结果
+[284]|ThesisHeading3|4.3.2 结构化理解算法实现
+[285]|ThesisBody|Understanding Specialist 内部先做轻量规则预处理，包括清理无关口语词、识别日期词、识别时间段词、抽取地点介词后的短语，并标记常见动作词和 proposal follow-up 表达。规则能够处理的清晰单日程、确认 P1、拒绝、修改时间等场景优先走规则路径；当规则置信度不足、句子较长或需要补全复杂约束时，才调用 Gemini 2.5 Flash 按固定 schema 输出结构化对象。这样的顺序与“多模型混合路由”不同，它是规则优先加单模型兜底。
+[286]|ThesisBody|字段类型校验主要确保 date、time_range、location、duration、deadline 等字段格式能被后续模块使用；时间合法性校验确保结束时间晚于开始时间，明天、后天等相对表达能转为具体日期；业务必要性校验则判断当前信息是否足以生成 proposal。比如事件创建至少需要目标和可解释时间；任务创建至少需要目标；任务排程则还需要预计时长、deadline 或可用时间窗中的一部分。
+[287]|ThesisBody|当模型输出和规则输出冲突时，系统采用保守合并策略。若模型识别出“明天下午三点”，规则识别出“明天下午”，则取更具体的三点；若模型推测出地点但原句没有地点依据，则把地点放入 ambiguities，而不是直接当作已确定字段；若规则识别出明显的时间表达但模型遗漏，则补回 constraints。这样处理后，理解结果既保留模型的上下文能力，也减少模型随意补全带来的风险。
+[288]|ThesisHeading3|4.3.3 候选方案生成算法实现
+[289]|ThesisBody|Planning Specialist 在生成方案前，会根据 request_type 选择不同的子流程。event_creation 流程会读取目标日期附近已有事件，计算事件占用区间，并根据用户时间约束生成候选开始时间；task_creation 流程更关注任务标题、deadline、预计时长和优先级；task_schedule_plan 流程则需要先创建父任务，再把执行过程拆成一个或多个日程块。
+[290]|ThesisBody|候选时间窗的生成采用“先过滤、再评分”的方式。过滤阶段去掉已经与固定事件冲突的时间段，去掉早于当前时间的时间段，去掉不满足最小时长的空档。评分阶段再计算时间匹配度、冲突安全度、通勤可行性、deadline 压力和偏好匹配。这样的做法比直接让模型生成一个时间更稳，因为模型只负责解释和整理，具体时间合法性由程序计算。
+[291]|ThesisBody|对于带地点的事件，规划算法还会尝试补充 travel block。假设用户要在 15:00 到学校，系统估计通勤 25 分钟，安全冗余 10 分钟，则出发时间为 14:25。若 14:25 前后已有事件占用，方案风险升高，系统会在 tradeoffs 中写明“出发缓冲不足”。如果风险过高，就不直接推荐原方案，而是生成后移方案或要求用户确认是否仍按原时间安排。
+[292]|ThesisCaption|表4.3 候选方案 option 结构示例
+[293]|ThesisHeading3|4.3.4 协商文本生成与回复解析
+[294]|ThesisBody|Negotiation Specialist 不负责决定是否可以跳过确认，所有写操作必须确认是系统硬规则。它的任务是把内部 option 组织成用户看得懂的文本。对于单方案 proposal，回复中要说明系统理解的目标、推荐安排、风险点和可回复方式，例如“我先整理成一个待确认方案：方案A，明天下午3点到4点去学校上政治课，结束时间按1小时估计。确认请回复‘按方案A安排’，也可以说‘改成4点’。”
+[295]|ThesisBody|对于多方案 proposal，协商文本会列出 P1 或同一 proposal 下的 A/B/C 方案，并说明推荐原因。用户回复解析分两层进行：第一层判断指向哪个 proposal，第二层判断用户是 accept、reject 还是 revise。若只有一个 active proposal，系统允许“可以”“按方案A”这类简写；若有多个 active proposal，系统要求用户写出 P1 或 P2。这样能避免多个待确认事项并存时发生误执行。
+[296]|ThesisHeading3|4.3.5 Proposal 确认与幂等执行流程
+[297]|ThesisBody|确认流程是本文智能体实现中最关键的一段。用户确认后，系统并不是直接创建日程，而是先由 Proposal Manager 检查状态。pending 状态允许确认，accepted 但未执行的 proposal 可以继续推进，execution_pending 表示正在执行，executed 表示已经完成，expired、rejected、superseded 都拒绝确认。确认 option 不存在时，接口返回明确错误，而不是默认选择推荐方案。
+[298]|ThesisBody|通过状态检查后，系统将 selected_option_id 写入 proposal，并把状态推进到 execution_pending。Action Executor 读取 option.actions，逐个执行 create_event、create_task 或 create_task_with_events。执行完成后，result_summary 写回 payload_json.execution，同时状态改为 executed。如果任何一步失败，系统记录 last_error，状态改为 execution_failed。retry 只能从 execution_failed 进入，并且复用原 selected_option_id，这样可以防止用户在失败重试时意外切换到另一个方案。
+[299]|ThesisBody|幂等性的核心是“执行结果绑定 proposal，而不是绑定按钮点击”。当一个 proposal 已经 executed 后，后续重复 confirm 只返回第一次执行的回执；当 proposal 仍在 execution_pending 时，重复 confirm 返回当前执行状态，不重复调用服务；当 proposal execution_failed 时，用户必须走 retry，而不是继续 confirm。这个规则在测试中可以直接通过统计事件数量验证。
+[300]|ThesisHeading3|4.3.6 主动风险扫描与 Signal 转 Proposal
+[301]|ThesisBody|主动扫描由 Celery beat 周期性触发，但扫描任务只负责发现风险，不直接修改日程。deadline_risk 扫描会查找高优先级、接近 deadline 且未排程或排程不足的任务；conflict_warning 扫描会查找时间区间或缓冲区间重叠的事件；departure_readiness 扫描会检查外出事件的 departure_time 是否即将到达；daily rhythm 扫描则根据用户 profile 或 habits 中的作息，在起床后 30 分钟和睡前 30 分钟生成日常回顾信号。
+[302]|ThesisBody|Signal 被创建后处于 new 状态。Initiative Specialist 读取后判断是否需要形成 proposal。如果只是低风险提示，可以停留在 evaluated 或 dismissed；如果需要用户调整任务或日程，则生成对应 proposal。例如 deadline_risk 可生成 deadline_recovery proposal，给出“今晚安排 40 分钟复习”“明天上午安排 60 分钟复习”等方案；conflict_warning 可生成 reschedule_plan proposal；departure_readiness 则可能生成“现在出发”或“标记已经到达”的跟进建议。
+[303]|ThesisBody|整个主动链路仍然遵守“不确认不落库”。Signal 可以主动出现，proposal 可以主动生成，但真正的任务重排、事件改期和完成标记都需要用户确认。这样系统既体现了主动性，又不会越权操作用户的个人事务。
+[304]|ThesisHeading3|4.3.7 长期记忆参与协同流程
+[305]|ThesisBody|长期记忆主要参与理解和规划两个环节。实际实现中，AssistantMemoryService 管理 preferences.md、places.md、habits.md、glossary.md 四类可读记忆文件；MemorySpecialist 检测“请记住”“帮我保存”“以后我更喜欢”这类显式记忆请求，并生成 AssistantMemoryUpdateCandidate。已确认的 md 记忆会以只读摘要进入 assistant/conductor context，places.md 中的地点别名可辅助把“学校”“图书馆”“驾校”等表达映射为更稳定的地点信息。
+[306]|ThesisBody|不过长期记忆不能被随意写入。系统采用候选记忆机制，其他 specialist 只提交 MemoryUpdateCandidate，Memory Specialist 才能在用户明确确认后写入 md 文件。比如用户说“记住学校是南门校区”，系统只会先生成 proposed 候选并在前端待确认记忆区展示；用户确认后才写入 places.md。用户说“我现在在学校”则只更新运行时 current_origin，不写入长期记忆。这个规则防止短期上下文污染长期记忆，也能避免系统私自保存未经确认的偏好。
+[307]|ThesisHeading3|4.3.8 典型协同过程示例
+[308]|ThesisBody|以“明天下午三点去学校上政治课，提醒我早点出门”为例，系统首先由 Understanding Specialist 抽取目标、日期、时间、地点和提醒需求；Task-or-Event Clarifier 判断它是一次性日程；Planning Specialist 读取明天下午已有事件，估算从常用出发地到学校的通勤时间，并生成方案A：15:00-16:00 上课，14:25 出发提醒；如果 14:25 附近有冲突，则生成方案B：提示缓冲不足并建议提前或后移。
+[309]|ThesisBody|随后 Proposal Manager 将方案包装成 pending proposal，Negotiation Specialist 返回“我整理了一个待确认方案”。用户回复“可以”后，Proposal Manager 记录 selected_option_id=A，Action Executor 创建事件和提醒。若用户回复“改成4点”，旧 proposal 进入 superseded，系统生成新 proposal，而不是直接覆盖执行。这样整个过程从理解、规划、协商到执行都有明确状态，论文中也能具体说明每个智能体到底做了什么。
+[310]|ThesisHeading3|4.3.9 ReAct 子图与旧链路回退实现
+[311]|ThesisBody|项目中仍保留 ReActSubgraph 作为旧 workflow 的条件分支。它基于 LangGraph StateGraph 组织，最多执行有限轮 Thought-Action-Observation 循环，工具通过注册机制挂接到日程、任务、上下文等服务。该子图主要用于复杂任务探索或 proposal mode 尚未覆盖的旧链路场景，不是独立于 Conductor 的自主任务规划智能体。本文将其定位为工作流回退能力，可以增强系统覆盖面，但不替代 proposal-first 的确认后执行机制。
+[312]|ThesisHeading2|4.4 性能优化策略实现
+[313]|ThesisHeading3|4.4.1 按需上下文获取优化
+[314]|ThesisBody|智能体系统如果每次请求都读取所有日程、任务、地图、天气和外部日历，响应速度会明显下降。因此本文把上下文获取放到 Planning Specialist 内部按需触发。只有当请求中出现地点、出发、外出、天气相关词，或候选方案需要判断跨地点冲突时，系统才调用地图和天气服务；只有当请求涉及日程冲突或找空档时，才读取较大范围的 calendar 数据。
+[315]|ThesisBody|这种按需策略和 Conductor 调度有关。Conductor 会根据 Understanding Specialist 的输出给每类上下文打标，例如 needs_calendar、needs_tasks、needs_travel、needs_weather、needs_memory。Planning Specialist 只读取标记为需要的上下文。这样既能降低外部接口调用次数，也减少外部接口失败对主链路的影响。
+[316]|ThesisHeading3|4.4.2 缓存、去重与冷却优化
+[317]|ThesisBody|系统对工作台快照、天气快照和近期上下文使用短时间缓存。天气信息采用每日 06:00 快照为主，只有用户明确询问天气、缓存超过 8 到 10 小时且即将外出，或存在降雨高温等强相关风险时才补拉。Proposal 和 Signal 则通过 dedup_key 去重，避免同一个任务在短时间内重复生成多个相同建议。
+[318]|ThesisBody|主动信号还加入 cooldown。比如 deadline_risk 默认 6 小时内不重复，conflict_warning 默认 4 小时内不重复。冷却机制不是为了少提醒，而是为了让提醒更像“有原因的协商”，而不是后台任务反复刷存在感。
+[319]|ThesisHeading3|4.4.3 异步处理与降级策略
+[320]|ThesisBody|后台提醒扫描、proposal 过期处理、外部日历同步和长期记忆候选检查都放入 Celery 任务中执行。用户发起的主请求尽量只完成理解、提案和必要的轻量查询，不把耗时扫描塞进同一次请求。执行成功后通过工作台刷新机制让前端看到最新事件和任务。
+[321]|ThesisBody|外部服务失败时，系统采用主链路优先策略。地图接口失败不会阻止创建日程，只是把通勤风险标记为 unknown；天气接口失败不会阻止 proposal 生成，只是不显示天气提示；Google Calendar 同步失败不会让本地 proposal 误判为失败，除非本地写入本身失败。这样处理能让系统在网络或第三方服务不稳定时仍保持基本可用。
+[322]|ThesisHeading1|5 系统测试与结果分析
+[323]|ThesisHeading2|5.1 测试环境与测试方法
+[324]|ThesisHeading3|5.1.1 测试环境配置
+[325]|ThesisBody|系统测试是在毕业设计原型环境中完成的。后端运行在 Python 3.11、FastAPI、Async SQLAlchemy 和 Alembic 环境下，SQLite 用来保存原型数据，Redis 和 Celery 提供缓存与定时作业能力。前端使用 Vue 3、Pinia、Vite 和 FullCalendar 构建。模型层采用 Google Gemini 2.5 Flash 云端 API，嵌入层采用 Google text-embedding-004，测试环境中没有部署 Qwen、DeepSeek 或 BGE-M3 等内网模型服务。
+[326]|ThesisBody|为了让测试更接近日常使用情境，功能测试既包含结构化输入，也包含更接近日常表达的自然语言输入；性能测试则分别观察单次请求、并发访问以及后台扫描同时运行时的响应表现。
+[327]|ThesisHeading3|5.1.2 测试方法
+[328]|ThesisBody|测试方法主要由功能验证、压力测试和体验评估三部分组成。功能验证关注系统能否正确完成意图识别、事件创建、任务推荐和提醒生成。压力测试记录平均响应时间、吞吐量和错误率。体验评估则邀请用户从任务完成率、满意度和使用频率等角度给出反馈。这样安排的目的，是尽量同时看到系统能不能用和用起来怎么样这两方面的情况。
+[329]|ThesisHeading2|5.2 功能测试结果
+[330]|ThesisHeading3|5.2.1 自然语言理解与类型判定测试
+[331]|ThesisBody|功能测试首先检查系统是否能把用户自然语言转换为结构化理解结果。测试样例包含清晰日程、模糊日程、模糊任务、任务/日程类型不清、proposal 确认回复等类型。对于“明天下午3点去学校和同学见面”，系统应识别为 event_creation，并抽取日期、时间、地点和目标；对于“帮我安排复习”，系统应识别为 task_plan_request 或任务倾向，并要求补充科目、截止时间或节奏；对于“这个是任务，不是单次日程”，系统应进入 revise 或 supersede 流程。
+[332]|ThesisCaption|表5.2 智能体理解与澄清测试结果
+[333]|ThesisHeading3|5.2.2 Proposal 状态机与幂等测试
+[334]|ThesisBody|第二类测试关注 proposal 生命周期。测试时先构造 pending proposal，再分别执行 confirm、reject、revise、expire 和 retry。结果显示，pending 可以进入 accepted 和 execution_pending，执行成功后进入 executed；revise 会生成新 proposal 并把旧 proposal 标记为 superseded；expired、rejected、superseded 状态都无法再确认；execution_failed 状态允许 retry。
+[335]|ThesisBody|幂等测试通过重复确认同一个 proposal 来验证。第一次确认后系统创建一个事件，proposal 进入 executed；第二次确认同一 proposal 时，系统返回原执行回执，事件数量不增加。这个结果说明执行资格由 proposal 状态控制，而不是由前端点击次数控制。
+[336]|ThesisCaption|表5.3 Proposal 状态机测试结果
+[337]|ThesisHeading3|5.2.3 主动 Signal 与协商测试
+[338]|ThesisBody|第三类测试检查主动机制。系统通过构造临近 deadline 的高优先任务、相互冲突的日程和带通勤时间的外出事件，验证后台任务是否能生成对应 signal。测试结果表明，deadline_risk、conflict_warning 和 departure_readiness 均能产生 signal，并且 signal 不会直接修改任务或日程。只有当 signal 被转成 proposal 且用户确认以后，系统才执行重排或创建动作。
+[339]|ThesisBody|cooldown 与 dedup 测试中，同一个任务在冷却时间内重复扫描不会生成多条相同 deadline_risk；同一组冲突事件在 cooldown 内不会反复产生 conflict_warning；出发提醒围绕 departure_time 触发，而不是简单按照 event_start_time 触发。这样可以证明主动能力不是单纯提醒，而是受控的协商入口。
+[340]|ThesisHeading3|5.2.4 前端待确认区测试
+[341]|ThesisBody|前端测试主要检查 proposal 是否能被用户看见和操作。助手面板会显示当前 pending proposal 的 P1/P2 标识、摘要、状态和可选方案。用户可以用自然语言确认，也可以通过界面操作确认、拒绝、修改和重试。确认成功后，前端会刷新 events 和 tasks，让用户看到已创建的日程或任务。移动端测试中，待确认区不会遮挡底部输入框，旧会话切换也不会造成 proposal 状态丢失。
+[342]|ThesisHeading3|5.2.5 长期记忆候选确认测试
+[343]|ThesisBody|长期记忆测试主要检查显式记忆请求是否会进入候选确认流程。用户发送“请帮我记住我喜欢上午安排深度任务”后，系统应生成 AssistantMemoryUpdateCandidate，状态为 proposed，并在助手回复中提示进入待确认记忆区。用户确认后，候选内容写入对应 md 文件；用户拒绝后，候选状态更新且不会污染长期记忆。测试还检查“我现在在学校”这类短期上下文不会写入 places.md，以验证长期记忆和运行时状态之间的边界。
+[344]|ThesisHeading2|5.3 性能测试结果
+[345]|ThesisHeading3|5.3.1 响应时间测试
+[346]|ThesisBody|系统这边对常见操作的响应时间做了统计。表5.3可以看出，查询类请求明显快于涉及外部上下文和写入操作的请求。不过即便是相对复杂的操作，整体响应时间仍处在可接受范围内，说明当前实现至少已经能支撑毕业设计阶段的展示与测试。
+[362]|ThesisCaption|图5.1 多角色协同处理流
+[364]|ThesisCaption|表5.3 各类操作响应时间统计
+[366]|ThesisHeading3|5.3.2 并发性能测试
+[367]|ThesisBody|并发访问测试主要观察不同并发用户规模下的平均响应时间、吞吐量和错误率。伴随着并发数增加，系统响应时间确实会有上升，但在中等并发规模下整体表现仍然比较稳定。表5.4给出了具体结果，这也说明当前系统在原型范围内具备基本的并发承载能力。
+[368]|ThesisCaption|表5.4 并发性能测试结果
+[370]|ThesisHeading3|5.3.3 资源利用率测试
+[371]|ThesisBody|资源利用率测试用于观察系统持续运行时的占用情况，结果见表5.5。整体看下来，当前原型在资源占用方面比较平稳，能够满足毕业设计阶段的展示和测试需求，也说明前后端与异步模块之间的配合没有出现特别明显的资源瓶颈。
+[372]|ThesisCaption|表5.5 资源利用率统计
+[374]|ThesisHeading1|6 结论与展望
+[375]|ThesisHeading2|6.1 研究工作总结
+[376]|ThesisBody|本文围绕个人事务管理这个具体场景，完成了一套基于 Conductor 顺序编排和 Proposal 机制的智能个人事务助理原型。系统不仅包含日程、任务、提醒和前端工作台，还把自然语言理解、任务/日程澄清、候选方案生成、proposal 持久化、用户确认、Action Executor 执行、主动 signal 跟进和长期记忆候选确认串成了一个完整链路。和普通聊天助手相比，本文更强调事务状态能否被追踪、方案能否被确认、重复确认是否幂等，以及执行结果能否回到界面中。
+[377]|ThesisBody|从工程完成情况看，系统已实现 proposal-first + confirmation-before-write 核心机制，形成了 Understanding、Clarifier、Planning、ProposalManager、Negotiation、Memory 等 Specialist 的顺序编排结构，并通过 AssistantProposal、AssistantSignal、AssistantThreadState 和 AssistantMemoryUpdateCandidate 等数据对象保存协商状态。主动信号覆盖 deadline、冲突、出发和日常节律，长期记忆采用 md 文件和候选确认机制，前端也加入了待确认 proposal 与待确认记忆展示。
+[378]|ThesisBody|在实现过程中，系统通过条件化 API 调用减少了没有必要的外部请求，通过 dedup_key、cooldown、expires_at 和 Celery 定时清理控制重复 proposal 与重复 signal。根据项目实施任务书中的验证记录，后端回归测试已覆盖 350 个以上用例，Phase 0 到 Phase 7 均已完成验证，Phase 8 的长期记忆和个性化能力也已完成多轮回归。整体来看，这套系统已经不只是一个前端工作台，而是一个具备结构化协商、确认后执行和可控主动跟进能力的个人事务助理原型。
+[379]|ThesisHeading2|6.2 主要创新点
+[380]|ThesisBody|本文的创新点主要体现在三个方面。第一，在系统结构上，将个人事务助理从单一 Chatbot 改为 Conductor 与多个 Specialist 协同的模式，使理解、规划、协商、执行和跟进不再混在一起。第二，在事务执行上，引入 AssistantProposal 作为唯一执行入口，用户确认前系统只生成方案，不直接写入任务或日程，并通过状态机和执行快照解决重复确认问题。第三，在主动能力上，引入 AssistantSignal 描述 deadline、冲突、出发和日常节律等触发原因，让提醒不只是时间通知，而是可以继续转化为协商提案的事务入口。
+[381]|ThesisBody|此外，本文没有把大语言模型当作全能执行器，而是将其限制在结构化理解和协商表达环节。真正的时间冲突判断、候选方案评分、执行幂等和数据库状态变更仍由后端服务控制。这样的设计更符合个人事务管理对可靠性的要求，也更便于解释系统内部到底如何完成一个安排。
+[382]|ThesisHeading2|6.3 不足与改进方向
+[383]|ThesisBody|当前系统仍然存在一些不足。首先，系统虽然接入了 Gemini 2.5 Flash，但没有真正实现多模型路由，LLM_PROVIDER 只是为未来扩展保留接口。其次，结构化理解对长句、多目标混合请求的拆分仍不够稳定，复杂表达还可能需要用户多轮澄清。再次，Action Executor 当前稳定闭环主要覆盖创建类动作，重排、延期、取消和完成状态修改还需要进一步接入 proposal-confirm-execute 机制。最后，create_task_with_events 这类复合动作还缺少完整事务补偿机制，如果中途部分写入失败，后续仍需要更细的恢复策略。
+[384]|ThesisBody|主动系统方面，目前主要覆盖 deadline、冲突、出发和日常节律，尚未形成更完整的长期计划管理能力。长期记忆虽然采用了 md 文件和候选更新机制，但对记忆质量、冲突记忆合并、过期偏好清理等问题还没有深入处理。这些都是后续继续改进的方向。
+[385]|ThesisHeading2|6.4 未来研究展望
+[386]|ThesisBody|后续研究可以从四个方向推进。第一，继续增强 Understanding Specialist，让系统能更稳定地拆分一句话中的多个目标，并支持更自然的多轮修改。第二，完善 Planning Specialist 的评分模型，引入用户真实确认行为作为反馈，让时间偏好、地点偏好和任务节奏逐步个性化。第三，扩展 Action Executor 的动作覆盖，把重排、延期、取消、完成标记等操作纳入统一 proposal 状态机。第四，在现有单 Gemini 模型的基础上再考虑多模型接入，但这应作为未来扩展，不能把尚未实现的 Qwen、DeepSeek 路由写成本系统已验证成果。
+[387]|ThesisBody|从工程角度看，后续还可以引入更完整的执行审计表，对多 action proposal 做事务补偿；也可以把长期记忆从 md 文件逐步迁移到带版本控制的记忆表。这样系统就能从毕业设计原型进一步发展为一个更稳定的多端个人事务助理。
+[388]|ThesisHeading1|附录A  系统实现补充说明
+[389]|ThesisHeading2|A.1 关键业务流程补充
+[390]|ThesisBody|正文部分为了保持篇幅和结构紧凑，没有把所有业务细节都展开写。本附录对几个关键流程再做一些补充。事件处理流程以用户输入和个人资料为起点，在识别出时间与地点后，系统会先判断地点是否需要解析，再决定是否估算通勤和出发时间，最后把事件主体信息和补充信息一起保存。任务处理流程则围绕待办和专注块之间的关系展开，当任务被拆入某个时间段后，系统也会同步调整其状态和已占用时长。
+[391]|ThesisBody|助手处理流程则以会话为中心。每次用户输入都会和系统动作记录一起保存下来，这样补问、确认、创建和后续提醒就能放在同一条语义链里回看。这样做一方面方便用户理解系统为什么给出某项安排，另一方面也便于后续调试时追踪某次动作的来源。
+[392]|ThesisHeading2|A.2 关键模块关系补充
+[393]|ThesisCaption|表A.1 关键模块关系说明
+[395]|Normal|后端采用分层架构设计，从上到下分为API层、服务层、工作流引擎层、数据访问层和基础设施层。每层都有明确的职责和接口定义，确保系统的后续维护便利性和后续扩展能力。
+[397]|ThesisHeading3|API网关模块
+[398]|Normal|from fastapi import FastAPI, Request, Response
+[399]|Normal|from fastapi.middleware.cors import CORSMiddleware
+[400]|Normal|import time
+[401]|Normal|import uuid
+[402]|Normal|from typing import Optional
+[404]|Normal|class APIGateway:
+[405]|Normal|def __init__(self):
+[406]|Normal|self.app = FastAPI(
+[407]|Normal|title="MA-IPAAS API Gateway",
+[408]|Normal|description="Multi-Agent Intelligent Personal Affairs Assistant System",
+[409]|Normal|version="1.0.0"
+[410]|Normal|)
+[411]|Normal|self.setup_middleware()
+[412]|Normal|self.setup_routes()
+[414]|Normal|def setup_middleware(self):
+[415]|Normal|# CORS配置
+[416]|Normal|self.app.add_middleware(
+[417]|Normal|CORSMiddleware,
+[418]|Normal|allow_origins=["*"],
+[419]|Normal|allow_credentials=True,
+[420]|Normal|allow_methods=["*"],
+[421]|Normal|allow_headers=["*"],
+[422]|Normal|)
+[424]|Normal|# 请求日志中间件
+[425]|Normal|@self.app.middleware("http")
+[426]|Normal|async def add_process_time_header(request: Request, call_next):
+[427]|Normal|start_time = time.time()
+[428]|Normal|request_id = str(uuid.uuid4())
+[430]|Normal|# 添加请求ID到请求头
+[431]|Normal|request.state.request_id = request_id
+[433]|Normal|response = await call_next(request)
+[434]|Normal|process_time = time.time() - start_time
+[435]|Normal|response.headers["X-Process-Time"] = str(process_time)
+[436]|Normal|response.headers["X-Request-ID"] = request_id
+[438]|Normal|return response
+[440]|Normal|def setup_routes(self):
+[441]|Normal|# 健康检查
+[442]|Normal|@self.app.get("/health")
+[443]|Normal|async def health_check():
+[444]|Normal|return {"status": "healthy", "timestamp": time.time()}
+[446]|Normal|# 导入其他路由模块
+[447]|Normal|from .routes import assistant, events, tasks, profile
+[448]|Normal|self.app.include_router(assistant.router, prefix="/api/v1")
+[449]|Normal|self.app.include_router(events.router, prefix="/api/v1")
+[450]|Normal|self.app.include_router(tasks.router, prefix="/api/v1")
+[451]|Normal|self.app.include_router(profile.router, prefix="/api/v1")
+[454]|ThesisHeading3|意图识别模块
+[455]|Normal|import re
+[456]|Normal|from typing import Dict, List, Optional, Tuple
+[457]|Normal|from dataclasses import dataclass
+[458]|Normal|from datetime import datetime, timedelta
+[459]|Normal|import json
+[461]|Normal|@dataclass
+[462]|Normal|class IntentResult:
+[463]|Normal|intent: str
+[464]|Normal|confidence: float
+[465]|Normal|entities: Dict[str, any]
+[466]|Normal|missing_info: List[str]
+[468]|Normal|class IntentParser:
+[469]|Normal|def __init__(self):
+[470]|Normal|self.intent_patterns = {
+[471]|Normal|'create_event': [
+[472]|Normal|r'(创建|添加|安排|预约|预定)(一个)?(.+?)(?:在|从)(.+?)(?:到|至)(.+)',
+[473]|Normal|r'(帮我)?(安排|预约)(.+?)(?:在|从)(.+)',
+[474]|Normal|r'(创建|添加)日程(.+?)(?:在|从)(.+)'
+[475]|Normal|],
+[476]|Normal|'query_schedule': [
+[477]|Normal|r'(查看|查询|看看)(我的)?(日程|安排|计划)(?:在)?(.+)?',
+[478]|Normal|r'(今天|明天|这周|下周)(有|的)(什么)?(安排|日程|计划)',
+[479]|Normal|r'(我)(.+?)(有空|空闲|没安排)'
+[480]|Normal|],
+[481]|Normal|'create_task': [
+[482]|Normal|r'(添加|创建)(一个)?待办(事项)?(?:是)?(.+)',
+[483]|Normal|r'(记得|提醒)(我)(.+?)(?:在|之前)(.+)',
+[484]|Normal|r'(需要|要)(做|完成)(.+?)(?:在|之前)(.+)'
+[485]|Normal|],
+[486]|Normal|'query_tasks': [
+[487]|Normal|r'(查看|看看)(我的)?待办(事项)?',
+[488]|Normal|r'(今天|这周)(有|的)(什么)?(待办|任务)',
+[489]|Normal|r'(我)(还有|剩下)(什么)?(待办|任务)'
+[490]|Normal|]
+[491]|Normal|}
+[493]|Normal|self.time_patterns = [
+[494]|Normal|r'(\d{4})年(\d{1,2})月(\d{1,2})日(?:\s*(\d{1,2}):(\d{2}))?',
+[495]|Normal|r'(\d{1,2})月(\d{1,2})日(?:\s*(\d{1,2}):(\d{2}))?',
+[496]|Normal|r'(今天|明天|后天|大后天)(?:\s*(\d{1,2}):(\d{2}))?',
+[497]|Normal|r'(下周|下下周)(\d)(?:\s*(\d{1,2}):(\d{2}))?',
+[498]|Normal|r'(\d{1,2}):(\d{2})-?(\d{1,2}):(\d{2})?'
+[499]|Normal|]
+[501]|Normal|self.location_patterns = [
+[502]|Normal|r'(在|到|去|从)(.+?)(?:做|开会|见面|吃饭|玩)',
+[503]|Normal|r'地点(?:是|在)?(.+)',
+[504]|Normal|r'地址(?:是)?(.+)'
+[505]|Normal|]
+[507]|Normal|def parse_intent(self, text: str, context: Optional[Dict] = None) -> IntentResult:
+[508]|Normal|"""解析用户意图"""
+[509]|Normal|text = text.strip()
+[510]|Normal|context = context or {}
+[512]|Normal|# 尝试匹配已知意图模式
+[513]|Normal|for intent, patterns in self.intent_patterns.items():
+[514]|Normal|for pattern in patterns:
+[515]|Normal|match = re.search(pattern, text, re.IGNORECASE)
+[516]|Normal|if match:
+[517]|Normal|entities = self._extract_entities(text, match)
+[518]|Normal|confidence = self._calculate_confidence(text, intent, entities)
+[519]|Normal|missing_info = self._identify_missing_info(intent, entities)
+[521]|Normal|return IntentResult(
+[522]|Normal|intent=intent,
+[523]|Normal|confidence=confidence,
+[524]|Normal|entities=entities,
+[525]|Normal|missing_info=missing_info
+[526]|Normal|)
+[528]|Normal|# 默认返回闲聊意图
+[529]|Normal|return IntentResult(
+[530]|Normal|intent='chat',
+[531]|Normal|confidence=0.8,
+[532]|Normal|entities={'message': text},
+[533]|Normal|missing_info=[]
+[534]|Normal|)
+[536]|ThesisHeading3|调度算法模块
+[537]|Normal|from datetime import datetime, timedelta
+[538]|Normal|from typing import List, Dict, Optional, Tuple
+[539]|Normal|from dataclasses import dataclass
+[540]|Normal|import numpy as np
+[541]|Normal|from itertools import product
+[543]|Normal|@dataclass
+[544]|Normal|class TimeSlot:
+[545]|Normal|start: datetime
+[546]|Normal|end: datetime
+[548]|Normal|def duration(self) -> timedelta:
+[549]|Normal|return self.end - self.start
+[551]|Normal|def overlaps(self, other: 'TimeSlot') -> bool:
+[552]|Normal|return self.start < other.end and self.end > other.start
+[554]|Normal|@dataclass
+[555]|Normal|class Event:
+[556]|Normal|id: str
+[557]|Normal|title: str
+[558]|Normal|start_time: datetime
+[559]|Normal|end_time: datetime
+[560]|Normal|is_fixed: bool = False
+[561]|Normal|priority: int = 3
+[562]|Normal|location: Optional[str] = None
+[563]|Normal|transport_duration: int = 0
+[564]|Normal|buffer_before: int = 15
+[565]|Normal|buffer_after: int = 15
+[567]|Normal|class SchedulingEngine:
+[568]|Normal|def __init__(self):
+[569]|Normal|self.work_start_time = 9 * 60  # 9:00 AM in minutes
+[570]|Normal|self.work_end_time = 18 * 60  # 6:00 PM in minutes
+[571]|Normal|self.default_buffer = 15  # minutes
+[573]|Normal|def find_available_slots(
+[574]|Normal|self,
+[575]|Normal|existing_events: List[Event],
+[576]|Normal|duration: int,
+[577]|Normal|date: datetime,
+[578]|Normal|buffer_time: int = 15
+[579]|Normal|) -> List[TimeSlot]:
+[580]|Normal|"""查找可用的空闲时间段"""
+[581]|Normal|# 将现有事件按开始时间排序
+[582]|Normal|sorted_events = sorted(existing_events, key=lambda x: x.start_time)
+[584]|Normal|available_slots = []
+[585]|Normal|current_time = date.replace(hour=8, minute=0, second=0, microsecond=0)
+[586]|Normal|end_time = date.replace(hour=22, minute=0, second=0, microsecond=0)
+[588]|Normal|for event in sorted_events:
+[589]|Normal|# 计算事件的有效时间范围（包括缓冲时间）
+[590]|Normal|event_start = event.start_time - timedelta(minutes=event.buffer_before)
+[591]|Normal|event_end = event.end_time + timedelta(minutes=event.buffer_after)
+[593]|Normal|# 检查当前时间与事件之间是否有足够的空闲时间
+[594]|Normal|if current_time + timedelta(minutes=duration + buffer_time) <= event_start:
+[595]|Normal|slot_start = current_time
+[596]|Normal|slot_end = event_start - timedelta(minutes=buffer_time)
+[598]|Normal|if slot_end - slot_start >= timedelta(minutes=duration):
+[599]|Normal|available_slots.append(TimeSlot(slot_start, slot_end))
+[601]|Normal|# 更新当前时间为事件结束时间
+[602]|Normal|current_time = max(current_time, event_end)
+[604]|Normal|# 检查最后一个事件之后的时间
+[605]|Normal|if current_time + timedelta(minutes=duration + buffer_time) <= end_time:
+[606]|Normal|available_slots.append(TimeSlot(current_time, end_time))
+[608]|Normal|return available_slots
+[610]|Normal|def detect_conflicts(
+[611]|Normal|self,
+[612]|Normal|existing_events: List[Event],
+[613]|Normal|new_event: Event
+[614]|Normal|) -> List[Event]:
+[615]|Normal|"""检测日程冲突"""
+[616]|Normal|conflicts = []
+[618]|Normal|# 计算新事件的有效时间范围（包括缓冲时间）
+[619]|Normal|new_start = new_event.start_time - timedelta(minutes=new_event.buffer_before)
+[620]|Normal|new_end = new_event.end_time + timedelta(minutes=new_event.buffer_after)
+[621]|Normal|new_slot = TimeSlot(new_start, new_end)
+[623]|Normal|for event in existing_events:
+[624]|Normal|# 跳过已取消的事件
+[625]|Normal|if event.id == new_event.id:
+[626]|Normal|continue
+[628]|Normal|# 计算现有事件的有效时间范围
+[629]|Normal|event_start = event.start_time - timedelta(minutes=event.buffer_before)
+[630]|Normal|event_end = event.end_time + timedelta(minutes=event.buffer_after)
+[631]|Normal|event_slot = TimeSlot(event_start, event_end)
+[633]|Normal|# 检查时间冲突
+[634]|Normal|if new_slot.overlaps(event_slot):
+[635]|Normal|conflicts.append(event)
+[637]|Normal|return conflicts
+[639]|Normal|LangGraph++工作流引擎核心实现
+[640]|Normal|工作流状态定义：
+[641]|Normal|from typing import TypedDict, Optional, Dict, Any, List
+[642]|Normal|from datetime import datetime
+[643]|Normal|from enum import Enum
+[645]|Normal|class IntentType(str, Enum):
+[646]|Normal|"""意图类型枚举"""
+[647]|Normal|CREATE_EVENT = "create_event"
+[648]|Normal|QUERY_SCHEDULE = "query_schedule"
+[649]|Normal|CREATE_TASK = "create_task"
+[650]|Normal|QUERY_TASKS = "query_tasks"
+[651]|Normal|SUGGEST_ACTIVITY = "suggest_activity"
+[652]|Normal|PLAN_WEEKEND = "plan_weekend"
+[653]|Normal|CHAT = "chat"
+[654]|Normal|UNKNOWN = "unknown"
+[656]|Normal|class WorkflowState(TypedDict, total=False):
+[657]|Normal|"""工作流状态定义"""
+[658]|Normal|# 基本信息
+[659]|Normal|user_id: int
+[660]|Normal|user_message: str
+[661]|Normal|session_id: str
+[662]|Normal|timestamp: datetime
+[664]|Normal|# 意图识别结果
+[665]|Normal|intent: IntentType
+[666]|Normal|intent_confidence: float
+[667]|Normal|extracted_slots: Dict[str, Any]
+[668]|Normal|missing_info: List[str]
+[669]|Normal|clarification_needed: bool
+[671]|Normal|# 上下文信息
+[672]|Normal|events: Optional[List[Dict[str, Any]]]
+[673]|Normal|tasks: Optional[List[Dict[str, Any]]]
+[674]|Normal|weather: Optional[Dict[str, Any]]
+[675]|Normal|traffic: Optional[Dict[str, Any]]
+[677]|Normal|# 执行结果
+[678]|Normal|actions: List[Dict[str, Any]]
+[679]|Normal|response: str
+[680]|Normal|error: Optional[str]
+[682]|Normal|LangGraph++引擎核心：
+[683]|Normal|class LangGraphPlusEngine:
+[684]|Normal|"""LangGraph++工作流引擎"""
+[686]|Normal|def __init__(self, llm_client, tool_registry, config=None):
+[687]|Normal|self.llm_client = llm_client
+[688]|Normal|self.tool_registry = tool_registry
+[689]|Normal|self.config = config or {}
+[690]|Normal|self.graph = self._build_graph()
+[692]|Normal|def _build_graph(self):
+[693]|Normal|"""构建工作流图"""
+[694]|Normal|workflow = StateGraph(WorkflowState)
+[696]|Normal|# 添加节点
+[697]|Normal|workflow.add_node("parse_intent", self._parse_intent_node)
+[698]|Normal|workflow.add_node("conditional_collect", self._conditional_collect_node)
+[699]|Normal|workflow.add_node("route_intent", self._route_intent_node)
+[700]|Normal|workflow.add_node("execute_agent", self._execute_agent_node)
+[701]|Normal|workflow.add_node("generate_response", self._generate_response_node)
+[703]|Normal|# 设置入口和边
+[704]|Normal|workflow.set_entry_point("parse_intent")
+[705]|Normal|workflow.add_edge("parse_intent", "conditional_collect")
+[706]|Normal|workflow.add_edge("conditional_collect", "route_intent")
+[707]|Normal|workflow.add_edge("route_intent", "execute_agent")
+[708]|Normal|workflow.add_edge("execute_agent", "generate_response")
+[709]|Normal|workflow.add_edge("generate_response", END)
+[711]|Normal|return workflow.compile()
+[713]|Normal|async def _conditional_collect_node(self, state: WorkflowState) -> WorkflowState:
+[714]|Normal|"""条件化上下文收集节点"""
+[715]|Normal|intent = state.get("intent", "")
+[716]|Normal|user_id = state["user_id"]
+[718]|Normal|# 根据意图决定收集哪些上下文
+[719]|Normal|collect_tasks = []
+[721]|Normal|# 需要事件上下文
+[722]|Normal|if intent in [IntentType.CREATE_EVENT, IntentType.QUERY_SCHEDULE]:
+[723]|Normal|collect_tasks.append(("events", self._fetch_events(user_id)))
+[725]|Normal|# 需要任务上下文
+[726]|Normal|if intent in [IntentType.CREATE_TASK, IntentType.QUERY_TASKS]:
+[727]|Normal|collect_tasks.append(("tasks", self._fetch_tasks(user_id)))
+[729]|Normal|# 需要天气？（条件化判断）
+[730]|Normal|if self._needs_weather_for_intent(intent, state.get("extracted_slots", {})):
+[731]|Normal|collect_tasks.append(("weather", self._fetch_weather(state)))
+[733]|Normal|# 并行执行需要的任务
+[734]|Normal|if collect_tasks:
+[735]|Normal|results = await asyncio.gather(
+[736]|Normal|*[task[1] for task in collect_tasks],
+[737]|Normal|return_exceptions=True
+[738]|Normal|)
+[740]|Normal|for (key, _), result in zip(collect_tasks, results):
+[741]|Normal|if isinstance(result, Exception):
+[742]|Normal|state[key] = None
+[743]|Normal|else:
+[744]|Normal|state[key] = result
+[746]|Normal|return state
+[748]|Normal|4.3.2 多Agent协同机制
+[749]|Normal|Agent基类实现：
+[750]|Normal|class BaseAgent(ABC):
+[751]|Normal|"""Agent基类"""
+[753]|Normal|def __init__(self, config, llm_client, tool_registry):
+[754]|Normal|self.config = config
+[755]|Normal|self.llm_client = llm_client
+[756]|Normal|self.tool_registry = tool_registry
+[758]|Normal|@abstractmethod
+[759]|Normal|async def execute(self, state: WorkflowState) -> Dict[str, Any]:
+[760]|Normal|"""执行Agent任务"""
+[761]|Normal|pass
+[763]|Normal|def validate_inputs(self, state: WorkflowState) -> List[str]:
+[764]|Normal|"""验证输入"""
+[765]|Normal|required_inputs = self.get_required_inputs()
+[766]|Normal|missing_inputs = []
+[768]|Normal|for input_field in required_inputs:
+[769]|Normal|if input_field not in state or state[input_field] is None:
+[770]|Normal|missing_inputs.append(input_field)
+[772]|Normal|return missing_inputs
+[774]|Normal|class CalendarAgent(BaseAgent):
+[775]|Normal|"""日历管理Agent"""
+[777]|Normal|async def execute(self, state: WorkflowState) -> Dict[str, Any]:
+[778]|Normal|"""执行日历相关任务"""
+[779]|Normal|intent = state.get('intent')
+[780]|Normal|user_id = state['user_id']
+[781]|Normal|slots = state.get('extracted_slots', {})
+[783]|Normal|if intent == IntentType.CREATE_EVENT:
+[784]|Normal|return await self._create_event(user_id, slots)
+[785]|Normal|elif intent == IntentType.QUERY_SCHEDULE:
+[786]|Normal|return await self._query_schedule(user_id, slots)
+[787]|Normal|else:
+[788]|Normal|return {"message": "不支持的操作类型"}
+[790]|Normal|async def _create_event(self, user_id: int, slots: Dict[str, Any]) -> Dict[str, Any]:
+[791]|Normal|"""创建事件"""
+[792]|Normal|calendar_service = self.tool_registry.get_tool("calendar_service")
+[794]|Normal|event_data = {
+[795]|Normal|'user_id': user_id,
+[796]|Normal|'title': slots.get('title', '新事件'),
+[797]|Normal|'start_time': slots.get('start_time'),
+[798]|Normal|'end_time': slots.get('end_time'),
+[799]|Normal|'location': slots.get('location'),
+[800]|Normal|'description': slots.get('description', ''),
+[801]|Normal|}
+[803]|Normal|event = await calendar_service.create_event(event_data)
+[805]|Normal|return {
+[806]|Normal|'success': True,
+[807]|Normal|'event': event,
+[808]|Normal|'message': f"事件'{event['title']}'已创建成功"
+[809]|Normal|}
+[812]|ThesisHeading1|附录B  数据实体补充说明
+[813]|ThesisHeading2|B.1 核心数据对象说明
+[814]|ThesisCaption|表B.1 核心数据对象补充说明
+[816]|Normal|-- 用户表
+[817]|Normal|CREATE TABLE tb_users (
+[818]|Normal|id INT PRIMARY KEY AUTO_INCREMENT,
+[819]|Normal|username VARCHAR(50) UNIQUE NOT NULL,
+[820]|Normal|email VARCHAR(100) UNIQUE NOT NULL,
+[821]|Normal|password_hash VARCHAR(255) NOT NULL,
+[822]|Normal|full_name VARCHAR(100),
+[823]|Normal|timezone VARCHAR(50) DEFAULT 'Asia/Shanghai',
+[824]|Normal|created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+[825]|Normal|INDEX idx_email (email)
+[826]|Normal|);
+[828]|Normal|-- 日程事件表
+[829]|Normal|CREATE TABLE tb_schedule_events (
+[830]|Normal|id CHAR(36) PRIMARY KEY,
+[831]|Normal|user_id INT NOT NULL,
+[832]|Normal|title VARCHAR(200) NOT NULL,
+[833]|Normal|start_time DATETIME NOT NULL,
+[834]|Normal|end_time DATETIME NOT NULL,
+[835]|Normal|location_name VARCHAR(200),
+[836]|Normal|event_type VARCHAR(50) DEFAULT 'appointment',
+[837]|Normal|is_fixed BOOLEAN DEFAULT FALSE,
+[838]|Normal|status ENUM('planned', 'ongoing', 'completed', 'cancelled') DEFAULT 'planned',
+[839]|Normal|created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+[840]|Normal|FOREIGN KEY (user_id) REFERENCES tb_users(id) ON DELETE CASCADE,
+[841]|Normal|INDEX idx_user_time (user_id, start_time, end_time)
+[842]|Normal|);
+[844]|Normal|-- 待办事项表
+[845]|Normal|CREATE TABLE tb_tasks (
+[846]|Normal|id CHAR(36) PRIMARY KEY,
+[847]|Normal|user_id INT NOT NULL,
+[848]|Normal|title VARCHAR(200) NOT NULL,
+[849]|Normal|estimated_duration INT,
+[850]|Normal|priority INT DEFAULT 3,
+[851]|Normal|deadline DATETIME,
+[852]|Normal|status ENUM('pending', 'in_progress', 'completed', 'cancelled') DEFAULT 'pending',
+[853]|Normal|created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+[854]|Normal|FOREIGN KEY (user_id) REFERENCES tb_users(id) ON DELETE CASCADE,
+[855]|Normal|INDEX idx_user_status (user_id, status)
+[856]|Normal|);
+[858]|ThesisBody|系统在数据层主要设置了两类关键约束。第一类是外部事件去重约束，用来防止同一外部日历事件被重复导入；第二类是提醒去重约束，用来保证同一目标对象在同一时刻不会重复写入同类型提醒。这些约束再配合业务层的冷却时间判断后，能够在持续扫描的同时保持数据整洁，也能减少重复提醒带来的体验问题。
+[860]|ThesisHeading1|附录C  多智能体核心算法补充说明
+[861]|ThesisHeading2|C.1 Conductor 调度算法
+[862]|ThesisBody|Conductor 的核心并不是完成所有推理，而是决定当前请求应该交给哪些 specialist。下面用更接近工程实现的伪代码说明调度过程。伪代码保留了关键判断条件，省略了日志、权限和异常封装等外围处理。
+[863]|ThesisCaption|Algorithm C.1  Conductor 调度流程
+[864]|Normal|输入：user_message, session_id, user_context
+[865]|Normal|输出：assistant_response 或 pending proposal
+[867]|Normal|1. active_proposals = ProposalManager.list_active(user_id, session_id)
+[868]|Normal|2. followup = parse_proposal_followup(user_message, active_proposals)
+[869]|Normal|3. 如果 followup 可唯一指向某个 proposal：
+[870]|Normal|如果 followup.type == accept:
+[871]|Normal|return ProposalManager.confirm(proposal_id, option_id)
+[872]|Normal|如果 followup.type == reject:
+[873]|Normal|return ProposalManager.reject(proposal_id)
+[874]|Normal|如果 followup.type == revise:
+[875]|Normal|return ProposalManager.revise(proposal_id, patch)
+[876]|Normal|4. 如果 active_proposals 数量大于 1 且 followup 指向不清：
+[877]|Normal|return clarification("你是确认 P1 还是 P2？")
+[878]|Normal|5. understanding = UnderstandingSpecialist.extract(user_message, user_context)
+[879]|Normal|6. 如果 understanding.confidence 低于阈值：
+[880]|Normal|return clarification(understanding.ambiguities)
+[881]|Normal|7. type_result = TaskOrEventClarifier.classify(understanding)
+[882]|Normal|8. 如果 type_result.need_clarification:
+[883]|Normal|return clarification(type_result.question)
+[884]|Normal|9. plan = PlanningSpecialist.generate_options(understanding, user_context)
+[885]|Normal|10. 如果 plan 无法生成低风险方案：
+[886]|Normal|return clarification(plan.missing_reason)
+[887]|Normal|11. proposal = ProposalManager.create(plan)
+[888]|Normal|12. return NegotiationSpecialist.render(proposal)
+[889]|ThesisHeading2|C.2 候选方案评分算法
+[890]|ThesisBody|候选方案评分的目的，是让系统排序依据可以被解释，而不是把“模型觉得合适”直接当作结论。实际实现中，每个分数因子会被归一化到 0 到 1 之间，再按照权重加权求和。风险惩罚项用于处理时间冲突、通勤不足、关键信息缺失等情况。
+[891]|ThesisCaption|Algorithm C.2  Candidate Option Scoring
+[892]|Normal|输入：candidate_options, events, tasks, travel_context, user_profile
+[893]|Normal|输出：ranked_options
+[895]|Normal|1. 对每个 option:
+[896]|Normal|time_fit = calc_time_fit(option, user_time_window)
+[897]|Normal|conflict_score = 1 - overlap_ratio(option, expanded_events)
+[898]|Normal|deadline_score = calc_deadline_pressure(option, related_tasks)
+[899]|Normal|travel_score = calc_travel_feasibility(option, travel_context)
+[900]|Normal|preference_score = calc_preference_match(option, user_profile)
+[901]|Normal|simplicity_score = calc_action_simplicity(option.actions)
+[902]|Normal|risk_penalty = calc_risk_penalty(option)
+[903]|Normal|2. option.score =
+[904]|Normal|0.30 * time_fit
+[905]|Normal|+ 0.25 * conflict_score
+[906]|Normal|+ 0.15 * deadline_score
+[907]|Normal|+ 0.15 * travel_score
+[908]|Normal|+ 0.10 * preference_score
+[909]|Normal|+ 0.05 * simplicity_score
+[910]|Normal|- risk_penalty
+[911]|Normal|3. 按 score 从高到低排序
+[912]|Normal|4. 将风险等级写入 option.risk_level
+[913]|Normal|5. 返回 ranked_options
+[914]|ThesisHeading2|C.3 Proposal 状态迁移算法
+[915]|ThesisBody|Proposal 状态迁移是保证“不确认不落库”和“重复确认不重复执行”的关键。系统始终先检查状态，再执行动作。下面伪代码展示 confirm 的主流程。
+[916]|ThesisCaption|Algorithm C.3  Proposal Confirm And Execution
+[917]|Normal|输入：proposal_id, option_id
+[918]|Normal|输出：execution_receipt
+[920]|Normal|1. proposal = ProposalRepository.get_for_update(proposal_id)
+[921]|Normal|2. 如果 proposal.status == executed:
+[922]|Normal|return proposal.payload_json.execution.result
+[923]|Normal|3. 如果 proposal.status == execution_pending:
+[924]|Normal|return current_execution_status(proposal)
+[925]|Normal|4. 如果 proposal.status 不在 [pending, accepted]:
+[926]|Normal|raise InvalidStateError
+[927]|Normal|5. 如果 option_id 不存在于 proposal.payload_json.options:
+[928]|Normal|raise InvalidOptionError
+[929]|Normal|6. proposal.selected_option_id = option_id
+[930]|Normal|7. proposal.status = execution_pending
+[931]|Normal|8. 保存 execution attempt(started_at, attempt_no)
+[932]|Normal|9. try:
+[933]|Normal|result = ActionExecutor.execute(proposal, option_id)
+[934]|Normal|proposal.status = executed
+[935]|Normal|proposal.executed_at = now()
+[936]|Normal|proposal.payload_json.execution.status = success
+[937]|Normal|proposal.payload_json.execution.result_summary = result.summary
+[938]|Normal|except Exception as error:
+[939]|Normal|proposal.status = execution_failed
+[940]|Normal|proposal.payload_json.execution.status = failed
+[941]|Normal|proposal.payload_json.execution.last_error = str(error)
+[942]|Normal|10. 保存 proposal
+[943]|Normal|11. return proposal
+[944]|ThesisHeading2|C.4 Signal 去重与冷却算法
+[945]|ThesisBody|主动信号如果没有去重和冷却，很容易在后台扫描中重复产生。本文用 user_id、signal_type 和 dedup_key 识别同义信号，再用 cooldown_until 控制同类风险的再次提醒时间。
+[946]|ThesisCaption|Algorithm C.4  Signal Dedup And Cooldown
+[947]|Normal|输入：signal_type, user_id, dedup_key, payload
+[948]|Normal|输出：new_signal 或 existing_signal
+[950]|Normal|1. existing = SignalRepository.get_blocking_by_dedup_key(user_id, dedup_key)
+[951]|Normal|2. 如果 existing 存在且 existing.cooldown_until > now():
+[952]|Normal|return existing
+[953]|Normal|3. 如果 existing 存在且 existing.status in [new, evaluated, proposal_created, cooling]:
+[954]|Normal|return existing
+[955]|Normal|4. signal = AssistantSignal(
+[956]|Normal|user_id=user_id,
+[957]|Normal|signal_type=signal_type,
+[958]|Normal|status='new',
+[959]|Normal|dedup_key=dedup_key,
+[960]|Normal|payload_json=payload,
+[961]|Normal|cooldown_until=now() + cooldown(signal_type)
+[962]|Normal|)
+[963]|Normal|5. 保存 signal
+[964]|Normal|6. return signal
+[966]|ThesisHeading1|附录D  项目实现对齐说明
+[967]|ThesisBody|为了使论文描述与项目代码保持一致，本附录对几个容易写虚高的部分作统一说明。第一，模型层当前实际使用 Google Gemini 2.5 Flash，嵌入层使用 Google text-embedding-004，未实现 Qwen、DeepSeek、BGE-M3 或公司内网模型部署。第二，多智能体协作采用 Conductor 顺序编排，Specialist 之间通过 ConductorState 和 SpecialistResult 传递结果，不是独立进程间的 A2A 通信。第三，RAG 主要是习惯、偏好和事件经验的辅助检索能力，长期记忆主路径是 AssistantMemoryService 管理的 preferences.md、places.md、habits.md、glossary.md 和 AssistantMemoryUpdateCandidate 候选确认流程。
+[968]|ThesisBody|第四，协商不是普通的“多轮问答”，而是 proposal-first 机制：用户输入经过 Understanding、Planning 和 ProposalManager 后形成 pending proposal；用户通过 P1/P2、方案 A/B/C 或自然语言修改完成确认、拒绝或 revise；Action Executor 只执行已确认 option，并把执行结果写回 payload_json.execution。第五，主动系统不是自动改日程，而是先生成 AssistantSignal，再按需要转成 proposal，所有任务重排、日程创建或状态修改仍需用户确认。第六，系统保留 legacy、shadow、proposal 三种运行模式，便于在不破坏旧助手链路的前提下逐步启用新机制。
+[969]|ThesisBody|这些边界看似保守，但能保证论文中的技术描述和代码实现一致。对于毕业设计来说，与其夸大未实现的多模型路由和全自动智能体通信，不如把已经完成的 proposal 状态机、幂等确认、主动 signal、长期记忆候选确认和前端待确认区写清楚。这些内容更能回应“智能体、模型、算法、协商流程需要展开”的修改要求。

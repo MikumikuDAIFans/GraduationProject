@@ -39,7 +39,20 @@ def test_memory_specialist_detects_explicit_memory_request() -> None:
 
     assert specialist.is_explicit_memory_request("请帮我记住我喜欢周五下午集中处理行政事务") is True
     assert specialist.is_explicit_memory_request("remember that I prefer Fridays for admin work") is True
+    assert specialist.is_explicit_memory_request("以后把学校理解为南京大学仙林校区") is True
+    assert specialist.is_explicit_memory_request("以后学校指的是B地址") is True
     assert specialist.is_explicit_memory_request("我周五下午要去学校") is False
+
+
+def test_memory_specialist_extracts_explicit_place_alias_candidate() -> None:
+    specialist = MemorySpecialist()
+    candidate = specialist.extract_candidate("以后把学校理解为南京大学仙林校区")
+
+    assert candidate is not None
+    assert candidate["memory_type"] == "places"
+    assert candidate["proposed_change_json"]["title"] == "学校"
+    assert candidate["proposed_change_json"]["content"] == "学校 = 南京大学仙林校区"
+    assert candidate["confidence"] >= 0.8
 
 
 def test_memory_specialist_runs_through_registry() -> None:

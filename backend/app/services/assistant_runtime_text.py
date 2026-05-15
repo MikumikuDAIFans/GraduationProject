@@ -34,40 +34,39 @@ WEEKDAY_MAP = {
     "末": 5,
 }
 
+TIME_PERIOD_RAW = r"(?:凌晨|早上|上午|中午|下午|傍晚|晚上|今晚|今早|明早|明晚)"
 TIME_TOKEN_RAW = (
-    r"(?:凌晨|早上|上午|中午|下午|傍晚|晚上|今晚|今早|明早|明晚)?\s*"
-    r"(?:\d{1,2}(?::\d{2})?|[零〇一二两三四五六七八九十]{1,3}(?:点半|点一刻|点三刻|点[零〇一二三四五六七八九十]{1,3}分?|点|时半|时一刻|时三刻|时[零〇一二三四五六七八九十]{1,3}分?|时))"
+    rf"{TIME_PERIOD_RAW}?\s*"
+    r"(?:\d{1,2}(?::\d{2}|点半|点一刻|点三刻|点\d{1,2}分?|点|时半|时一刻|时三刻|时\d{1,2}分?|时)?|[零〇一二两三四五六七八九十]{1,3}(?:点半|点一刻|点三刻|点[零〇一二三四五六七八九十]{1,3}分?|点|时半|时一刻|时三刻|时[零〇一二三四五六七八九十]{1,3}分?|时))"
 )
 TIME_TOKEN_PATTERN = re.compile(TIME_TOKEN_RAW)
+EXPLICIT_TIME_TOKEN_PATTERN = re.compile(
+    rf"{TIME_PERIOD_RAW}?\s*"
+    r"(?:\d{1,2}(?::\d{2}|点半|点一刻|点三刻|点\d{1,2}分?|点|时半|时一刻|时三刻|时\d{1,2}分?|时)|[零〇一二两三四五六七八九十]{1,3}(?:点半|点一刻|点三刻|点[零〇一二三四五六七八九十]{1,3}分?|点|时半|时一刻|时三刻|时[零〇一二三四五六七八九十]{1,3}分?|时))"
+)
 
 
 class AssistantTextRuntime:
-    """Pure text parsing helpers used by the assistant runtime and workflow."""
+    """Pure text parsing helpers used by the assistant runtime."""
 
     def _build_rule_based_event_payload(self, user_message: str) -> dict[str, Any]:
         start_time, end_time = self._extract_time_range(user_message)
-        location_name = self._extract_location(user_message)
-        title = self._extract_event_title(user_message) or self._extract_event_topic(user_message)
-        description = None
-        if location_name and ("通勤" in user_message or "天气" in user_message):
-            description = "assistant enriched with travel/weather context"
         return {
-            "title": title or "New event",
+            "title": "New event",
             "start_time": start_time.isoformat() if start_time else None,
             "end_time": end_time.isoformat() if end_time else None,
-            "location_name": location_name,
-            "description": description,
+            "location_name": None,
+            "description": None,
             "event_type": "general",
         }
 
     def _build_rule_based_task_payload(self, user_message: str) -> dict[str, Any]:
-        content = self._extract_task_content(user_message)
         deadline = self._extract_task_deadline(user_message)
         duration = self._extract_duration_minutes(user_message)
         preferred_period = self._extract_period_preference(user_message)
         can_split = bool(re.search(r"拆分|拆成|分成|分两次|分几次|分块", user_message))
         return {
-            "content": content,
+            "content": None,
             "deadline": deadline.isoformat() if deadline else None,
             "estimated_duration_minutes": duration,
             "priority": 3,
@@ -77,7 +76,7 @@ class AssistantTextRuntime:
 
     def _classify_intent(self, user_message: str) -> str:
         has_time = self._extract_time_range(user_message)[0] is not None
-        has_location = self._extract_location(user_message) is not None
+        has_location_hint = bool(re.search(r"去|到|在|于|at|in|to", user_message, re.I))
         has_event_keyword = bool(
             re.search(r"日程|会议|开会|组会|答辩|面试|约会|聚餐|上课|演示|汇报|看医生|meeting|event|appointment", user_message, re.I)
         )
@@ -100,7 +99,7 @@ class AssistantTextRuntime:
             return "progress_followup"
         if asks_guidance:
             return "schedule_guidance"
-        if asks_event_advice and (has_time or has_event_keyword or has_location):
+        if asks_event_advice and (has_time or has_event_keyword or has_location_hint):
             return "event_context_advice"
         if has_schedule_phrase:
             return "schedule_guidance"
@@ -208,6 +207,34 @@ class AssistantTextRuntime:
             end_dt = datetime.fromisoformat(f"{base_date.isoformat()}T{end_raw}")
             return start_dt, end_dt
 
+        relative_match = re.search(
+            r"(?P<amount>\d+|[零〇一二两三四五六七八九十]{1,3})\s*个?\s*(?P<unit>分钟|分|小时|钟头|天|日)\s*后",
+            user_message,
+        )
+        if relative_match:
+            amount = self._parse_number(relative_match.group("amount"))
+            unit = relative_match.group("unit")
+            if amount is not None:
+                if unit in {"分钟", "分"}:
+                    start_dt = now + timedelta(minutes=amount)
+                elif unit in {"天", "日"}:
+                    start_dt = now + timedelta(days=amount)
+                else:
+                    start_dt = now + timedelta(hours=amount)
+                if re.search(
+                    r"提醒我|日程|会议|开会|组会|答辩|面试|约会|聚餐|上课|演示|汇报|看医生|去|到|在|于|meeting|event|appointment",
+                    user_message,
+                    re.I,
+                ):
+                    duration_minutes = (
+                        self._extract_duration_minutes(user_message)
+                        if re.search(r"持续|时长|预计|大概|约", user_message)
+                        else None
+                    )
+                    return start_dt.replace(second=0, microsecond=0), (
+                        start_dt + timedelta(minutes=duration_minutes or 60)
+                    ).replace(second=0, microsecond=0)
+
         range_match = re.search(
             rf"({TIME_TOKEN_RAW})\s*(?:到|至|~|～|—|－|-)\s*({TIME_TOKEN_RAW})",
             user_message,
@@ -216,17 +243,38 @@ class AssistantTextRuntime:
             start_dt, start_period = self._parse_time_token(range_match.group(1), base_date)
             end_dt, _ = self._parse_time_token(range_match.group(2), base_date, inherited_period=start_period)
             if start_dt and end_dt:
-                if end_dt <= start_dt:
-                    end_dt += timedelta(hours=12)
+                end_dt = self._normalize_range_end(start_dt, end_dt)
                 return start_dt, end_dt
 
-        token_match = TIME_TOKEN_PATTERN.search(user_message)
+        labeled_range_patterns = [
+            rf"(?:从|由)?\s*({TIME_TOKEN_RAW})\s*(?:开始|起|出发)\s*(?:[，,、\s]*(?:到|至|一直到)?[，,、\s]*)({TIME_TOKEN_RAW})\s*(?:结束|截止|前|止)?",
+            rf"(?:从|由)?\s*({TIME_TOKEN_RAW})\s*(?:[，,、\s]*(?:到|至|一直到)?[，,、\s]*)({TIME_TOKEN_RAW})\s*(?:结束|截止|前|止)",
+            rf"(?:从|由)\s*({TIME_TOKEN_RAW})\s*(?:到|至|一直到)\s*({TIME_TOKEN_RAW})",
+        ]
+        for pattern in labeled_range_patterns:
+            labeled_match = re.search(pattern, user_message)
+            if not labeled_match:
+                continue
+            start_dt, start_period = self._parse_time_token(labeled_match.group(1), base_date)
+            end_dt, _ = self._parse_time_token(labeled_match.group(2), base_date, inherited_period=start_period)
+            if start_dt and end_dt:
+                end_dt = self._normalize_range_end(start_dt, end_dt)
+                return start_dt, end_dt
+
+        token_match = EXPLICIT_TIME_TOKEN_PATTERN.search(user_message)
         if token_match:
             start_dt, _ = self._parse_time_token(token_match.group(0), base_date)
-            if start_dt and re.search(r"日程|会议|开会|组会|答辩|面试|约会|聚餐|上课|演示|汇报|看医生|meeting|event|appointment", user_message, re.I):
-                return start_dt, start_dt + timedelta(minutes=self._extract_duration_minutes(user_message) or 60)
+            if start_dt and re.search(r"日程|会议|开会|组会|答辩|面试|约会|聚餐|上课|演示|汇报|看医生|出发|去|到|在|于|meeting|event|appointment", user_message, re.I):
+                duration_minutes = self._extract_duration_minutes(user_message)
+                return start_dt, start_dt + timedelta(minutes=duration_minutes) if duration_minutes else None
 
         return None, None
+
+    def _normalize_range_end(self, start_dt: datetime, end_dt: datetime) -> datetime:
+        """Move an end time forward until it is after the start time."""
+        while end_dt <= start_dt:
+            end_dt += timedelta(hours=12)
+        return end_dt
 
     def _extract_target_date(self, user_message: str, reference_date: date) -> date:
         if "大后天" in user_message:
@@ -238,7 +286,17 @@ class AssistantTextRuntime:
         if "今天" in user_message or "今晚" in user_message or "今早" in user_message:
             return reference_date
 
-        explicit = re.search(r"(?:(\d{4})[年/-])?(\d{1,2})月(\d{1,2})日", user_message)
+        next_month_match = re.search(r"(?:下个?月|下月)(?:的)?(?P<day>\d{1,2}|[一二两三四五六七八九十]{1,3})[日号]?", user_message)
+        if next_month_match:
+            month = reference_date.month + 1
+            year = reference_date.year
+            if month > 12:
+                month = 1
+                year += 1
+            day = self._parse_number(next_month_match.group("day")) or 1
+            return date(year, month, day)
+
+        explicit = re.search(r"(?:(\d{4})[年/-])?(\d{1,2})月(\d{1,2})[日号]", user_message)
         if explicit:
             year_raw, month_raw, day_raw = explicit.groups()
             year = int(year_raw) if year_raw else reference_date.year
@@ -354,43 +412,14 @@ class AssistantTextRuntime:
         return None
 
     def _extract_location(self, user_message: str) -> str | None:
-        patterns = [
-            r"在(?P<location>[\u4e00-\u9fa5A-Za-z0-9·\-\s]{2,40}?)(?=开会|见面|碰头|集合|吃饭|讨论|复习|上课|答辩|演示|汇报|参加|$|，|。|,)",
-            r"(?:去|到|于)(?P<location>[\u4e00-\u9fa5A-Za-z0-9·\-\s]{2,40}?)(?=开会|见面|碰头|集合|吃饭|讨论|复习|上课|答辩|演示|汇报|参加|$|，|。|,)",
-            r"(?:at|in|to)\s+(?P<location>[A-Za-z0-9][A-Za-z0-9\s,\-]{2,40}?)(?:\s+(?:for|from|tomorrow|today|next|at)\b|$)",
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, user_message, re.I)
-            if match:
-                location = match.group("location").strip(" ，。,")
-                location = re.sub(r"(开组会|开会|组会|见面|碰头|集合|吃饭|讨论|复习|上课|答辩|演示|汇报|参加)$", "", location).strip()
-                if location:
-                    return location
         return None
 
     def _normalize_event_title(self, *, current_title: str | None, user_message: str) -> str:
         if current_title and current_title.lower() not in {"new event", "event"}:
             return current_title
-        extracted = self._extract_event_title(user_message) or self._extract_event_topic(user_message)
-        return extracted or current_title or "New event"
+        return current_title or "New event"
 
     def _extract_event_title(self, user_message: str) -> str | None:
-        lower = user_message.lower()
-        patterns = [
-            r"called\s+(.+?)(?:\s+tomorrow|\s+from|\s+at|$)",
-            r"named\s+(.+?)(?:\s+tomorrow|\s+from|\s+at|$)",
-            r"(?:日程|活动|会议|组会|约会|聚餐|上课|答辩|面试|演示|汇报)\s*[：:]\s*(.+?)(?=(?:[，,]\s*(?:\d{1,2}月\d{1,2}日|\d{4}[-/]\d{1,2}[-/]\d{1,2}|今天|明天|后天|大后天|今晚|今早|明早|明晚|下周|本周|周[一二三四五六日天末]|星期))|(?:[，,]\s*(?:在|去|到))|$)",
-            r"叫\s*([^\s，。,\.]+)",
-            r"名为\s*([^\s，。,\.]+)",
-            r"[“\"]([^”\"]{2,30})[”\"]",
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, lower if "called" in pattern or "named" in pattern else user_message)
-            if not match:
-                continue
-            title = match.group(1).strip(" \"'“”")
-            if title:
-                return title
         return None
 
     def _extract_event_topic(self, user_message: str) -> str | None:
@@ -419,18 +448,42 @@ class AssistantTextRuntime:
         return cleaned[:24].strip() or None
 
     def _extract_task_content(self, user_message: str) -> str | None:
-        text = user_message.strip()
-        text = re.sub(r"(创建|新增|添加|安排|记得|提醒我|帮我|请)", "", text)
-        text = re.sub(r"(明天|后天|今天|今晚|明晚|下周[一二三四五六日天末]?|本周[一二三四五六日天末]?|周[一二三四五六日天末])", "", text)
-        text = TIME_TOKEN_PATTERN.sub("", text)
-        text = re.sub(r"\d{1,2}:\d{2}", "", text)
-        text = re.sub(r"(之前|截止前?|到期前)", "", text)
-        text = re.sub(r"预计[^，。,]*", "", text)
-        text = re.sub(r"(可以拆分|可拆分|拆分完成|拆成.*|分成.*)", "", text)
-        text = re.sub(r"[，。,!！?？]", " ", text)
-        text = re.sub(r"\s+", " ", text).strip()
-        text = text.lstrip("把去在到于前")
-        return text[:64] if text else None
+        message = user_message.strip()
+        if not message:
+            return None
+
+        keyword_patterns = [
+            r"(?:今天|明天|后天|大后天|这周|本周|下周)?(?:帮我|请|麻烦)?(?:安排一下|安排|规划一下|规划)?\s*(?P<content>(?:复习|学习|准备|整理)[\u4e00-\u9fa5A-Za-z0-9]{1,24})",
+            r"(?:帮我|请|麻烦)?(?:安排一下|安排|规划一下|规划|提醒我|记得)?\s*(?P<content>[\u4e00-\u9fa5A-Za-z0-9]{1,24}(?:复习|整理|准备|论文|材料|作业|报告|任务|待办))",
+            r"(?:完成|推进|处理)\s*(?P<content>[\u4e00-\u9fa5A-Za-z0-9]{1,24})",
+        ]
+        for pattern in keyword_patterns:
+            match = re.search(pattern, message, re.I)
+            if not match:
+                continue
+            content = self._clean_task_content(match.group("content"))
+            if content:
+                return content
+
+        cleaned = re.sub(
+            r"(帮我|请|麻烦|安排一下|安排|规划一下|规划|创建|新增|添加|给我|提醒我|记得|一下|任务|待办)",
+            "",
+            message,
+        )
+        cleaned = TIME_TOKEN_PATTERN.sub("", cleaned)
+        cleaned = re.sub(r"\d{1,2}:\d{2}", "", cleaned)
+        cleaned = re.sub(r"(今天|明天|后天|大后天|今晚|明晚|上午|下午|晚上|早上|中午|这周|本周|下周)", "", cleaned)
+        cleaned = re.sub(r"(之前|前|截止|deadline|due|每天|隔天|集中|分成|拆成|分块).*$", "", cleaned, flags=re.I)
+        return self._clean_task_content(cleaned)
+
+    def _clean_task_content(self, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip(" \t\r\n，。,；;：:！!?？“”\"'")
+        cleaned = re.sub(r"^(一下|一个|这个|那个|的)", "", cleaned)
+        cleaned = re.sub(r"(一下|这个任务|这个待办)$", "", cleaned)
+        cleaned = cleaned.strip(" \t\r\n，。,；;：:！!?？“”\"'")
+        return cleaned[:40] if cleaned else None
 
     def _extract_task_deadline(self, user_message: str) -> datetime | None:
         if not re.search(r"之前|前|截止|deadline|due", user_message, re.I):
@@ -453,10 +506,7 @@ class AssistantTextRuntime:
         return None
 
     def _extract_requested_items(self, user_message: str) -> list[str]:
-        match = re.search(r"把(.+?)(?:插进去|安排一下|安排到|放进去)", user_message)
-        if not match:
-            return []
-        return [item.strip() for item in re.split(r"[和、,，]", match.group(1)) if item.strip()]
+        return []
 
     def _select_schedule_guidance_dates(self, user_message: str) -> list[date]:
         reference = datetime.now().date()

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import MarkdownIt from "markdown-it";
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import type {
   AssistantAction,
@@ -8,6 +8,8 @@ import type {
   AssistantMessage,
   AssistantProposal,
   AssistantProposalOption,
+  AssistantRenderBlock,
+  AssistantSignal,
   AssistantSession,
 } from "@/stores/workspace";
 import { formatDateTime } from "@/utils/locale";
@@ -17,10 +19,12 @@ const props = defineProps<{
   sending: boolean;
   lastAssistantActions: AssistantAction[];
   assistantProposals: AssistantProposal[];
+  assistantSignals: AssistantSignal[];
   assistantMemoryCandidates: AssistantMemoryCandidate[];
   assistantSessions: AssistantSession[];
   activeSessionId: number | null;
   loadingProposals: boolean;
+  loadingSignals: boolean;
   loadingMemoryCandidates: boolean;
   creatingSession: boolean;
   archivingSession: boolean;
@@ -33,13 +37,8 @@ const emit = defineEmits<{
   send: [message: string];
   focusTask: [taskId: number];
   fetchProposals: [];
+  fetchSignals: [];
   fetchMemoryCandidates: [];
-  confirmProposal: [proposalId: number, optionId: string];
-  rejectProposal: [proposalId: number];
-  reviseProposal: [proposalId: number, message: string];
-  retryProposal: [proposalId: number];
-  confirmMemoryCandidate: [candidateId: number];
-  rejectMemoryCandidate: [candidateId: number];
   createSession: [];
   switchSession: [sessionId: number];
   archiveSession: [];
@@ -54,16 +53,31 @@ const markdown = new MarkdownIt({
 });
 
 const draft = ref("");
-const proposalRevisionDrafts = ref<Record<number, string>>({});
+const locallySubmitting = ref(false);
+const locallySubmittedProposalIds = ref<Set<number>>(new Set());
+const locallySubmittedInlineProposalIds = ref<Set<number>>(new Set());
+const locallySubmittedMemoryCandidateIds = ref<Set<number>>(new Set());
+let sendUnlockTimer: number | null = null;
 const messageContainer = ref<HTMLElement | null>(null);
-const canSend = computed(() => draft.value.trim().length > 0 && !props.sending);
 const sessionBusy = computed(() => props.creatingSession || props.archivingSession || props.clearingSession);
+const canSend = computed(() => draft.value.trim().length > 0 && !props.sending && !locallySubmitting.value && !sessionBusy.value);
+const isSending = computed(() => props.sending || locallySubmitting.value);
 const visibleProposals = computed(() =>
   props.assistantProposals
-    .filter((proposal) => ["pending", "accepted", "execution_pending", "execution_failed"].includes(proposal.status))
+    .filter((proposal) => ["pending", "execution_failed"].includes(proposal.status))
+    .filter((proposal) => !locallySubmittedProposalIds.value.has(proposal.id))
     .slice(0, 5),
 );
-const visibleMemoryCandidates = computed(() => props.assistantMemoryCandidates.slice(0, 5));
+const visibleSignals = computed(() =>
+  props.assistantSignals
+    .filter((signal) => ["new", "evaluated", "proposal_created"].includes(signal.status))
+    .slice(0, 5),
+);
+const visibleMemoryCandidates = computed(() =>
+  props.assistantMemoryCandidates
+    .filter((candidate) => !locallySubmittedMemoryCandidateIds.value.has(candidate.id))
+    .slice(0, 5),
+);
 const proposalProtocolLabels = computed(() => {
   const entries = props.assistantProposals
     .filter((proposal) => proposal.status === "pending")
@@ -78,16 +92,33 @@ function renderMarkdown(text: string): string {
 }
 
 function send() {
+  if (locallySubmitting.value || props.sending || sessionBusy.value) return;
   const value = draft.value.trim();
   if (!value) return;
-  emit("send", value);
+  locallySubmitting.value = true;
+  if (sendUnlockTimer !== null) window.clearTimeout(sendUnlockTimer);
   draft.value = "";
+  emit("send", value);
+  sendUnlockTimer = window.setTimeout(() => {
+    if (!props.sending) {
+      locallySubmitting.value = false;
+    }
+    sendUnlockTimer = null;
+  }, 800);
 }
 
 function handleKeydown(event: KeyboardEvent) {
   if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
     send();
   }
+}
+
+function scrollMessagesToBottom(behavior: ScrollBehavior = "smooth") {
+  nextTick(() => requestAnimationFrame(() => requestAnimationFrame(() => {
+    const container = messageContainer.value;
+    if (!container) return;
+    container.scrollTo({ top: container.scrollHeight, behavior });
+  })));
 }
 
 function actionLabel(type: string) {
@@ -124,6 +155,112 @@ function proposalOptions(proposal: AssistantProposal): AssistantProposalOption[]
   return Array.isArray(options) ? options : [];
 }
 
+function proposalById(proposalId?: number) {
+  if (typeof proposalId !== "number") return null;
+  return props.assistantProposals.find((proposal) => proposal.id === proposalId) ?? null;
+}
+
+type InlineProposalOption = {
+  option_id?: string;
+  title?: string;
+  summary?: string | null;
+  rationale?: string | null;
+  recommended?: boolean;
+  selected?: boolean;
+  prompt_on_click?: string;
+};
+
+type InlineRejectOption = {
+  title?: string;
+  prompt_on_click?: string;
+};
+
+type InlineProposalPayload = {
+  proposal_id?: number;
+  protocol_label?: string;
+  status?: string;
+  summary?: string | null;
+  selected_option_id?: string | null;
+  locally_selected_option_id?: string | null;
+  locally_rejected?: boolean;
+  options?: InlineProposalOption[];
+  reject_option?: InlineRejectOption;
+};
+
+function messageRenderBlocks(message: AssistantMessage): AssistantRenderBlock[] {
+  const blocks = message.render_blocks ?? message.render_blocks_json ?? [];
+  return Array.isArray(blocks) ? blocks : [];
+}
+
+function inlineProposalPayload(block: AssistantRenderBlock): InlineProposalPayload {
+  return (block.payload ?? {}) as InlineProposalPayload;
+}
+
+function inlineProposalOptions(block: AssistantRenderBlock): InlineProposalOption[] {
+  const options = inlineProposalPayload(block).options;
+  return Array.isArray(options) ? options : [];
+}
+
+function shouldRenderInlineProposalBlock(block: AssistantRenderBlock) {
+  return block.type === "proposal_options";
+}
+
+function inlineProposalStatus(block: AssistantRenderBlock) {
+  const payload = inlineProposalPayload(block);
+  const currentProposal = proposalById(payload.proposal_id);
+  const proposalId = payload.proposal_id;
+  if (typeof proposalId === "number" && locallySubmittedInlineProposalIds.value.has(proposalId)) {
+    return payload.locally_rejected ? "rejected" : "execution_pending";
+  }
+  return currentProposal?.status ?? payload.status ?? "pending";
+}
+
+function isInlineProposalDisabled(block: AssistantRenderBlock) {
+  return inlineProposalStatus(block) !== "pending";
+}
+
+function isInlineOptionSelected(block: AssistantRenderBlock, option: InlineProposalOption) {
+  const payload = inlineProposalPayload(block);
+  const currentProposal = proposalById(payload.proposal_id);
+  const selectedOptionId = currentProposal?.selected_option_id ?? payload.locally_selected_option_id ?? payload.selected_option_id;
+  return Boolean(option.selected || (selectedOptionId && option.option_id === selectedOptionId));
+}
+
+function inlineProposalStatusLabel(block: AssistantRenderBlock) {
+  return proposalStatusLabel(inlineProposalStatus(block));
+}
+
+function inlineProposalCardClass(block: AssistantRenderBlock) {
+  return isInlineProposalDisabled(block)
+    ? "border-border bg-surface-2 shadow-none"
+    : "border-border bg-white shadow-card";
+}
+
+function inlineOptionClass(block: AssistantRenderBlock, option: InlineProposalOption) {
+  if (!isInlineProposalDisabled(block)) {
+    return isInlineOptionSelected(block, option)
+      ? "border-accent bg-accent-light text-accent cursor-pointer"
+      : "border-border bg-surface-2 text-ink hover:border-accent/40 hover:bg-white cursor-pointer";
+  }
+  return isInlineOptionSelected(block, option)
+    ? "border-border bg-surface-3 text-ink"
+    : "border-border bg-surface-2 text-ink-3";
+}
+
+function submitInlineProposalPrompt(block: AssistantRenderBlock, prompt?: string, optionId?: string) {
+  const payload = inlineProposalPayload(block);
+  if (!prompt || isInlineProposalDisabled(block)) return;
+  if (typeof payload.proposal_id === "number") {
+    locallySubmittedInlineProposalIds.value = new Set([...locallySubmittedInlineProposalIds.value, payload.proposal_id]);
+    payload.locally_selected_option_id = optionId ?? null;
+    payload.locally_rejected = !optionId;
+    markProposalSubmitted(payload.proposal_id);
+  }
+  draft.value = prompt;
+  emit("send", prompt);
+  draft.value = "";
+}
+
 function proposalStatusLabel(status: string) {
   const map: Record<string, string> = {
     pending: t("assistantPanel.proposalPending"),
@@ -149,12 +286,74 @@ function proposalStatusClass(status: string) {
 }
 
 function proposalProtocolLabel(proposal: AssistantProposal) {
+  const protocolLabel = proposal.payload_json?.protocol_label;
+  if (typeof protocolLabel === "string" && protocolLabel.trim()) {
+    return protocolLabel;
+  }
   return proposalProtocolLabels.value.get(proposal.id) ?? `#${proposal.id}`;
 }
 
 function proposalExecutionSummary(proposal: AssistantProposal) {
   const execution = proposal.payload_json?.execution as { result?: { actions?: Array<Record<string, unknown>> } } | undefined;
   return execution?.result?.actions ?? [];
+}
+
+function signalTypeLabel(signal: AssistantSignal) {
+  const map: Record<string, string> = {
+    deadline_risk: t("assistantPanel.signalDeadlineRisk"),
+    departure_readiness: t("assistantPanel.signalDeparture"),
+    conflict_warning: t("assistantPanel.signalConflict"),
+    daily_morning_review: t("assistantPanel.signalMorning"),
+    daily_night_review: t("assistantPanel.signalNight"),
+    proposal_followup: t("assistantPanel.signalProposalFollowup"),
+  };
+  return map[signal.signal_type] ?? signal.signal_type;
+}
+
+function signalToneClass(signal: AssistantSignal) {
+  if (signal.signal_type === "departure_readiness" || signal.severity === "urgent") {
+    return "border-danger/30 bg-danger-light text-danger";
+  }
+  if (signal.signal_type === "deadline_risk" || signal.severity === "negotiate") {
+    return "border-warn/30 bg-warn-light text-warn";
+  }
+  return "border-accent/30 bg-accent-light text-accent";
+}
+
+function signalSource(signal: AssistantSignal) {
+  return signal.source_job || signal.dedup_key || signal.signal_type;
+}
+
+function signalReason(signal: AssistantSignal) {
+  const context = signal.context_json ?? {};
+  if (signal.signal_type === "deadline_risk") {
+    const content = typeof context["content"] === "string" ? context["content"] : signal.target_id;
+    const deadline = typeof context["deadline"] === "string" ? formatDateTime(context["deadline"], locale.value) : null;
+    return deadline
+      ? `任务「${content}」截止时间接近：${deadline}。可回复“帮我安排补救方案”或“先忽略”。`
+      : `任务「${content}」临近截止，需要跟进。可回复“帮我安排补救方案”或“先忽略”。`;
+  }
+  if (signal.signal_type === "departure_readiness") {
+    const title = typeof context["title"] === "string" ? context["title"] : signal.target_id;
+    const departure = typeof context["departure_time"] === "string" ? formatDateTime(context["departure_time"], locale.value) : null;
+    const travel = typeof context["travel_duration_minutes"] === "number" ? context["travel_duration_minutes"] : null;
+    const slack = typeof context["slack_minutes"] === "number" ? context["slack_minutes"] : null;
+    const weather = context["weather_snapshot"] as { weather?: { text?: string } } | null;
+    const parts = [`「${title}」即将到出发窗口`];
+    if (departure) parts.push(`建议出发 ${departure}`);
+    if (travel != null) parts.push(`预计通勤 ${travel} 分钟`);
+    if (slack != null) parts.push(`冗余 ${slack} 分钟`);
+    if (weather?.weather?.text) parts.push(`天气 ${weather.weather.text}`);
+    return `${parts.join("，")}。可回复“我已经在了”或“今天不去了”。`;
+  }
+  if (signal.signal_type === "proposal_followup") {
+    const summary = typeof context["proposal_summary"] === "string" ? context["proposal_summary"] : signal.target_id;
+    const label = typeof context["protocol_label"] === "string" && context["protocol_label"].trim()
+      ? context["protocol_label"].trim()
+      : signal.target_id;
+    return `待确认方案跟进：${label}「${summary}」已经等待超过 2 小时。可回复“按方案A安排”“修改方案”或“先不要安排”。`;
+  }
+  return typeof context["message"] === "string" ? context["message"] : t("assistantPanel.signalGenericReason");
 }
 
 function memoryTypeLabel(type: string) {
@@ -180,18 +379,56 @@ function memoryCandidateContent(candidate: AssistantMemoryCandidate) {
 }
 
 function canConfirmProposal(proposal: AssistantProposal) {
-  return proposal.status === "pending" || proposal.status === "accepted";
+  return proposal.status === "pending";
 }
 
-function canReviseProposal(proposal: AssistantProposal) {
-  return proposal.status === "pending" || proposal.status === "accepted" || proposal.status === "execution_failed";
+function markProposalSubmitted(proposalId: number) {
+  locallySubmittedProposalIds.value = new Set([...locallySubmittedProposalIds.value, proposalId]);
 }
 
-function submitRevision(proposalId: number) {
-  const message = (proposalRevisionDrafts.value[proposalId] ?? "").trim();
-  if (!message) return;
-  emit("reviseProposal", proposalId, message);
-  proposalRevisionDrafts.value[proposalId] = "";
+function sendProposalPrompt(proposal: AssistantProposal, message: string) {
+  markProposalSubmitted(proposal.id);
+  draft.value = message;
+  emit("send", message);
+  draft.value = "";
+}
+
+function sendMemoryPrompt(candidate: AssistantMemoryCandidate, message: string) {
+  locallySubmittedMemoryCandidateIds.value = new Set([...locallySubmittedMemoryCandidateIds.value, candidate.id]);
+  emit("send", message);
+}
+
+function buildProposalConfirmPrompt(proposal: AssistantProposal, optionId: string) {
+  const label = proposalProtocolLabel(proposal);
+  return locale.value === "zh-CN"
+    ? `确认 ${label} 方案${optionId}`
+    : `confirm ${label} option ${optionId}`;
+}
+
+function buildProposalRejectPrompt(proposal: AssistantProposal) {
+  const label = proposalProtocolLabel(proposal);
+  return locale.value === "zh-CN"
+    ? `${label} 先不要安排`
+    : `reject ${label}`;
+}
+
+function buildProposalRetryPrompt(proposal: AssistantProposal) {
+  const label = proposalProtocolLabel(proposal);
+  return locale.value === "zh-CN"
+    ? `重试 ${label}`
+    : `retry ${label}`;
+}
+
+function buildMemoryConfirmPrompt(candidate: AssistantMemoryCandidate) {
+  return locale.value === "zh-CN"
+    ? `记住 M${candidate.id}`
+    : `save M${candidate.id}`;
+}
+
+function buildMemoryRejectPrompt(candidate: AssistantMemoryCandidate) {
+  return locale.value === "zh-CN"
+    ? `M${candidate.id} 不要记`
+    : `reject M${candidate.id}`;
 }
 
 function formatSlot(start?: unknown, end?: unknown) {
@@ -211,29 +448,58 @@ function cancelCommand() {
 watch(
   () => props.messages.length,
   () => {
-    requestAnimationFrame(() => {
-      messageContainer.value?.scrollTo({ top: messageContainer.value.scrollHeight, behavior: "smooth" });
-    });
+    scrollMessagesToBottom();
+  },
+  { flush: "post" },
+);
+
+watch(
+  () => props.messages.map((message) => `${message.id}:${message.content.length}`).join("|"),
+  () => {
+    scrollMessagesToBottom();
+  },
+  { flush: "post" },
+);
+
+watch(
+  () => props.sending,
+  (sending) => {
+    scrollMessagesToBottom(sending ? "smooth" : "auto");
   },
 );
 
 onMounted(() => {
   emit("fetchProposals");
+  emit("fetchSignals");
   emit("fetchMemoryCandidates");
+  scrollMessagesToBottom("auto");
 });
 
 watch(
   () => props.activeSessionId,
   () => {
+    locallySubmittedProposalIds.value = new Set();
+    locallySubmittedInlineProposalIds.value = new Set();
+    locallySubmittedMemoryCandidateIds.value = new Set();
     emit("fetchProposals");
+    emit("fetchSignals");
     emit("fetchMemoryCandidates");
+    scrollMessagesToBottom("auto");
+  },
+  { flush: "post" },
+);
+
+watch(
+  () => props.sending,
+  (sending) => {
+    if (!sending && !sendUnlockTimer) locallySubmitting.value = false;
   },
 );
 </script>
 
 <template>
-  <div class="flex h-full flex-col bg-white">
-    <div class="border-b border-border px-4 py-3">
+  <div class="flex h-full min-h-0 flex-col overflow-hidden bg-white">
+    <div class="shrink-0 border-b border-border px-4 py-3">
       <div class="flex items-center justify-between gap-3">
         <div class="flex items-center gap-2">
           <div class="flex h-7 w-7 items-center justify-center rounded-lg bg-accent-light">
@@ -254,9 +520,9 @@ watch(
         </div>
       </div>
 
-      <div class="mt-3 grid grid-cols-[1fr_auto] gap-2">
+      <div class="mt-3 grid grid-cols-[minmax(0,1fr)_auto] gap-2">
         <select
-          class="rounded-xl border border-border bg-surface-2 px-3 py-2 text-sm text-ink focus:border-accent/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-accent/20"
+          class="min-w-0 w-full rounded-xl border border-border bg-surface-2 px-3 py-2 text-sm text-ink focus:border-accent/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-accent/20"
           :value="activeSessionId ?? undefined"
           :disabled="sessionBusy"
           @change="emit('switchSession', Number(($event.target as HTMLSelectElement).value))"
@@ -268,7 +534,7 @@ watch(
         </select>
         <button
           type="button"
-          class="rounded-xl bg-accent px-3 py-2 text-sm font-semibold text-white transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+          class="shrink-0 rounded-xl bg-accent px-3 py-2 text-sm font-semibold text-white transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
           :disabled="creatingSession"
           @click="emit('createSession')"
         >
@@ -296,114 +562,33 @@ watch(
       </div>
     </div>
 
-    <div v-if="visibleProposals.length || loadingProposals" class="shrink-0 border-b border-border bg-surface-2 px-3 py-3">
+    <div v-if="visibleSignals.length || loadingSignals" class="shrink-0 border-b border-border bg-surface-2 px-3 py-3">
       <div class="mb-2 flex items-center justify-between">
-        <p class="text-xs font-semibold text-ink">{{ t("assistantPanel.proposals") }}</p>
-        <span v-if="loadingProposals" class="text-[10px] text-ink-3">{{ t("common.loading") }}</span>
+        <p class="text-xs font-semibold text-ink">{{ t("assistantPanel.activeFollowups") }}</p>
+        <span v-if="loadingSignals" class="text-[10px] text-ink-3">{{ t("common.loading") }}</span>
       </div>
 
-      <div class="max-h-64 space-y-2 overflow-y-auto">
+      <div class="max-h-32 space-y-2 overflow-y-auto sm:max-h-52">
         <div
-          v-for="proposal in visibleProposals"
-          :key="proposal.id"
+          v-for="signal in visibleSignals"
+          :key="signal.id"
           class="rounded-lg border border-border bg-white px-3 py-2.5 shadow-card"
         >
-          <div class="flex items-start justify-between gap-2">
-            <div class="min-w-0">
-              <div class="flex flex-wrap items-center gap-1.5">
-                <span class="text-[10px] font-bold uppercase tracking-widest text-accent">
-                  {{ proposalProtocolLabel(proposal) }}
-                </span>
-                <span
-                  class="rounded-full border px-2 py-0.5 text-[10px] font-semibold"
-                  :class="proposalStatusClass(proposal.status)"
-                >
-                  {{ proposalStatusLabel(proposal.status) }}
-                </span>
-              </div>
-              <p class="mt-1 text-xs font-semibold leading-snug text-ink">{{ proposal.summary }}</p>
-            </div>
-            <button
-              v-if="proposal.status === 'execution_failed'"
-              type="button"
-              class="shrink-0 rounded-lg border border-accent/30 px-2.5 py-1 text-[11px] font-semibold text-accent transition hover:bg-accent-light disabled:cursor-not-allowed disabled:opacity-50"
-              :disabled="proposalBusyId === proposal.id"
-              @click="emit('retryProposal', proposal.id)"
+          <div class="flex flex-wrap items-center gap-1.5">
+            <span
+              class="rounded-full border px-2 py-0.5 text-[10px] font-semibold"
+              :class="signalToneClass(signal)"
             >
-              {{ t("assistantPanel.retryProposal") }}
-            </button>
+              {{ signalTypeLabel(signal) }}
+            </span>
+            <span class="text-[10px] font-semibold uppercase tracking-widest text-ink-3">
+              S{{ signal.id }}
+            </span>
           </div>
-
-          <div v-if="proposalOptions(proposal).length" class="mt-2 divide-y divide-border">
-            <div
-              v-for="option in proposalOptions(proposal)"
-              :key="option.option_id"
-              class="py-2 first:pt-0 last:pb-0"
-            >
-              <div class="flex items-start justify-between gap-2">
-                <div class="min-w-0">
-                  <p class="text-xs font-medium text-ink">
-                    {{ option.option_id }} · {{ option.title }}
-                    <span
-                      v-if="proposal.recommended_option_id === option.option_id"
-                      class="ml-1 text-[10px] font-semibold text-positive"
-                    >
-                      {{ t("assistantPanel.recommended") }}
-                    </span>
-                  </p>
-                  <p v-if="option.summary" class="mt-0.5 text-[11px] leading-snug text-ink-3">{{ option.summary }}</p>
-                  <p v-if="option.rationale" class="mt-0.5 text-[11px] leading-snug text-ink-3">{{ option.rationale }}</p>
-                </div>
-                <button
-                  v-if="canConfirmProposal(proposal)"
-                  type="button"
-                  class="shrink-0 rounded-lg bg-positive px-2.5 py-1 text-[11px] font-semibold text-white transition hover:bg-positive-hover disabled:cursor-not-allowed disabled:opacity-50"
-                  :disabled="proposalBusyId === proposal.id"
-                  @click="emit('confirmProposal', proposal.id, option.option_id)"
-                >
-                  {{ t("assistantPanel.confirmOption") }}
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div v-if="proposal.status === 'executed' && proposalExecutionSummary(proposal).length" class="mt-2 border-t border-border pt-2">
-            <p
-              v-for="(item, i) in proposalExecutionSummary(proposal)"
-              :key="`${proposal.id}-result-${i}`"
-              class="text-[11px] text-positive"
-            >
-              {{ item.type || t("assistantPanel.proposalExecuted") }}
-            </p>
-          </div>
-
-          <div v-if="canReviseProposal(proposal)" class="mt-2 flex gap-2 border-t border-border pt-2">
-            <input
-              v-model="proposalRevisionDrafts[proposal.id]"
-              type="text"
-              class="min-w-0 flex-1 rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink placeholder:text-ink-3 focus:border-accent/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-accent/20"
-              :placeholder="t('assistantPanel.revisePlaceholder')"
-              :disabled="proposalBusyId === proposal.id"
-              @keydown.enter.prevent="submitRevision(proposal.id)"
-            />
-            <button
-              type="button"
-              class="rounded-lg border border-border px-2.5 py-1 text-[11px] font-semibold text-ink-3 transition hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
-              :disabled="proposalBusyId === proposal.id || !(proposalRevisionDrafts[proposal.id] ?? '').trim()"
-              @click="submitRevision(proposal.id)"
-            >
-              {{ t("assistantPanel.reviseProposal") }}
-            </button>
-            <button
-              v-if="proposal.status === 'pending' || proposal.status === 'accepted'"
-              type="button"
-              class="rounded-lg border border-danger/20 px-2.5 py-1 text-[11px] font-semibold text-danger transition hover:bg-danger-light disabled:cursor-not-allowed disabled:opacity-50"
-              :disabled="proposalBusyId === proposal.id"
-              @click="emit('rejectProposal', proposal.id)"
-            >
-              {{ t("assistantPanel.rejectProposal") }}
-            </button>
-          </div>
+          <p class="mt-1 text-xs font-semibold leading-snug text-ink">{{ signalReason(signal) }}</p>
+          <p class="mt-0.5 text-[11px] leading-snug text-ink-3">
+            {{ t("assistantPanel.signalSource") }}：{{ signalSource(signal) }}
+          </p>
         </div>
       </div>
     </div>
@@ -414,7 +599,7 @@ watch(
         <span v-if="loadingMemoryCandidates" class="text-[10px] text-ink-3">{{ t("common.loading") }}</span>
       </div>
 
-      <div class="max-h-52 space-y-2 overflow-y-auto">
+      <div class="max-h-36 space-y-2 overflow-y-auto sm:max-h-52">
         <div
           v-for="candidate in visibleMemoryCandidates"
           :key="candidate.id"
@@ -438,16 +623,16 @@ watch(
             <button
               type="button"
               class="rounded-lg bg-positive px-2.5 py-1 text-[11px] font-semibold text-white transition hover:bg-positive-hover disabled:cursor-not-allowed disabled:opacity-50"
-              :disabled="memoryCandidateBusyId === candidate.id"
-              @click="emit('confirmMemoryCandidate', candidate.id)"
+              :disabled="sending || memoryCandidateBusyId === candidate.id"
+              @click="sendMemoryPrompt(candidate, buildMemoryConfirmPrompt(candidate))"
             >
               {{ t("assistantPanel.confirmMemoryCandidate") }}
             </button>
             <button
               type="button"
               class="rounded-lg border border-danger/20 px-2.5 py-1 text-[11px] font-semibold text-danger transition hover:bg-danger-light disabled:cursor-not-allowed disabled:opacity-50"
-              :disabled="memoryCandidateBusyId === candidate.id"
-              @click="emit('rejectMemoryCandidate', candidate.id)"
+              :disabled="sending || memoryCandidateBusyId === candidate.id"
+              @click="sendMemoryPrompt(candidate, buildMemoryRejectPrompt(candidate))"
             >
               {{ t("assistantPanel.rejectMemoryCandidate") }}
             </button>
@@ -456,7 +641,99 @@ watch(
       </div>
     </div>
 
-    <div ref="messageContainer" class="flex-1 space-y-3 overflow-y-auto px-3 py-4">
+    <div v-if="visibleProposals.length || loadingProposals" class="shrink-0 border-b border-border bg-surface-2 px-3 py-3">
+      <div class="mb-2 flex items-center justify-between gap-3">
+        <p class="text-xs font-semibold text-ink">{{ t("assistantPanel.pendingProposals") }}</p>
+        <span v-if="loadingProposals" class="text-[10px] text-ink-3">{{ t("common.loading") }}</span>
+      </div>
+
+      <div class="assistant-proposal-list max-h-40 space-y-2 overflow-y-auto sm:max-h-56">
+        <div
+          v-for="proposal in visibleProposals"
+          :key="proposal.id"
+          class="rounded-lg border border-border bg-white px-3 py-2.5 shadow-card"
+        >
+          <div class="flex items-start justify-between gap-2">
+            <div class="min-w-0">
+              <div class="flex flex-wrap items-center gap-1.5">
+                <span class="text-[10px] font-bold uppercase tracking-widest text-accent">
+                  {{ proposalProtocolLabel(proposal) }}
+                </span>
+                <span class="rounded-full border px-2 py-0.5 text-[10px] font-semibold" :class="proposalStatusClass(proposal.status)">
+                  {{ proposalStatusLabel(proposal.status) }}
+                </span>
+              </div>
+              <p class="assistant-proposal-summary mt-1 text-xs font-semibold leading-snug text-ink">
+                {{ proposal.summary }}
+              </p>
+            </div>
+          </div>
+
+          <div v-if="proposalOptions(proposal).length" class="mt-2 space-y-1.5 border-t border-border pt-2">
+            <div
+              v-for="option in proposalOptions(proposal)"
+              :key="option.option_id"
+              class="rounded-lg border border-border bg-surface-2 px-2.5 py-1.5"
+            >
+              <p class="assistant-proposal-option-title text-[11px] font-semibold text-ink">
+                {{ option.option_id }}. {{ option.title }}
+              </p>
+              <p class="assistant-proposal-detail mt-0.5 text-[11px] leading-snug text-ink-3">
+                {{ option.summary }}
+              </p>
+              <p v-if="option.rationale" class="assistant-proposal-rationale mt-0.5 text-[10px] leading-snug text-ink-3">
+                {{ option.rationale }}
+              </p>
+            </div>
+          </div>
+
+          <div class="mt-2 flex flex-wrap gap-2 border-t border-border pt-2">
+            <button
+              v-for="option in proposalOptions(proposal)"
+              :key="`confirm-${proposal.id}-${option.option_id}`"
+              type="button"
+              class="rounded-lg bg-positive px-2.5 py-1 text-[11px] font-semibold text-white transition hover:bg-positive-hover disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="sending || proposalBusyId === proposal.id || !canConfirmProposal(proposal)"
+              @click="sendProposalPrompt(proposal, buildProposalConfirmPrompt(proposal, option.option_id))"
+            >
+              {{ t("common.confirm") }} {{ option.option_id }}
+            </button>
+            <button
+              v-if="proposal.status === 'execution_failed'"
+              type="button"
+              class="rounded-lg border border-warn/30 px-2.5 py-1 text-[11px] font-semibold text-warn transition hover:bg-warn-light disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="sending || proposalBusyId === proposal.id"
+              @click="sendProposalPrompt(proposal, buildProposalRetryPrompt(proposal))"
+            >
+              {{ t("assistantPanel.retryProposal") }}
+            </button>
+            <button
+              type="button"
+              class="rounded-lg border border-danger/20 px-2.5 py-1 text-[11px] font-semibold text-danger transition hover:bg-danger-light disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="sending || proposalBusyId === proposal.id || !canConfirmProposal(proposal)"
+              @click="sendProposalPrompt(proposal, buildProposalRejectPrompt(proposal))"
+            >
+              {{ t("assistantPanel.rejectProposal") }}
+            </button>
+          </div>
+
+          <div v-if="proposal.status === 'execution_failed'" class="mt-2 border-t border-border pt-2">
+            <p class="text-[11px] font-semibold text-danger">{{ proposal.execution_error || t("assistantPanel.proposalFailed") }}</p>
+            <div v-if="proposalExecutionSummary(proposal).length" class="mt-1 space-y-1">
+              <p
+                v-for="(action, actionIndex) in proposalExecutionSummary(proposal)"
+                :key="`${proposal.id}-execution-${actionIndex}`"
+                class="text-[10px] text-ink-3"
+              >
+                {{ action.type }}
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div ref="messageContainer" class="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 py-4">
       <div v-if="!messages.length && !sending" class="flex flex-col items-center justify-center py-16 text-center">
         <div class="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-accent-light">
           <svg class="h-6 w-6 text-accent" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
@@ -481,13 +758,78 @@ watch(
         </div>
 
         <div
-          class="max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed"
+          class="min-w-0 max-w-[88%] break-words rounded-2xl px-4 py-2.5 text-sm leading-relaxed sm:max-w-[80%]"
           :class="message.role === 'user'
             ? 'rounded-br-sm bg-accent text-white'
             : 'rounded-bl-sm border border-border bg-surface-2 text-ink'"
         >
           <p v-if="message.role === 'user'" class="whitespace-pre-wrap">{{ message.content }}</p>
-          <div v-else class="assistant-md-light" v-html="renderMarkdown(message.content)" />
+          <template v-else>
+            <div class="assistant-md-light" v-html="renderMarkdown(message.content)" />
+            <div
+              v-for="(block, blockIndex) in messageRenderBlocks(message)"
+              :key="`${message.id}-block-${blockIndex}`"
+              class="mt-3"
+            >
+              <div
+                v-if="block.type === 'proposal_options' && shouldRenderInlineProposalBlock(block)"
+                class="rounded-xl border p-3"
+                :class="inlineProposalCardClass(block)"
+              >
+                <div class="flex items-start justify-between gap-3">
+                  <div>
+                    <p class="text-[10px] font-bold uppercase tracking-widest text-accent">AI 方案</p>
+                    <p class="mt-1 text-xs font-semibold text-ink">{{ inlineProposalPayload(block).summary }}</p>
+                  </div>
+                  <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-semibold text-ink-3">
+                    {{ inlineProposalStatusLabel(block) }}
+                  </span>
+                </div>
+                <div class="mt-3 space-y-2">
+                  <button
+                    v-for="option in inlineProposalOptions(block)"
+                    :key="option.option_id"
+                    type="button"
+                    class="w-full rounded-lg border px-3 py-2 text-left transition"
+                    :class="[
+                      inlineOptionClass(block, option),
+                      isInlineProposalDisabled(block) ? 'cursor-not-allowed opacity-55' : 'cursor-pointer',
+                    ]"
+                    :disabled="isInlineProposalDisabled(block)"
+                    @click="submitInlineProposalPrompt(block, option.prompt_on_click, option.option_id)"
+                  >
+                    <div class="flex items-center justify-between gap-3">
+                      <div class="min-w-0">
+                        <div class="flex flex-wrap items-center gap-2">
+                          <span class="text-xs font-semibold">{{ option.option_id }}.</span>
+                          <span class="text-xs font-semibold">{{ option.title }}</span>
+                          <span
+                            v-if="option.recommended"
+                            class="rounded-full bg-positive-light px-2 py-0.5 text-[10px] font-semibold text-positive"
+                          >
+                            推荐
+                          </span>
+                        </div>
+                        <p v-if="option.summary" class="mt-1 break-words text-[11px] leading-snug text-ink-3">{{ option.summary }}</p>
+                        <p v-if="option.rationale" class="mt-0.5 break-words text-[11px] leading-snug text-ink-3">{{ option.rationale }}</p>
+                      </div>
+                      <span v-if="isInlineOptionSelected(block, option)" class="text-[10px] font-semibold text-ink-3">已选</span>
+                    </div>
+                  </button>
+                  <button
+                    v-if="inlineProposalPayload(block).reject_option?.prompt_on_click"
+                    type="button"
+                    class="w-full rounded-lg border border-dashed border-border px-3 py-2 text-left text-[11px] font-semibold text-ink-3 transition disabled:cursor-not-allowed disabled:opacity-55"
+                    :class="isInlineProposalDisabled(block) ? 'bg-surface-2' : 'hover:border-danger/30 hover:bg-danger-light hover:text-danger'"
+                    :disabled="isInlineProposalDisabled(block)"
+                    @click="submitInlineProposalPrompt(block, inlineProposalPayload(block).reject_option?.prompt_on_click)"
+                  >
+                    {{ inlineProposalPayload(block).reject_option?.title || "拒绝全部方案" }}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </template>
         </div>
       </div>
 
@@ -583,20 +925,49 @@ watch(
         <textarea
           v-model="draft"
           rows="2"
-          class="flex-1 resize-none rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm text-ink placeholder:text-ink-3 focus:border-accent/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-accent/20"
+          class="min-w-0 flex-1 resize-none rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm text-ink placeholder:text-ink-3 focus:border-accent/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-accent/20"
           :placeholder="t('assistantPanel.askPlaceholder')"
+          :disabled="sessionBusy"
           @keydown="handleKeydown"
         />
         <button
           type="button"
           class="shrink-0 self-end rounded-xl bg-accent px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
           :disabled="!canSend || sessionBusy"
+          :aria-busy="isSending"
           @click="send"
         >
-          {{ t("common.send") }}
+          {{ isSending ? t("common.loading") : t("common.send") }}
         </button>
       </div>
       <p class="mt-1.5 text-[10px] text-ink-3">{{ t("assistantPanel.sendHint") }}</p>
     </div>
   </div>
 </template>
+
+<style scoped>
+.assistant-proposal-list {
+  overscroll-behavior: contain;
+}
+
+.assistant-proposal-summary,
+.assistant-proposal-option-title,
+.assistant-proposal-detail,
+.assistant-proposal-rationale {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .assistant-proposal-summary,
+  .assistant-proposal-detail {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .assistant-proposal-rationale {
+    display: none;
+  }
+}
+</style>

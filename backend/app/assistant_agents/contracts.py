@@ -2,13 +2,78 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any, Literal, Protocol
 
 
-GoalType = Literal["event", "task", "schedule_guidance", "unknown"]
-ConductorDecision = Literal["legacy", "clarification", "proposal", "unsupported"]
+GoalType = Literal["event", "task", "schedule_guidance", "progress_followup", "event_context_advice", "unknown"]
+ConductorDecision = Literal["legacy", "clarification", "proposal", "answer", "unsupported"]
+ConversationMode = Literal["proposal", "clarification", "answer", "confirm_existing", "revise_existing", "unsupported"]
+TargetKind = Literal["task", "event", "proposal", "batch_events", "none"]
+TargetResolution = Literal["resolved", "ambiguous", "missing"]
+
+
+@dataclass(slots=True)
+class TargetScope:
+    """Resolved target information separated from the user goal itself."""
+
+    kind: TargetKind = "none"
+    resolution: TargetResolution = "missing"
+    task_id: int | None = None
+    event_id: int | None = None
+    proposal_id: int | None = None
+    event_ids: list[int] = field(default_factory=list)
+    label: str | None = None
+    candidate_labels: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class ContinuationSignals:
+    """Signals that the user is continuing a previous target or proposal."""
+
+    is_following_previous_context: bool = False
+    based_on_active_target: bool = False
+    based_on_pending_proposal: bool = False
+    based_on_history: bool = False
+    reason: str | None = None
+
+
+@dataclass(slots=True)
+class TimePreference:
+    """Normalized preferred time block for planning proposals."""
+
+    date: str
+    start: str
+    end: str
+
+
+@dataclass(slots=True)
+class PlanningIntent:
+    """Planning-specific shape hints emitted by the conductor."""
+
+    wants_task_split: bool = False
+    wants_multi_day_schedule: bool = False
+    time_preferences: list[TimePreference] = field(default_factory=list)
+    duration_hint_days: int | None = None
+    schedule_count: int | None = None
+
+
+@dataclass(slots=True)
+class OrchestrationAssessment:
+    """Unified model-driven intermediate state for one user turn."""
+
+    conversation_mode: ConversationMode = "unsupported"
+    user_goal: str = "unknown"
+    target_scope: TargetScope = field(default_factory=TargetScope)
+    continuation: ContinuationSignals = field(default_factory=ContinuationSignals)
+    planning_intent: PlanningIntent = field(default_factory=PlanningIntent)
+    missing_information: list[str] = field(default_factory=list)
+    proposal_shape: str | None = None
+    notes: list[str] = field(default_factory=list)
+
+    def to_payload(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass(slots=True)
@@ -40,6 +105,7 @@ class UnderstandingResult:
     can_propose_without_clarification: bool = False
     requires_clarification: bool = False
     language: str = "zh"
+    orchestration: OrchestrationAssessment | None = None
 
     def to_log_payload(self) -> dict[str, Any]:
         return {
@@ -51,6 +117,7 @@ class UnderstandingResult:
             "assumptions": list(self.assumptions),
             "can_propose_without_clarification": self.can_propose_without_clarification,
             "requires_clarification": self.requires_clarification,
+            "orchestration": self.orchestration.to_payload() if self.orchestration else None,
         }
 
 

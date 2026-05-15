@@ -57,7 +57,14 @@ export interface AssistantMessage {
   role: "user" | "assistant";
   content: string;
   tool_calls_json?: AssistantAction[] | null;
+  render_blocks_json?: AssistantRenderBlock[] | null;
+  render_blocks?: AssistantRenderBlock[];
   created_at?: string;
+}
+
+export interface AssistantRenderBlock {
+  type: string;
+  payload: Record<string, unknown>;
 }
 
 export interface AssistantSession {
@@ -114,6 +121,25 @@ export interface AssistantProposal {
   updated_at?: string | null;
 }
 
+export interface AssistantSignal {
+  id: number;
+  user_id: string;
+  signal_type: string;
+  severity: string;
+  status: string;
+  dedup_key?: string | null;
+  target_type?: string | null;
+  target_id?: number | null;
+  context_json?: Record<string, unknown> | null;
+  source_job?: string | null;
+  cooldown_until?: string | null;
+  evaluated_at?: string | null;
+  proposal_created_at?: string | null;
+  dismissed_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
 export interface AssistantMemoryCandidate {
   id: number;
   user_id: string;
@@ -156,9 +182,29 @@ const ACTIVE_PROPOSAL_STATUSES = [
   "accepted",
   "execution_pending",
   "execution_failed",
+  "executed",
+  "rejected",
+  "expired",
+  "superseded",
 ];
 
 const ACTIVE_MEMORY_CANDIDATE_STATUSES = ["proposed"];
+const ACTIVE_SIGNAL_STATUSES = ["new", "evaluated", "proposal_created"];
+const SEND_QUEUE_DELAY_MS = 120;
+
+type AssistantTransportError = Error & {
+  assistantRequestSent?: boolean;
+};
+
+function markAssistantRequestSent(error: unknown, requestSent: boolean): AssistantTransportError {
+  const transportError = error instanceof Error ? error as AssistantTransportError : new Error(String(error)) as AssistantTransportError;
+  transportError.assistantRequestSent = requestSent;
+  return transportError;
+}
+
+function wasAssistantRequestSent(error: unknown): boolean {
+  return Boolean((error as AssistantTransportError | undefined)?.assistantRequestSent);
+}
 
 export const useAssistantStore = defineStore("assistant", {
   state: () => ({
@@ -167,10 +213,12 @@ export const useAssistantStore = defineStore("assistant", {
     lastAssistantActions: [] as AssistantAction[],
     assistantSessions: [] as AssistantSession[],
     assistantProposals: [] as AssistantProposal[],
+    assistantSignals: [] as AssistantSignal[],
     assistantMemoryCandidates: [] as AssistantMemoryCandidate[],
     assistantMemory: null as AssistantMemoryRead | null,
     loadingAssistantSessions: false,
     loadingAssistantProposals: false,
+    loadingAssistantSignals: false,
     loadingAssistantMemoryCandidates: false,
     creatingAssistantSession: false,
     archivingAssistantSession: false,
@@ -178,6 +226,8 @@ export const useAssistantStore = defineStore("assistant", {
     proposalActionBusyId: null as number | null,
     memoryCandidateBusyId: null as number | null,
     sending: false,
+    assistantSendInFlight: false,
+    assistantSendQueue: Promise.resolve() as Promise<void>,
     _cacheTimestamps: {} as Record<string, number>,
   }),
   actions: {
@@ -278,10 +328,8 @@ export const useAssistantStore = defineStore("assistant", {
       try {
         const params = new URLSearchParams();
         statuses.forEach((status) => params.append("status", status));
-        params.set("limit", "20");
-        if (this.sessionId != null) {
-          params.set("session_id", String(this.sessionId));
-        }
+        if (this.sessionId != null) params.set("session_id", String(this.sessionId));
+        params.set("limit", "100");
         const response = await api.get<{ items: AssistantProposal[]; total: number }>("/assistant/proposals", {
           params,
         });
@@ -290,6 +338,24 @@ export const useAssistantStore = defineStore("assistant", {
         console.error("Failed to fetch assistant proposals:", error);
       } finally {
         this.loadingAssistantProposals = false;
+      }
+    },
+
+    async fetchAssistantSignals(statuses = ACTIVE_SIGNAL_STATUSES) {
+      this.loadingAssistantSignals = true;
+      try {
+        const params = new URLSearchParams();
+        statuses.forEach((status) => params.append("status", status));
+        params.set("limit", "20");
+        params.set("_ts", String(Date.now()));
+        const response = await api.get<{ items: AssistantSignal[]; total: number }>("/assistant/signals", {
+          params,
+        });
+        this.assistantSignals = response.data.items;
+      } catch (error) {
+        console.error("Failed to fetch assistant signals:", error);
+      } finally {
+        this.loadingAssistantSignals = false;
       }
     },
 
@@ -481,6 +547,7 @@ export const useAssistantStore = defineStore("assistant", {
       if (!normalizedMessage) return;
 
       this.sending = true;
+      let requestSent = false;
       const userMessageId = `local-${Date.now()}`;
       const assistantMsgId = `assistant-stream-${Date.now()}`;
       this.messages.push({ id: userMessageId, role: "user", content: normalizedMessage });
@@ -502,6 +569,7 @@ export const useAssistantStore = defineStore("assistant", {
 
           ws.onopen = () => {
             ws.send(JSON.stringify({ message: normalizedMessage, session_id: this.sessionId }));
+            requestSent = true;
           };
 
           ws.onmessage = (event) => {
@@ -510,6 +578,7 @@ export const useAssistantStore = defineStore("assistant", {
                 type: string;
                 text?: string;
                 actions?: AssistantAction[];
+                render_blocks?: AssistantRenderBlock[];
                 session_id?: number;
                 full_reply?: string;
               };
@@ -527,10 +596,13 @@ export const useAssistantStore = defineStore("assistant", {
                 finished = true;
                 this.sessionId = data.session_id ?? this.sessionId;
                 const rendered = await defaultOutputAdapter.render(data.full_reply ?? "");
-                if (assistantMessage) assistantMessage.content = rendered;
+                if (assistantMessage) {
+                  assistantMessage.content = rendered;
+                  assistantMessage.render_blocks = data.render_blocks ?? [];
+                }
                 ws.close();
                 completed = true;
-                this.sending = false;
+                await this.refreshAssistantSidebarsAfterSend();
                 if (onRefresh) await onRefresh();
                 resolve();
                 return;
@@ -548,53 +620,98 @@ export const useAssistantStore = defineStore("assistant", {
         this.messages = this.messages.filter((item) => item.id !== userMessageId && item.id !== assistantMsgId);
         this.lastAssistantActions = [];
         this.sending = false;
-        throw error;
+        throw markAssistantRequestSent(error, requestSent);
       } finally {
         if (!completed) this.sending = false;
       }
     },
 
     async sendAssistantMessage(message: string, onRefresh?: () => Promise<void>) {
+      const previousSend = this.assistantSendQueue;
+      let releaseQueuedSend: (() => void) | undefined;
+      this.assistantSendQueue = new Promise<void>((resolve) => {
+        releaseQueuedSend = resolve;
+      });
+      await previousSend.catch(() => {});
+      await new Promise((resolve) => window.setTimeout(resolve, SEND_QUEUE_DELAY_MS));
+      this.assistantSendInFlight = true;
       try {
-        await this.sendAssistantMessageStream(message, onRefresh);
-        return;
-      } catch {
-        // Fallback to REST
-      }
+        try {
+          await this.sendAssistantMessageStream(message, onRefresh);
+          return;
+        } catch (error) {
+          if (wasAssistantRequestSent(error)) {
+            console.error("Assistant WebSocket failed after request was sent:", error);
+            await Promise.allSettled([
+              this.fetchCurrentAssistantSession(),
+              this.refreshAssistantSidebarsAfterSend(),
+            ]);
+            this.messages.push({
+              id: `assistant-error-${Date.now()}`,
+              role: "assistant",
+              content: "连接中断：这次请求已经送达后端，我不会改用备用通道重复提交。已刷新当前状态，请稍后查看结果或重新发送新的请求。",
+            });
+            this.lastAssistantActions = [];
+            return;
+          }
+          // Fallback to REST only when the WebSocket request never left the browser.
+        }
 
-      const parsedMessage = await defaultInputAdapter.parse(message);
-      const normalizedMessage = parsedMessage.trim();
-      if (!normalizedMessage) return;
+        const parsedMessage = await defaultInputAdapter.parse(message);
+        const normalizedMessage = parsedMessage.trim();
+        if (!normalizedMessage) return;
 
-      this.sending = true;
-      this.messages.push({ id: `local-${Date.now()}`, role: "user", content: normalizedMessage });
+        this.sending = true;
+        this.messages.push({ id: `local-${Date.now()}`, role: "user", content: normalizedMessage });
 
-      try {
-        const response = await api.post<{
-          session_id: number;
-          reply: string;
-          actions: AssistantAction[];
-        }>("/assistant/message", {
-          session_id: this.sessionId,
-          message: normalizedMessage,
-        });
+        try {
+          const response = await api.post<{
+            session_id: number;
+            reply: string;
+            actions: AssistantAction[];
+            render_blocks?: AssistantRenderBlock[];
+          }>("/assistant/message", {
+            session_id: this.sessionId,
+            message: normalizedMessage,
+          });
 
-        this.sessionId = response.data.session_id;
-        const renderedReply = await defaultOutputAdapter.render(response.data.reply);
-        this.messages.push({
-          id: `assistant-${Date.now()}`,
-          role: "assistant",
-          content: renderedReply,
-          tool_calls_json: response.data.actions,
-        });
-        this.lastAssistantActions = response.data.actions;
+          this.sessionId = response.data.session_id;
+          const renderedReply = await defaultOutputAdapter.render(response.data.reply);
+          this.messages.push({
+            id: `assistant-${Date.now()}`,
+            role: "assistant",
+            content: renderedReply,
+            tool_calls_json: response.data.actions,
+            render_blocks: response.data.render_blocks ?? [],
+          });
+          this.lastAssistantActions = response.data.actions;
 
-        if (onRefresh) await onRefresh();
-      } catch (error) {
-        throw error;
+          await this.refreshAssistantSidebarsAfterSend();
+          if (onRefresh) await onRefresh();
+        } catch (error) {
+          console.error("Assistant message send failed:", error);
+          this.messages.push({
+            id: `assistant-error-${Date.now()}`,
+            role: "assistant",
+            content: "发送失败：网络连接不可用或服务暂时不可达。请恢复连接后重试，我不会重复执行这次未送达的请求。",
+          });
+          this.lastAssistantActions = [];
+        } finally {
+          this.sending = false;
+        }
       } finally {
+        this.assistantSendInFlight = false;
         this.sending = false;
+        if (releaseQueuedSend) releaseQueuedSend();
       }
+    },
+
+    async refreshAssistantSidebarsAfterSend() {
+      await Promise.allSettled([
+        this.fetchAssistantProposals(),
+        this.fetchAssistantSignals(),
+        this.fetchAssistantMemoryCandidates(),
+      ]);
     },
   },
 });

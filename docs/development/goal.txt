@@ -1,0 +1,86 @@
+Goal:
+继续推进个人事务工作台 AI 助手的最终重构，直到它真正从“规则前置决策 + 多套 fallback 的 proposal 外壳”迁移成“模型主导语义编排 + proposal-first 执行边界 + 用户确认后执行 + 长期记忆 + 主动跟进”的个人助手。
+当前重点不是再补关键词，而是持续完成 `Phase 9 - Model-Driven Orchestration Refactor`，逐步收回 legacy workflow / build_plan / 模板澄清 的主导权，让主控路径真正统一。
+
+Current status:
+- Canonical progress file: `E:\GraduationProject\docs\development\AI_ASSISTANT_IMPLEMENTATION_TASK_BOOK_V1.md`
+- Canonical handoff file: `E:\GraduationProject\docs\development\AI_ASSISTANT_SESSION_HANDOFF_2026-05-07.md`
+- Current branch: `master`
+- Working tree: `dirty`
+- Active phase: `Phase 9 - Model-Driven Orchestration Refactor`
+- Latest completed Phase 9A work:
+  - `task continuation -> task_schedule_plan` 已有统一 orchestration
+  - `proposal confirm/revise text protocol` 已有统一 orchestration
+  - `event update / batch update` 已有统一 orchestration
+  - `event_creation / task_creation / schedule_guidance / unknown` 已有统一 orchestration
+  - `schedule_guidance` 在 `proposal` 模式下已经切出独立 answer-like path，不再默认走 `_build_plan()`
+- Latest validation baseline:
+  - `docker exec graduation-project-api pytest -q tests/test_assistant_conductor.py` -> `37 passed`
+  - `docker exec graduation-project-api pytest -q` -> `400 passed`
+  - 本轮全量失败过一次，但原因是容器内 `/tmp/pytest-of-root` 临时目录状态异常；清理后全量恢复通过
+- Important implementation files already touched:
+  - `E:\GraduationProject\backend\app\assistant_agents\contracts.py`
+  - `E:\GraduationProject\backend\app\assistant_agents\conductor.py`
+  - `E:\GraduationProject\backend\app\assistant_agents\specialists\understanding.py`
+  - `E:\GraduationProject\backend\app\assistant_agents\specialists\planning.py`
+  - `E:\GraduationProject\backend\app\assistant_agents\specialists\task_or_event_clarifier.py`
+  - `E:\GraduationProject\backend\app\services\assistant.py`
+  - `E:\GraduationProject\backend\tests\test_assistant_conductor.py`
+
+Read first:
+- `E:\GraduationProject\docs\development\AI_ASSISTANT_IMPLEMENTATION_TASK_BOOK_V1.md`
+- `E:\GraduationProject\docs\development\AI_ASSISTANT_MODEL_DRIVEN_REFACTOR_REVIEW_V1.md`
+- `E:\GraduationProject\backend\app\services\assistant.py`
+- `E:\GraduationProject\backend\app\assistant_agents\specialists\understanding.py`
+- `E:\GraduationProject\backend\tests\test_assistant_conductor.py`
+
+Constraints:
+- Preserve existing user changes; do not touch unrelated dirty work.
+- Unrelated dirty work includes:
+  - deleted tracked files under `E:\GraduationProject\docs\academic\PROPOSAL\GGG\...`
+  - untracked `.playwright-mcp\...`
+  - untracked `E:\GraduationProject\docs\academic\PROPOSAL\论文修改\`
+- All assistant writes must remain proposal-first and confirmation-before-write.
+- Prefer model-led orchestration expansion over adding new keyword routing.
+- Use `apply_patch` for manual edits.
+- Prefer serial backend pytest runs.
+- If full backend pytest starts failing with tmp-path / sqlite temp noise again, first clean container tmp state:
+  - `docker exec graduation-project-api sh -lc "rm -rf /tmp/pytest-of-root && mkdir -p /tmp/pytest-of-root"`
+- After backend runtime changes that require container refresh, run:
+  - `docker compose up -d --force-recreate api`
+  - then verify `http://127.0.0.1:8000/api/health`
+
+Execution strategy:
+- Do not stop at Phase 9A micro-steps only if the next safe step is obvious.
+- Keep iterating through:
+  1. expand orchestration coverage,
+  2. cut one legacy fallback path,
+  3. add transcript regressions,
+  4. run targeted tests,
+  5. run backend full regression periodically,
+  6. update canonical progress file.
+- Only pause if there is a real architectural fork, a failing regression you cannot resolve, or a risk to proposal-first safety boundaries.
+
+Primary next action:
+先继续 `Phase 9A`，把另一个高频 answer-like 场景从默认 legacy 路径中切出来，优先选：
+- `event_context_advice`
+  or
+- `progress_followup`
+要求：
+- 先让它具备明确的 orchestration-driven direct reply path
+- 再补真实 transcript 回归
+- 再验证它不再默认掉进 `_build_plan()` / `workflow`
+
+Longer-horizon target after that:
+- 继续逐步收缩 `proposal` 模式下 `workflow` 与 `_build_plan()` 的默认参与范围
+- 让 conductor / orchestration 成为真正的主控入口
+- 把模板式 clarification / negotiation 降级成最后兜底
+- 最终完成一次真实系统级 smoke + 全量回归 + 文档收口，进入最终整合判断
+
+Success condition for this session:
+- 不只是完成一个小 patch，而是持续推进 Phase 9 主线
+- 至少再切出 1 个高频场景的独立 orchestration path，并完成相应回归和验证
+- 如果推进顺利，就继续往下做，不要在已经明确的后续步骤前过早停下
+
+Start by:
+检查 `assistant.py` 当前哪些 answer-like 场景仍然会在 `proposal` 模式下默认掉进 `workflow / _build_plan()`，选 `event_context_advice` 或 `progress_followup` 中更容易安全切出的一个，直接开始实现、补测试、跑验证，并在完成一轮后继续下一轮，而不是只做分析。

@@ -74,6 +74,10 @@ celery_app.conf.update(
             "task": "app.jobs.assistant_signals.scan_daily_rhythm_signals",
             "schedule": 600.0,
         },
+        "scan-assistant-proposal-followup-signals": {
+            "task": "app.jobs.assistant_signals.scan_pending_proposal_followup_signals",
+            "schedule": 900.0,
+        },
         "sync-daily-weather-snapshots": {
             "task": "app.jobs.weather.sync_daily_weather_snapshots",
             "schedule": crontab(hour=6, minute=0),

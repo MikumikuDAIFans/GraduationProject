@@ -28,11 +28,32 @@ class Settings(BaseSettings):
     project_version: str = "0.1.0"
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     slow_request_threshold_ms: int = Field(default=1200, alias="SLOW_REQUEST_THRESHOLD_MS")
+    debug_console_enabled: bool = Field(default=False, alias="DEBUG_CONSOLE_ENABLED")
+    cors_allowed_origins: str = Field(
+        default=(
+            "http://localhost:5173,http://127.0.0.1:5173,"
+            "http://localhost:8888,http://127.0.0.1:8888,"
+            "http://localhost:8890,http://127.0.0.1:8890,"
+            "http://localhost:4173,http://127.0.0.1:4173"
+        ),
+        alias="CORS_ALLOWED_ORIGINS",
+    )
+    cors_allow_origin_regex: str | None = Field(
+        default=r"http://(localhost|127\.0\.0\.1):\d+",
+        alias="CORS_ALLOW_ORIGIN_REGEX",
+    )
 
     sqlite_db_path: str = Field(default="./data/app.db", alias="SQLITE_DB_PATH")
     redis_url: str = Field(default="redis://127.0.0.1:6379/0", alias="REDIS_URL")
 
-    llm_provider: str = Field(default="gemini", alias="LLM_PROVIDER")
+    llm_provider: str = Field(default="deepseek", alias="LLM_PROVIDER")
+    llm_fallback_provider: str = Field(default="gemini", alias="LLM_FALLBACK_PROVIDER")
+    deepseek_api_key: str | None = Field(default=None, alias="DEEPSEEK_API_KEY")
+    deepseek_model: str = Field(default="deepseek-ai/DeepSeek-V4-Flash", alias="DEEPSEEK_MODEL")
+    deepseek_base_url: str = Field(default="https://api.siliconflow.cn/v1", alias="DEEPSEEK_BASE_URL")
+    deepseek_timeout_seconds: float = Field(default=20.0, alias="DEEPSEEK_TIMEOUT_SECONDS")
+    deepseek_max_retries: int = Field(default=2, alias="DEEPSEEK_MAX_RETRIES")
+    deepseek_retry_delay_seconds: float = Field(default=1.0, alias="DEEPSEEK_RETRY_DELAY_SECONDS")
     gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY")
     gemini_model: str = Field(default="models/gemini-2.5-flash", alias="GEMINI_MODEL")
     gemini_timeout_seconds: float = Field(default=15.0, alias="GEMINI_TIMEOUT_SECONDS")
@@ -63,10 +84,7 @@ class Settings(BaseSettings):
     notification_in_app: bool = Field(default=True, alias="NOTIFICATION_IN_APP")
     notification_desktop: bool = Field(default=True, alias="NOTIFICATION_DESKTOP")
 
-    enable_workflow: bool = Field(default=True, alias="ENABLE_WORKFLOW")
-    enable_react_subgraph: bool = Field(default=True, alias="ENABLE_REACT_SUBGRAPH")
-    route_confidence_threshold: float = Field(default=0.6, alias="ROUTE_CONFIDENCE_THRESHOLD")
-    assistant_conductor_mode: str = Field(default="legacy", alias="ASSISTANT_CONDUCTOR_MODE")
+    assistant_conductor_mode: str = Field(default="proposal", alias="ASSISTANT_CONDUCTOR_MODE")
     assistant_proactive_mode: str = Field(default="off", alias="ASSISTANT_PROACTIVE_MODE")
     assistant_legacy_inbox_job_enabled: bool = Field(default=False, alias="ASSISTANT_LEGACY_INBOX_JOB_ENABLED")
     assistant_memory_path: str = Field(default="./data/assistant_memory", alias="ASSISTANT_MEMORY_PATH")
@@ -107,6 +125,11 @@ class Settings(BaseSettings):
         if not memory_path.is_absolute():
             memory_path = (BASE_DIR / memory_path).resolve()
         return memory_path
+
+    @property
+    def cors_origins(self) -> list[str]:
+        """Return configured CORS origins as a list."""
+        return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
 
 
 @lru_cache(maxsize=1)

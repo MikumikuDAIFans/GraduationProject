@@ -41,11 +41,7 @@ class AssistantSessionRuntime:
     ) -> None:
         if session_title != "New chat" and not session_title.startswith("新对话 "):
             return
-        title = (
-            self.owner.text_runtime._extract_event_title(user_message)
-            or self.owner.text_runtime._extract_task_content(user_message)
-            or user_message.strip()
-        )
+        title = user_message.strip()
         title = __import__("re").sub(r"\s+", " ", title).strip()[:32]
         if not title:
             return

@@ -29,8 +29,10 @@ class AssistantPlanRuntime:
         tasks,
         profile,
         external_context,
+        allow_answer_like_rule_short_circuit: bool = True,
     ) -> dict[str, Any]:
         intent = self.owner.text_runtime._classify_intent(user_message)
+        is_answer_like_intent = intent in {"schedule_guidance", "event_context_advice", "progress_followup"}
         fallback_plan = await self.build_rule_based_plan(
             user_id=user_id,
             user_message=user_message,
@@ -40,7 +42,11 @@ class AssistantPlanRuntime:
             external_context=external_context,
         )
 
-        if intent in {"schedule_guidance", "event_context_advice", "progress_followup"} and (fallback_plan.get("reply") or fallback_plan.get("actions")):
+        if (
+            allow_answer_like_rule_short_circuit
+            and is_answer_like_intent
+            and (fallback_plan.get("reply") or fallback_plan.get("actions"))
+        ):
             return fallback_plan
 
         history_payload = [{"role": item.role, "content": item.content} for item in history]
@@ -85,11 +91,12 @@ class AssistantPlanRuntime:
             logger.bind(component="assistant.plan").warning("Gemini plan generation failed: {error}", error=str(exc))
             plan = {"reply": "", "actions": []}
 
-        if fallback_plan.get("actions") and not plan.get("actions"):
+        allow_rule_fallback = allow_answer_like_rule_short_circuit or not is_answer_like_intent
+        if allow_rule_fallback and fallback_plan.get("actions") and not plan.get("actions"):
             return fallback_plan
-        if not plan.get("reply") and fallback_plan.get("reply"):
+        if allow_rule_fallback and not plan.get("reply") and fallback_plan.get("reply"):
             plan["reply"] = fallback_plan["reply"]
-        if not plan.get("reply") and not plan.get("actions"):
+        if allow_rule_fallback and not plan.get("reply") and not plan.get("actions"):
             return fallback_plan
         return plan
 
@@ -532,21 +539,29 @@ class AssistantPlanRuntime:
         )
 
     def hydrate_event_payload(self, *, payload: dict[str, Any], user_message: str) -> dict[str, Any]:
-        extracted = self.owner.text_runtime._build_rule_based_event_payload(user_message)
+        start_time, end_time = self.owner.text_runtime._extract_time_range(user_message)
+        extracted = {
+            "start_time": start_time.isoformat() if start_time else None,
+            "end_time": end_time.isoformat() if end_time else None,
+            "event_type": "general",
+        }
         enriched = dict(payload)
-        for key in ("title", "description", "start_time", "end_time", "location_name", "location_coords", "event_type"):
+        for key in ("start_time", "end_time", "event_type"):
             if enriched.get(key) in (None, "", "event", "new event", "New event") and extracted.get(key):
                 enriched[key] = extracted[key]
-        enriched["title"] = self.owner.text_runtime._normalize_event_title(
-            current_title=enriched.get("title"),
-            user_message=user_message,
-        )
         return enriched
 
     def hydrate_task_payload(self, *, payload: dict[str, Any], user_message: str) -> dict[str, Any]:
-        extracted = self.owner.text_runtime._build_rule_based_task_payload(user_message)
+        deadline = self.owner.text_runtime._extract_task_deadline(user_message)
+        extracted = {
+            "deadline": deadline.isoformat() if deadline else None,
+            "estimated_duration_minutes": self.owner.text_runtime._extract_duration_minutes(user_message),
+            "priority": 3,
+            "can_split": bool(re.search(r"拆分|拆成|分成|分两次|分几次|分块", user_message)),
+            "preferred_period": self.owner.text_runtime._extract_period_preference(user_message),
+        }
         enriched = dict(payload)
-        for key in ("content", "description", "deadline", "estimated_duration_minutes", "priority", "can_split", "preferred_period"):
+        for key in ("deadline", "estimated_duration_minutes", "priority", "can_split", "preferred_period"):
             if enriched.get(key) in (None, "", False) and extracted.get(key) not in (None, "", False):
                 enriched[key] = extracted[key]
         return enriched
@@ -599,12 +614,14 @@ class AssistantPlanRuntime:
                 return followup_plan
 
         if intent == "event_context_advice":
-            event_payload = self.owner.text_runtime._build_rule_based_event_payload(user_message)
-            event_payload = self.owner._apply_place_memory_to_event_payload(
-                payload=event_payload,
-                user_message=user_message,
-                external_context=external_context,
-            )
+            start_time, end_time = self.owner.text_runtime._extract_time_range(user_message)
+            event_payload = {
+                "title": None,
+                "start_time": start_time.isoformat() if start_time else None,
+                "end_time": end_time.isoformat() if end_time else None,
+                "location_name": None,
+                "event_type": "general",
+            }
             event_context = await self.owner._build_event_specific_context(
                 payload=event_payload,
                 profile=profile,
@@ -634,12 +651,6 @@ class AssistantPlanRuntime:
             }
 
         if intent == "create_task":
-            payload = self.owner.text_runtime._build_rule_based_task_payload(user_message)
-            if payload.get("content"):
-                return {
-                    "reply": self.build_task_preflight_reply(payload=payload, user_message=user_message),
-                    "actions": [{"type": "create_task", "payload": payload}],
-                }
             return {
                 "reply": self.owner.formatter.build_clarification_reply(
                     intent="create_task",
@@ -649,35 +660,13 @@ class AssistantPlanRuntime:
                 "actions": [],
             }
 
-        event_payload = self.owner.text_runtime._build_rule_based_event_payload(user_message)
-        event_payload = self.owner._apply_place_memory_to_event_payload(
-            payload=event_payload,
-            user_message=user_message,
-            external_context=external_context,
-        )
-        if event_payload.get("title") and event_payload.get("start_time") and event_payload.get("end_time"):
-            event_context = await self.owner._build_event_specific_context(
-                payload=event_payload,
-                profile=profile,
-                user_message=user_message,
-            )
-            return {
-                "reply": self.build_event_preflight_reply(
-                    payload=event_payload,
-                    user_message=user_message,
-                    external_context=external_context,
-                    event_context=event_context,
-                ),
-                "actions": [{"type": "create_event", "payload": event_payload}],
-            }
-
         if intent == "create_event":
+            start_time, end_time = self.owner.text_runtime._extract_time_range(user_message)
             missing_fields = []
-            if not event_payload.get("title") or event_payload.get("title") == "New event":
-                missing_fields.append("title")
-            if not event_payload.get("start_time"):
+            missing_fields.append("title")
+            if not start_time:
                 missing_fields.append("start_time")
-            if not event_payload.get("end_time"):
+            if not end_time:
                 missing_fields.append("end_time")
             return {
                 "reply": self.owner.formatter.build_clarification_reply(
@@ -696,10 +685,9 @@ class AssistantPlanRuntime:
         user_id: str,
         user_message: str,
         tasks,
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         followup_reminders = await self.owner.reminder_repository.list_recent_task_followups(user_id=user_id, limit=6)
-        active_tasks = [task for task in tasks if (task.status or "pending") not in {"done"}]
-        active_tasks.sort(key=lambda task: (-(task.completed_minutes or 0), -(task.scheduled_minutes or 0), task.id))
+        active_tasks = self.select_progress_followup_tasks(user_message=user_message, tasks=tasks)
 
         target_task_ids = [task.id for task in active_tasks[:3]]
         schedule_items = await self.owner.suggestion_service.build_suggestions_for_dates(
@@ -708,9 +696,6 @@ class AssistantPlanRuntime:
             limit=6,
             related_task_ids=target_task_ids or None,
         )
-
-        if not followup_reminders and not schedule_items and not active_tasks:
-            return None
 
         prefers_chinese = self.owner.text_runtime._prefers_chinese(user_message)
         reply = self.build_progress_followup_reply(
@@ -733,6 +718,53 @@ class AssistantPlanRuntime:
             )
         return {"reply": reply, "actions": actions}
 
+    def select_progress_followup_tasks(self, *, user_message: str, tasks) -> list[Any]:
+        candidates = [task for task in tasks if (task.status or "pending") not in {"canceled", "archived"}]
+        ranked_candidates = self.rank_progress_followup_tasks(user_message=user_message, tasks=candidates)
+        mentioned = [
+            task
+            for task in ranked_candidates
+            if self.score_progress_followup_task(user_message=user_message, task=task) > 0
+        ]
+        if mentioned:
+            return mentioned
+        active_tasks = [task for task in candidates if (task.status or "pending") not in {"done"}]
+        return self.rank_progress_followup_tasks(user_message=user_message, tasks=active_tasks)
+
+    def rank_progress_followup_tasks(self, *, user_message: str, tasks) -> list[Any]:
+        scored: list[tuple[int, int, int, Any]] = []
+        for task in tasks:
+            score = self.score_progress_followup_task(user_message=user_message, task=task)
+            scored.append((score, -(task.completed_minutes or 0), -(task.scheduled_minutes or 0), task))
+        scored.sort(key=lambda item: (-item[0], item[1], item[2], getattr(item[3], "id", 0)))
+        ranked = [item[3] for item in scored]
+        return ranked if ranked else list(tasks)
+
+    def score_progress_followup_task(self, *, user_message: str, task) -> int:
+        title = str(getattr(task, "content", "") or "").strip()
+        if not title:
+            return 0
+        message = user_message or ""
+        if title and title in message:
+            return 8
+        compact_title = re.sub(r"[^\u4e00-\u9fa5A-Za-z0-9]", "", title)
+        compact_message = re.sub(r"[^\u4e00-\u9fa5A-Za-z0-9]", "", message)
+        if compact_title and compact_title in compact_message:
+            return 7
+        if re.search(r"[\u4e00-\u9fa5]", title):
+            best = 0
+            for size in range(2, min(len(compact_title), 4) + 1):
+                for index in range(0, len(compact_title) - size + 1):
+                    token = compact_title[index : index + size]
+                    if token in compact_message:
+                        best = max(best, min(size, 4))
+            if best:
+                return best
+        for token in re.findall(r"[\u4e00-\u9fa5A-Za-z0-9]{2,}", title):
+            if token and token in message:
+                return max(4, len(token))
+        return 0
+
     def build_progress_followup_reply(
         self,
         *,
@@ -745,11 +777,14 @@ class AssistantPlanRuntime:
             parts: list[str] = []
             if tasks:
                 task = tasks[0]
-                parts.append(
-                    f"你当前最值得继续推进的是“{task.content}”，"
-                    f"已完成 {task.completed_minutes} 分钟，"
-                    f"还剩 {task.remaining_minutes if task.remaining_minutes is not None else '未知'} 分钟。"
-                )
+                if (task.status or "pending") == "done":
+                    parts.append(f"你问到的任务“{task.content}”目前已完成，已完成 {task.completed_minutes} 分钟。")
+                else:
+                    parts.append(
+                        f"你当前最值得继续推进的是“{task.content}”，"
+                        f"已完成 {task.completed_minutes} 分钟，"
+                        f"还剩 {task.remaining_minutes if task.remaining_minutes is not None else '未知'} 分钟。"
+                    )
             if followup_reminders:
                 parts.append("最近执行反馈：" + "；".join(reminder.message for reminder in followup_reminders[:2]) + "。")
             if schedule_items:
@@ -763,10 +798,13 @@ class AssistantPlanRuntime:
         parts = []
         if tasks:
             task = tasks[0]
-            parts.append(
-                f"Your main active task is '{task.content}', with {task.completed_minutes} minutes completed "
-                f"and {task.remaining_minutes if task.remaining_minutes is not None else 'unknown'} minutes remaining."
-            )
+            if (task.status or "pending") == "done":
+                parts.append(f"The task you asked about, '{task.content}', is done with {task.completed_minutes} minutes completed.")
+            else:
+                parts.append(
+                    f"Your main active task is '{task.content}', with {task.completed_minutes} minutes completed "
+                    f"and {task.remaining_minutes if task.remaining_minutes is not None else 'unknown'} minutes remaining."
+                )
         if followup_reminders:
             parts.append("Recent execution updates: " + "; ".join(reminder.message for reminder in followup_reminders[:2]) + ".")
         if schedule_items:

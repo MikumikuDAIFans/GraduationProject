@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator
 
@@ -12,26 +13,36 @@ from loguru import logger
 
 from app.core.config import get_settings
 from app.core.error_handler import GeminiAPIError
+from app.schemas.assistant_understanding import validate_message_understanding_payload
+from app.services.debug_observability import debug_observability
 
 
 class GeminiClient:
-    """Minimal async Gemini REST client."""
+    """Minimal async LLM client.
+
+    The public class name is kept for compatibility with older call sites, but
+    generation now uses the configured primary provider first and falls back to
+    Gemini when configured.
+    """
 
     _consecutive_failures = 0
     _circuit_open_until: datetime | None = None
+    _last_generation_failed_all = False
 
     def __init__(self) -> None:
         self.settings = get_settings()
+        self.trace_context: dict[str, Any] = {}
 
     @property
     def enabled(self) -> bool:
-        return self.settings.llm_provider == "gemini" and bool(self.settings.gemini_api_key)
+        return any(self._provider_enabled(provider) for provider in self._provider_order())
 
     @classmethod
-    def health_status(cls, *, enabled: bool, provider: str) -> dict[str, Any]:
+    def health_status(cls, *, enabled: bool, provider: str, fallback_provider: str | None = None) -> dict[str, Any]:
         return {
             "enabled": enabled,
             "provider": provider,
+            "fallback_provider": fallback_provider,
             "circuit_open": cls._is_circuit_open(),
             "circuit_open_until": cls._circuit_open_until.isoformat() if cls._circuit_open_until else None,
             "consecutive_failures": cls._consecutive_failures,
@@ -83,8 +94,57 @@ class GeminiClient:
         )
         return await self._generate_text(prompt)
 
+    async def extract_event_creation_semantics(
+        self,
+        *,
+        user_message: str,
+        now: datetime,
+        profile: Any | None = None,
+        external_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Extract event creation semantics for the conductor's Understanding specialist."""
+        if not self.enabled:
+            raise RuntimeError("Gemini is not configured.")
+        prompt = self._build_event_semantics_prompt(
+            user_message=user_message,
+            now=now,
+            profile=profile,
+            external_context=external_context,
+        )
+        text = await self._generate_text(prompt)
+        payload = self._parse_json_payload(text)
+        if not isinstance(payload, dict):
+            raise GeminiAPIError("Gemini returned invalid event semantics.")
+        return payload
+
+    async def extract_message_understanding(
+        self,
+        *,
+        user_message: str,
+        now: datetime,
+        profile: Any | None = None,
+        external_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Extract the conductor's top-level semantic understanding before rule fallback."""
+        if not self.enabled:
+            raise RuntimeError("Gemini is not configured.")
+        prompt = self._build_message_understanding_prompt(
+            user_message=user_message,
+            now=now,
+            profile=profile,
+            external_context=external_context,
+        )
+        text = await self._generate_text(prompt)
+        payload = self._parse_json_payload(text)
+        if not isinstance(payload, dict):
+            raise GeminiAPIError("Gemini returned invalid message understanding.")
+        try:
+            return validate_message_understanding_payload(payload)
+        except ValueError as exc:
+            raise GeminiAPIError("Gemini returned invalid message understanding.") from exc
+
     async def generate_text(self, prompt: str) -> str:
-        """Public text generation helper for workflow / ReAct callers."""
+        """Public text generation helper for assistant callers."""
         if not self.enabled:
             raise RuntimeError("Gemini is not configured.")
         return await self._generate_text(prompt)
@@ -100,8 +160,8 @@ class GeminiClient:
         external_context: dict[str, Any] | None = None,
     ) -> AsyncIterator[str]:
         """Stream text chunks from Gemini's SSE endpoint."""
-        if not self.enabled:
-            raise RuntimeError("Gemini is not configured.")
+        if not self._provider_enabled("gemini"):
+            raise RuntimeError("Gemini streaming is not configured.")
 
         prompt = self._build_plan_prompt(
             user_message=user_message,
@@ -152,12 +212,79 @@ class GeminiClient:
                             yield text
 
     async def _generate_text(self, prompt: str) -> str:
+        errors: list[str] = []
+        self.__class__._last_generation_failed_all = False
+        for provider in self._provider_order():
+            if not self._provider_enabled(provider):
+                continue
+            try:
+                self.trace_context["_fallback_attempt"] = bool(errors)
+                if provider == "deepseek":
+                    return await self._generate_text_deepseek(prompt)
+                if provider == "gemini":
+                    return await self._generate_text_gemini(prompt)
+            except Exception as exc:
+                errors.append(f"{provider}: {exc}")
+                self.__class__._circuit_open_until = None
+                self.__class__._consecutive_failures = 0
+                logger.bind(component="llm", provider=provider).warning(
+                    "LLM provider failed, trying fallback when available: {error}",
+                    error=str(exc),
+                )
+                continue
+            finally:
+                self.trace_context.pop("_fallback_attempt", None)
+        self.__class__._last_generation_failed_all = True
+        debug_observability.record_llm_trace(
+            provider="all",
+            model="configured-provider-chain",
+            purpose=self.trace_context.get("purpose") or "generate_text",
+            status="fallback_failed",
+            request_payload={"prompt": prompt, "provider_order": self._provider_order()},
+            error="; ".join(errors or ["no configured provider"]),
+            request_id=self.trace_context.get("request_id"),
+            session_id=self.trace_context.get("session_id"),
+            message_id=self.trace_context.get("message_id"),
+        )
+        raise GeminiAPIError(
+            "AI 服务暂时不可用，所有已配置模型都调用失败。",
+            details={"errors": errors or ["no configured provider"]},
+        )
+
+    async def _generate_text_deepseek(self, prompt: str) -> str:
+        url = f"{self.settings.deepseek_base_url.rstrip('/')}/chat/completions"
+        data = await self._post_openai_chat_with_retry(
+            url=url,
+            api_key=self.settings.deepseek_api_key or "",
+            model=self.settings.deepseek_model,
+            payload={
+                "model": self.settings.deepseek_model,
+                "messages": [
+                    {"role": "system", "content": "你是一个严谨的个人事务助手后端模块。请严格按调用方要求输出。"},
+                    {"role": "user", "content": prompt},
+                ],
+            },
+            timeout_seconds=self.settings.deepseek_timeout_seconds,
+            max_retries=self.settings.deepseek_max_retries,
+            retry_delay_seconds=self.settings.deepseek_retry_delay_seconds,
+            provider="deepseek",
+        )
+        choices = data.get("choices") or []
+        if not choices:
+            raise GeminiAPIError("DeepSeek returned no choices.")
+        message = choices[0].get("message") or {}
+        text = message.get("content") or choices[0].get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise GeminiAPIError("DeepSeek returned an empty reply.")
+        return text.strip()
+
+    async def _generate_text_gemini(self, prompt: str) -> str:
         url = (
             f"https://generativelanguage.googleapis.com/v1beta/"
             f"{self.settings.gemini_model}:generateContent"
         )
 
-        data = await self._post_with_retry(
+        data = await self._post_gemini_with_retry(
             url=url,
             payload={
                 "contents": [
@@ -180,7 +307,106 @@ class GeminiClient:
             raise GeminiAPIError("Gemini returned an empty reply.")
         return text.strip()
 
-    async def _post_with_retry(self, *, url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _provider_order(self) -> list[str]:
+        primary = (self.settings.llm_provider or "deepseek").lower()
+        fallback = (self.settings.llm_fallback_provider or "").lower()
+        order: list[str] = []
+        for provider in (primary, fallback):
+            if provider in {"deepseek", "siliconflow"}:
+                provider = "deepseek"
+            if provider in {"gemini", "deepseek"} and provider not in order:
+                order.append(provider)
+        return order or ["deepseek", "gemini"]
+
+    def _provider_enabled(self, provider: str) -> bool:
+        provider = "deepseek" if provider == "siliconflow" else provider
+        if provider == "deepseek":
+            return bool(self.settings.deepseek_api_key)
+        if provider == "gemini":
+            return bool(self.settings.gemini_api_key)
+        return False
+
+    async def _post_openai_chat_with_retry(
+        self,
+        *,
+        url: str,
+        api_key: str,
+        model: str,
+        payload: dict[str, Any],
+        timeout_seconds: float,
+        max_retries: int,
+        retry_delay_seconds: float,
+        provider: str,
+    ) -> dict[str, Any]:
+        last_error: Exception | None = None
+        timeout = httpx.Timeout(timeout_seconds)
+        if self._is_circuit_open():
+            raise GeminiAPIError(
+                "AI 服务正在短暂恢复中，请稍后再试。",
+                details={"circuit_open_until": self._circuit_open_until.isoformat() if self._circuit_open_until else None},
+            )
+        for attempt in range(1, max_retries + 1):
+            started_at = time.perf_counter()
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.post(
+                        url,
+                        headers={
+                            "Content-Type": "application/json",
+                            "Authorization": api_key if api_key.lower().startswith("bearer ") else f"Bearer {api_key}",
+                        },
+                        json=payload,
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    self._record_success()
+                    debug_observability.record_llm_trace(
+                        provider=provider,
+                        model=model,
+                        purpose=self.trace_context.get("purpose") or "openai_chat",
+                        status="fallback_success" if self.trace_context.get("_fallback_attempt") else "success",
+                        request_payload=payload,
+                        raw_response=data,
+                        parsed_result=self._extract_openai_text_preview(data),
+                        attempt=attempt,
+                        started_at=started_at,
+                        request_id=self.trace_context.get("request_id"),
+                        session_id=self.trace_context.get("session_id"),
+                        message_id=self.trace_context.get("message_id"),
+                    )
+                    return data
+            except (httpx.TimeoutException, httpx.HTTPError, json.JSONDecodeError) as exc:
+                last_error = exc
+                self._record_failure(max_failures=max_retries)
+                debug_observability.record_llm_trace(
+                    provider=provider,
+                    model=model,
+                    purpose=self.trace_context.get("purpose") or "openai_chat",
+                    status="timeout" if isinstance(exc, httpx.TimeoutException) else "error",
+                    request_payload=payload,
+                    error=str(exc),
+                    attempt=attempt,
+                    started_at=started_at,
+                    request_id=self.trace_context.get("request_id"),
+                    session_id=self.trace_context.get("session_id"),
+                    message_id=self.trace_context.get("message_id"),
+                )
+                if attempt >= max_retries:
+                    break
+                logger.bind(component="llm", provider=provider, model=model).warning(
+                    "LLM request failed on attempt {attempt}/{max_retries}: {error}",
+                    attempt=attempt,
+                    max_retries=max_retries,
+                    error=str(exc),
+                )
+                await asyncio.sleep(retry_delay_seconds * attempt)
+
+        raise GeminiAPIError(
+            f"{provider} 服务暂时不可用，已重试 {max_retries} 次。",
+            details={"last_error": str(last_error) if last_error else "unknown"},
+        )
+
+    async def _post_gemini_with_retry(self, *, url: str, payload: dict[str, Any]) -> dict[str, Any]:
         last_error: Exception | None = None
         timeout = httpx.Timeout(self.settings.gemini_timeout_seconds)
         if self._is_circuit_open():
@@ -189,6 +415,7 @@ class GeminiClient:
                 details={"circuit_open_until": self._circuit_open_until.isoformat() if self._circuit_open_until else None},
             )
         for attempt in range(1, self.settings.gemini_max_retries + 1):
+            started_at = time.perf_counter()
             try:
                 async with httpx.AsyncClient(timeout=timeout) as client:
                     response = await client.post(
@@ -197,11 +424,39 @@ class GeminiClient:
                         json=payload,
                     )
                     response.raise_for_status()
+                    data = response.json()
                     self._record_success()
-                    return response.json()
+                    debug_observability.record_llm_trace(
+                        provider="gemini",
+                        model=self.settings.gemini_model,
+                        purpose=self.trace_context.get("purpose") or "gemini",
+                        status="fallback_success" if self.trace_context.get("_fallback_attempt") else "success",
+                        request_payload=payload,
+                        raw_response=data,
+                        parsed_result=self._extract_gemini_text_preview(data),
+                        attempt=attempt,
+                        started_at=started_at,
+                        request_id=self.trace_context.get("request_id"),
+                        session_id=self.trace_context.get("session_id"),
+                        message_id=self.trace_context.get("message_id"),
+                    )
+                    return data
             except (httpx.TimeoutException, httpx.HTTPError, json.JSONDecodeError) as exc:
                 last_error = exc
-                self._record_failure()
+                self._record_failure(max_failures=self.settings.gemini_max_retries)
+                debug_observability.record_llm_trace(
+                    provider="gemini",
+                    model=self.settings.gemini_model,
+                    purpose=self.trace_context.get("purpose") or "gemini",
+                    status="timeout" if isinstance(exc, httpx.TimeoutException) else "error",
+                    request_payload=payload,
+                    error=str(exc),
+                    attempt=attempt,
+                    started_at=started_at,
+                    request_id=self.trace_context.get("request_id"),
+                    session_id=self.trace_context.get("session_id"),
+                    message_id=self.trace_context.get("message_id"),
+                )
                 if attempt >= self.settings.gemini_max_retries:
                     break
                 logger.bind(component="gemini").warning(
@@ -222,9 +477,10 @@ class GeminiClient:
         cls._consecutive_failures = 0
         cls._circuit_open_until = None
 
-    def _record_failure(self) -> None:
+    def _record_failure(self, *, max_failures: int | None = None) -> None:
         self.__class__._consecutive_failures += 1
-        if self.__class__._consecutive_failures >= self.settings.gemini_max_retries:
+        threshold = max_failures or self.settings.gemini_max_retries
+        if self.__class__._consecutive_failures >= threshold:
             self.__class__._circuit_open_until = datetime.now(timezone.utc) + timedelta(
                 seconds=self.settings.gemini_circuit_breaker_seconds,
             )
@@ -238,6 +494,105 @@ class GeminiClient:
             cls._consecutive_failures = 0
             return False
         return True
+
+    def _extract_openai_text_preview(self, data: dict[str, Any]) -> dict[str, Any]:
+        choices = data.get("choices") or []
+        if not choices:
+            return {"text": None}
+        message = choices[0].get("message") or {}
+        return {"text": message.get("content") or choices[0].get("text")}
+
+    def _extract_gemini_text_preview(self, data: dict[str, Any]) -> dict[str, Any]:
+        candidates = data.get("candidates") or []
+        if not candidates:
+            return {"text": None}
+        parts = candidates[0].get("content", {}).get("parts", [])
+        return {"text": "".join(part.get("text", "") for part in parts if part.get("text"))}
+
+    def _build_event_semantics_prompt(
+        self,
+        *,
+        user_message: str,
+        now: datetime,
+        profile: Any | None,
+        external_context: dict[str, Any] | None,
+    ) -> str:
+        profile_payload = {
+            "home_location_name": getattr(profile, "home_location_name", None) if profile else None,
+            "work_location_name": getattr(profile, "work_location_name", None) if profile else None,
+        }
+        context_payload = external_context or {}
+        schema = {
+            "goal_type": "event",
+            "title": "string or null",
+            "location_name": "string or null",
+            "missing_fields": ["title"],
+            "confidence": 0.0,
+            "reasoning_summary": "short Chinese phrase",
+        }
+        return f"""
+你是日程智能助手的语义理解模块。你的任务是从用户自然语言中抽取“要创建的日程”的语义槽位。
+
+必须遵守：
+- 以语义理解为准，不要按关键词或固定分隔符硬拆句子。
+- title 是用户真正要做的事情/目的，不能是任意截取的片段。
+- location_name 只填写物理地点/场所，不要把动作、人物、目的合并进地点。
+- 如果地点不明确就填 null，不要猜。
+- 不要执行任何创建/修改动作，只返回 JSON。
+- 示例：“中午12点我要去驾校接李婷” 应理解为 title 可为“去驾校接李婷”或“接李婷”，location_name 为“驾校”，绝不能输出 title=“点我要” 或 location_name=“驾校接李婷”。
+
+当前时间：{now.isoformat(timespec="minutes")}
+用户画像：{json.dumps(profile_payload, ensure_ascii=False)}
+外部上下文：{json.dumps(context_payload, ensure_ascii=False, default=str)}
+用户消息：{user_message}
+
+只返回一个 JSON 对象，字段形如：
+{json.dumps(schema, ensure_ascii=False)}
+""".strip()
+
+    def _build_message_understanding_prompt(
+        self,
+        *,
+        user_message: str,
+        now: datetime,
+        profile: Any | None,
+        external_context: dict[str, Any] | None,
+    ) -> str:
+        profile_payload = {
+            "home_location_name": getattr(profile, "home_location_name", None) if profile else None,
+            "work_location_name": getattr(profile, "work_location_name", None) if profile else None,
+        }
+        context_payload = external_context or {}
+        schema = {
+            "intent": "create_event|create_task|reschedule_event|cancel_event|mark_event_completed|mark_task_completed|schedule_guidance|progress_followup|event_context_advice|unknown",
+            "goal_type": "event|task|schedule_guidance|progress_followup|event_context_advice|unknown",
+            "title": "event title or null",
+            "location_name": "physical place or null",
+            "task_content": "task content or null",
+            "missing_fields": [],
+            "ambiguities": [],
+            "confidence": 0.0,
+            "reasoning_summary": "short Chinese phrase",
+        }
+        return f"""
+你是日程智能助手的 Understanding Specialist。你负责把用户自然语言理解成结构化目标，供后续规划和协商模块使用。
+
+必须遵守：
+- LLM 语义理解是主路径，不要用关键词、固定分隔符或正则式思路硬拆。
+- 只做理解，不执行任何写操作。
+- 写入日程/任务前必须交给 proposal/确认流程。
+- title 是日程中真正要做的事情；location_name 只填写物理地点/场所。
+- 对“去驾校接李婷”这类表达，地点是“驾校”，动作/目的可以是“去驾校接李婷”或“接李婷”。
+- 如果无法可靠理解，intent 填 unknown，并把缺失项写入 missing_fields。
+
+当前时间：{now.isoformat(timespec="minutes")}
+用户画像：{json.dumps(profile_payload, ensure_ascii=False)}
+外部上下文：{json.dumps(context_payload, ensure_ascii=False, default=str)}
+用户消息：{user_message}
+
+只返回一个 JSON 对象，字段形如：
+{json.dumps(schema, ensure_ascii=False)}
+""".strip()
 
     def _build_plan_prompt(
         self,
@@ -409,4 +764,18 @@ User message:
         if candidate.startswith("```"):
             candidate = candidate.strip("`")
             candidate = candidate.replace("json", "", 1).strip()
-        return json.loads(candidate)
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            debug_observability.record_llm_trace(
+                provider="parser",
+                model="json",
+                purpose=self.trace_context.get("purpose") or "parse_json",
+                status="parse_error",
+                raw_response=text,
+                error=str(exc),
+                request_id=self.trace_context.get("request_id"),
+                session_id=self.trace_context.get("session_id"),
+                message_id=self.trace_context.get("message_id"),
+            )
+            raise

@@ -28,8 +28,13 @@ async def health_check() -> HealthRead:
 @router.get("/ai", response_model=HealthAIRead)
 async def ai_health() -> HealthAIRead:
     settings = get_settings()
+    client = GeminiClient()
     return HealthAIRead.model_validate(
-        GeminiClient.health_status(enabled=settings.llm_provider == "gemini" and bool(settings.gemini_api_key), provider=settings.llm_provider)
+        GeminiClient.health_status(
+            enabled=client.enabled,
+            provider=settings.llm_provider,
+            fallback_provider=settings.llm_fallback_provider,
+        )
     )
 
 

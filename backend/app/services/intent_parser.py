@@ -139,8 +139,15 @@ class EnhancedIntentParser:
         return result
 
     async def _llm_parse(self, message: str, *, fallback: ParsedIntent) -> ParsedIntent:
-        from app.workflow.prompts import INTENT_DETECTION_TEMPLATE
-        prompt = INTENT_DETECTION_TEMPLATE.format(user_message=message)
+        prompt = f"""
+请将用户消息解析成 JSON，不要输出 Markdown。
+字段：
+- intent: create_event | create_task | query_events | unknown
+- slots: object，允许包含 title/activity/start_time/end_time/location
+- confidence: 0 到 1
+
+用户消息：{message}
+""".strip()
 
         try:
             response_text = await self.llm.generate_text(prompt)

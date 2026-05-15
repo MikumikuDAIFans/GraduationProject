@@ -177,6 +177,7 @@ def test_departure_signal_job_uses_departure_time_not_event_start(tmp_path: Path
             assert len(signals) == 1
             assert signals[0].context_json["departure_time"].startswith("2026-05-01T09:20")
             assert signals[0].context_json["event_start"].startswith("2026-05-01T10:00")
+            assert signals[0].context_json["slack_minutes"] == 10
             assert signals[0].context_json["weather_snapshot"]["weather"]["text"] == "Cloudy"
         finally:
             await engine.dispose()

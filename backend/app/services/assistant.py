@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import date, datetime, timedelta
 import re
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Sequence
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException, status
@@ -13,12 +13,19 @@ from loguru import logger
 from pydantic import ValidationError
 
 from app.assistant_agents import AssistantAgentContext, AssistantConductor, ConductorResult
+from app.assistant_agents.contracts import (
+    ContinuationSignals,
+    OrchestrationAssessment,
+    PlanningIntent,
+    TargetScope,
+)
 from app.assistant_agents.specialists.memory import MemorySpecialist
 from app.api.schemas import (
     AssistantCurrentSessionRead,
     AssistantAction,
     AssistantInboxItem,
     AssistantInboxRead,
+    AssistantRenderBlock,
     AssistantSummaryCard,
     AssistantSummaryRead,
     AssistantMessageCreate,
@@ -51,13 +58,11 @@ from app.services.assistant_response_formatter import AssistantResponseFormatter
 from app.services.assistant_runtime_context import AssistantContextRuntime
 from app.services.assistant_runtime_plan import AssistantPlanRuntime
 from app.services.assistant_runtime_session import AssistantSessionRuntime
-from app.services.assistant_runtime_text import AssistantTextRuntime
+from app.services.assistant_runtime_text import AssistantTextRuntime, TIME_TOKEN_PATTERN
+from app.services.assistant_signal_manager import AssistantSignalManager
 from app.services.suggestions import SuggestionService
 from app.services.tasks import TaskService
 from app.tools.gemini import GeminiClient
-from app.workflow.graph import build_assistant_graph, run_workflow
-from app.workflow.nodes import WorkflowNodes
-from app.workflow.state import WorkflowState
 
 class AssistantService:
     """Assistant session/message orchestration with Gemini-backed planning."""
@@ -96,17 +101,17 @@ class AssistantService:
         self.memory_service = AssistantMemoryService()
         self.memory_specialist = MemorySpecialist()
         self.proposal_manager = AssistantProposalManager()
+        self.signal_manager = AssistantSignalManager()
+        self.gemini = GeminiClient()
+        self._pending_inline_render_blocks: list[AssistantRenderBlock] = []
         conductor_mode = (self.settings.assistant_conductor_mode or "legacy").lower()
         self.conductor = (
-            AssistantConductor.build_default(self.text_runtime)
-            if conductor_mode in {"shadow", "proposal"}
+            AssistantConductor.build_default(self.text_runtime, semantic_extractor=self.gemini)
+            if conductor_mode in {"shadow", "proposal", "primary"}
             else None
         )
         self.suggestion_service = SuggestionService()
         self.task_service = TaskService()
-        self.gemini = GeminiClient()
-        self.workflow_nodes = WorkflowNodes()
-        self.workflow_graph = build_assistant_graph(self.workflow_nodes) if self.settings.enable_workflow else None
 
     def __getattr__(self, name: str):
         """Delegate legacy text helper lookups to the extracted text runtime."""
@@ -127,6 +132,87 @@ class AssistantService:
                 role="user",
                 content=payload.message,
             )
+            memory_conflict_reply = await self._maybe_handle_memory_conflict_message(
+                user_id=user_id,
+                user_message=payload.message,
+            )
+            if memory_conflict_reply is not None:
+                render_blocks = self._take_inline_render_blocks()
+                await self.repository.create_message(
+                    session_id=session.id,
+                    role="assistant",
+                    content=memory_conflict_reply,
+                    tool_calls_json=None,
+                    render_blocks_json=[block.model_dump(mode="json") for block in render_blocks] or None,
+                )
+                await self._maybe_autorename_session(
+                    user_id=user_id,
+                    session_id=session.id,
+                    session_title=session.title,
+                    user_message=payload.message,
+                )
+                return AssistantResponse(session_id=session.id, reply=memory_conflict_reply, actions=[], render_blocks=render_blocks)
+            memory_protocol_reply = await self._maybe_handle_memory_candidate_text_protocol(
+                user_id=user_id,
+                user_message=payload.message,
+            )
+            if memory_protocol_reply is not None:
+                render_blocks = self._take_inline_render_blocks()
+                await self.repository.create_message(
+                    session_id=session.id,
+                    role="assistant",
+                    content=memory_protocol_reply,
+                    tool_calls_json=None,
+                    render_blocks_json=[block.model_dump(mode="json") for block in render_blocks] or None,
+                )
+                await self._maybe_autorename_session(
+                    user_id=user_id,
+                    session_id=session.id,
+                    session_title=session.title,
+                    user_message=payload.message,
+                )
+                return AssistantResponse(session_id=session.id, reply=memory_protocol_reply, actions=[], render_blocks=render_blocks)
+            departure_signal_reply = await self._maybe_handle_departure_signal_reply(
+                user_id=user_id,
+                user_message=payload.message,
+            )
+            if departure_signal_reply is not None:
+                render_blocks = self._take_inline_render_blocks()
+                await self.repository.create_message(
+                    session_id=session.id,
+                    role="assistant",
+                    content=departure_signal_reply,
+                    tool_calls_json=None,
+                    render_blocks_json=[block.model_dump(mode="json") for block in render_blocks] or None,
+                )
+                await self._maybe_autorename_session(
+                    user_id=user_id,
+                    session_id=session.id,
+                    session_title=session.title,
+                    user_message=payload.message,
+                )
+                return AssistantResponse(session_id=session.id, reply=departure_signal_reply, actions=[], render_blocks=render_blocks)
+            departure_cancel_reply = await self._maybe_handle_departure_signal_cancel_reply(
+                user_id=user_id,
+                session_id=session.id,
+                user_message=payload.message,
+            )
+            if departure_cancel_reply is not None:
+                render_blocks = self._take_inline_render_blocks()
+                await self.repository.create_message(
+                    session_id=session.id,
+                    role="assistant",
+                    content=departure_cancel_reply,
+                    tool_calls_json=None,
+                    render_blocks_json=[block.model_dump(mode="json") for block in render_blocks] or None,
+                )
+                await self._maybe_autorename_session(
+                    user_id=user_id,
+                    session_id=session.id,
+                    session_title=session.title,
+                    user_message=payload.message,
+                )
+                return AssistantResponse(session_id=session.id, reply=departure_cancel_reply, actions=[], render_blocks=render_blocks)
             memory_candidates = await self._capture_memory_candidates_for_message(
                 user_id=user_id,
                 user_message=payload.message,
@@ -136,11 +222,13 @@ class AssistantService:
                 memory_candidates=memory_candidates,
             )
             if memory_only_reply is not None:
+                render_blocks = self._take_inline_render_blocks()
                 await self.repository.create_message(
                     session_id=session.id,
                     role="assistant",
                     content=memory_only_reply,
                     tool_calls_json=None,
+                    render_blocks_json=[block.model_dump(mode="json") for block in render_blocks] or None,
                 )
                 await self._maybe_autorename_session(
                     user_id=user_id,
@@ -148,7 +236,7 @@ class AssistantService:
                     session_title=session.title,
                     user_message=payload.message,
                 )
-                return AssistantResponse(session_id=session.id, reply=memory_only_reply, actions=[])
+                return AssistantResponse(session_id=session.id, reply=memory_only_reply, actions=[], render_blocks=render_blocks)
 
             history = await self.repository.list_messages(session.id)
             events = await self.event_repository.list_events(user_id=user_id)
@@ -167,6 +255,7 @@ class AssistantService:
                 session_id=session.id,
                 external_context=external_context,
             )
+            external_context["events"] = events
             session_context = dict(session.context_json or {})
             proposal_protocol_reply = await self._maybe_handle_proposal_text_protocol(
                 user_id=user_id,
@@ -175,11 +264,13 @@ class AssistantService:
                 external_context=external_context,
             )
             if proposal_protocol_reply is not None:
+                render_blocks = self._take_inline_render_blocks()
                 await self.repository.create_message(
                     session_id=session.id,
                     role="assistant",
                     content=proposal_protocol_reply,
                     tool_calls_json=None,
+                    render_blocks_json=[block.model_dump(mode="json") for block in render_blocks] or None,
                 )
                 await self._maybe_autorename_session(
                     user_id=user_id,
@@ -187,7 +278,45 @@ class AssistantService:
                     session_title=session.title,
                     user_message=payload.message,
                 )
-                return AssistantResponse(session_id=session.id, reply=proposal_protocol_reply, actions=[])
+                return AssistantResponse(session_id=session.id, reply=proposal_protocol_reply, actions=[], render_blocks=render_blocks)
+            daily_review_reply = await self._maybe_handle_daily_review_reply(
+                user_id=user_id,
+                session_id=session.id,
+                user_message=payload.message,
+                events=events,
+                tasks=tasks,
+            )
+            if daily_review_reply is not None:
+                render_blocks = await self._create_assistant_message(
+                    session_id=session.id,
+                    content=daily_review_reply,
+                )
+                await self._maybe_autorename_session(
+                    user_id=user_id,
+                    session_id=session.id,
+                    session_title=session.title,
+                    user_message=payload.message,
+                )
+                return AssistantResponse(session_id=session.id, reply=daily_review_reply, actions=[], render_blocks=render_blocks)
+            deterministic_reply = await self._maybe_handle_deterministic_acceptance_message(
+                user_id=user_id,
+                session_id=session.id,
+                user_message=payload.message,
+                history=history,
+                events=events,
+            )
+            if deterministic_reply is not None:
+                render_blocks = await self._create_assistant_message(
+                    session_id=session.id,
+                    content=deterministic_reply,
+                )
+                await self._maybe_autorename_session(
+                    user_id=user_id,
+                    session_id=session.id,
+                    session_title=session.title,
+                    user_message=payload.message,
+                )
+                return AssistantResponse(session_id=session.id, reply=deterministic_reply, actions=[], render_blocks=render_blocks)
             conductor_result = await self._run_conductor_for_message(
                 user_id=user_id,
                 session_id=session.id,
@@ -204,10 +333,85 @@ class AssistantService:
                     user_message=payload.message,
                     memory_candidates=memory_candidates,
                 )
+                render_blocks = self._build_proposal_render_blocks_from_result(conductor_result)
                 await self.repository.create_message(
                     session_id=session.id,
                     role="assistant",
                     content=conductor_reply,
+                    tool_calls_json=None,
+                    render_blocks_json=[block.model_dump(mode="json") for block in render_blocks] or None,
+                )
+                await self._maybe_autorename_session(
+                    user_id=user_id,
+                    session_id=session.id,
+                    session_title=session.title,
+                    user_message=payload.message,
+                )
+                return AssistantResponse(session_id=session.id, reply=conductor_reply, actions=[], render_blocks=render_blocks)
+            answer_plan = await self._maybe_build_orchestration_answer_plan(
+                user_id=user_id,
+                user_message=payload.message,
+                conductor_result=conductor_result,
+                history=history,
+                events=events,
+                tasks=tasks,
+                profile=profile,
+                external_context=external_context,
+            )
+            if answer_plan is not None:
+                requested_actions = answer_plan.get("actions", [])
+                actions = await self._execute_actions(
+                    user_id=user_id,
+                    actions=requested_actions,
+                    user_message=payload.message,
+                    existing_events=events,
+                    profile=profile,
+                )
+                reply = self._format_reply_text(
+                    answer_plan.get("reply") or "",
+                    user_message=payload.message,
+                )
+                reply = self._append_memory_candidate_notice(
+                    reply,
+                    user_message=payload.message,
+                    memory_candidates=memory_candidates,
+                )
+                await self._persist_pending_action(
+                    user_id=user_id,
+                    session_id=session.id,
+                    existing_context=session_context,
+                    actions=actions,
+                )
+                await self.repository.create_message(
+                    session_id=session.id,
+                    role="assistant",
+                    content=reply,
+                    tool_calls_json=[action.model_dump() for action in actions] or None,
+                )
+                await self._maybe_autorename_session(
+                    user_id=user_id,
+                    session_id=session.id,
+                    session_title=session.title,
+                    user_message=payload.message,
+                )
+                return AssistantResponse(session_id=session.id, reply=reply, actions=actions, render_blocks=self._take_inline_render_blocks())
+            if self._should_block_legacy_fallback(
+                conductor_result,
+                user_message=payload.message,
+                external_context=external_context,
+            ):
+                blocked_reply = self._format_reply_text(
+                    self._primary_mode_fallback_reply(
+                        payload.message,
+                        conductor_result,
+                        external_context=external_context,
+                    ),
+                    user_message=payload.message,
+                )
+                await self.repository.create_message(
+                    session_id=session.id,
+                    role="assistant",
+                    content=blocked_reply,
                     tool_calls_json=None,
                 )
                 await self._maybe_autorename_session(
@@ -216,7 +420,7 @@ class AssistantService:
                     session_title=session.title,
                     user_message=payload.message,
                 )
-                return AssistantResponse(session_id=session.id, reply=conductor_reply, actions=[])
+                return AssistantResponse(session_id=session.id, reply=blocked_reply, actions=[], render_blocks=self._take_inline_render_blocks())
 
             pending_decision = await self._maybe_handle_pending_action_decision(
                 user_id=user_id,
@@ -237,20 +441,31 @@ class AssistantService:
                     session_id=session.id,
                     reply=pending_reply,
                     actions=pending_decision.actions,
+                    render_blocks=self._take_inline_render_blocks(),
                 )
 
-            if self.settings.enable_workflow:
-                return await self._respond_with_workflow(
+            if not self._should_use_plan_compatibility_fallback(conductor_result):
+                blocked_reply = self._format_reply_text(
+                    self._primary_mode_fallback_reply(
+                        payload.message,
+                        conductor_result,
+                        external_context=external_context,
+                    ),
+                    user_message=payload.message,
+                )
+                await self.repository.create_message(
+                    session_id=session.id,
+                    role="assistant",
+                    content=blocked_reply,
+                    tool_calls_json=None,
+                )
+                await self._maybe_autorename_session(
                     user_id=user_id,
                     session_id=session.id,
                     session_title=session.title,
-                    session_context=session_context,
                     user_message=payload.message,
-                    history=history,
-                    profile=profile,
-                    memory_candidates=memory_candidates,
-                    external_context=external_context,
                 )
+                return AssistantResponse(session_id=session.id, reply=blocked_reply, actions=[], render_blocks=self._take_inline_render_blocks())
 
             plan = await self._build_plan(
                 user_id=user_id,
@@ -260,6 +475,7 @@ class AssistantService:
                 tasks=tasks,
                 profile=profile,
                 external_context=external_context,
+                allow_answer_like_rule_short_circuit=self._should_allow_answer_like_rule_short_circuit(conductor_result),
             )
             requested_actions = plan.get("actions", [])
             actions = await self._execute_actions(
@@ -308,7 +524,7 @@ class AssistantService:
                 session_title=session.title,
                 user_message=payload.message,
             )
-            return AssistantResponse(session_id=session.id, reply=reply, actions=actions)
+            return AssistantResponse(session_id=session.id, reply=reply, actions=actions, render_blocks=self._take_inline_render_blocks())
         except HTTPException:
             raise
         except Exception as exc:
@@ -331,6 +547,83 @@ class AssistantService:
                 role="user",
                 content=payload.message,
             )
+            memory_conflict_reply = await self._maybe_handle_memory_conflict_message(
+                user_id=user_id,
+                user_message=payload.message,
+            )
+            if memory_conflict_reply is not None:
+                render_blocks = await self._create_assistant_message(
+                    session_id=session.id,
+                    content=memory_conflict_reply,
+                )
+                for chunk in self._chunk_text(memory_conflict_reply):
+                    yield {"type": "token", "text": chunk}
+                await self._maybe_autorename_session(
+                    user_id=user_id,
+                    session_id=session.id,
+                    session_title=session.title,
+                    user_message=payload.message,
+                )
+                yield {"type": "done", "session_id": session.id, "full_reply": memory_conflict_reply, "render_blocks": [block.model_dump(mode="json") for block in render_blocks]}
+                return
+            memory_protocol_reply = await self._maybe_handle_memory_candidate_text_protocol(
+                user_id=user_id,
+                user_message=payload.message,
+            )
+            if memory_protocol_reply is not None:
+                render_blocks = await self._create_assistant_message(
+                    session_id=session.id,
+                    content=memory_protocol_reply,
+                )
+                for chunk in self._chunk_text(memory_protocol_reply):
+                    yield {"type": "token", "text": chunk}
+                await self._maybe_autorename_session(
+                    user_id=user_id,
+                    session_id=session.id,
+                    session_title=session.title,
+                    user_message=payload.message,
+                )
+                yield {"type": "done", "session_id": session.id, "full_reply": memory_protocol_reply, "render_blocks": [block.model_dump(mode="json") for block in render_blocks]}
+                return
+            departure_signal_reply = await self._maybe_handle_departure_signal_reply(
+                user_id=user_id,
+                user_message=payload.message,
+            )
+            if departure_signal_reply is not None:
+                render_blocks = await self._create_assistant_message(
+                    session_id=session.id,
+                    content=departure_signal_reply,
+                )
+                for chunk in self._chunk_text(departure_signal_reply):
+                    yield {"type": "token", "text": chunk}
+                await self._maybe_autorename_session(
+                    user_id=user_id,
+                    session_id=session.id,
+                    session_title=session.title,
+                    user_message=payload.message,
+                )
+                yield {"type": "done", "session_id": session.id, "full_reply": departure_signal_reply, "render_blocks": [block.model_dump(mode="json") for block in render_blocks]}
+                return
+            departure_cancel_reply = await self._maybe_handle_departure_signal_cancel_reply(
+                user_id=user_id,
+                session_id=session.id,
+                user_message=payload.message,
+            )
+            if departure_cancel_reply is not None:
+                render_blocks = await self._create_assistant_message(
+                    session_id=session.id,
+                    content=departure_cancel_reply,
+                )
+                for chunk in self._chunk_text(departure_cancel_reply):
+                    yield {"type": "token", "text": chunk}
+                await self._maybe_autorename_session(
+                    user_id=user_id,
+                    session_id=session.id,
+                    session_title=session.title,
+                    user_message=payload.message,
+                )
+                yield {"type": "done", "session_id": session.id, "full_reply": departure_cancel_reply, "render_blocks": [block.model_dump(mode="json") for block in render_blocks]}
+                return
             memory_candidates = await self._capture_memory_candidates_for_message(
                 user_id=user_id,
                 user_message=payload.message,
@@ -340,11 +633,9 @@ class AssistantService:
                 memory_candidates=memory_candidates,
             )
             if memory_only_reply is not None:
-                await self.repository.create_message(
+                render_blocks = await self._create_assistant_message(
                     session_id=session.id,
-                    role="assistant",
                     content=memory_only_reply,
-                    tool_calls_json=None,
                 )
                 for chunk in self._chunk_text(memory_only_reply):
                     yield {"type": "token", "text": chunk}
@@ -355,7 +646,7 @@ class AssistantService:
                     user_message=payload.message,
                 )
                 yield {"type": "actions", "actions": []}
-                yield {"type": "done", "session_id": session.id, "full_reply": memory_only_reply}
+                yield {"type": "done", "session_id": session.id, "full_reply": memory_only_reply, "render_blocks": [block.model_dump(mode="json") for block in render_blocks]}
                 return
 
             history = await self.repository.list_messages(session.id)
@@ -375,6 +666,7 @@ class AssistantService:
                 session_id=session.id,
                 external_context=external_context,
             )
+            external_context["events"] = events
             session_context = dict(session.context_json or {})
             proposal_protocol_reply = await self._maybe_handle_proposal_text_protocol(
                 user_id=user_id,
@@ -383,11 +675,9 @@ class AssistantService:
                 external_context=external_context,
             )
             if proposal_protocol_reply is not None:
-                await self.repository.create_message(
+                render_blocks = await self._create_assistant_message(
                     session_id=session.id,
-                    role="assistant",
                     content=proposal_protocol_reply,
-                    tool_calls_json=None,
                 )
                 for chunk in self._chunk_text(proposal_protocol_reply):
                     yield {"type": "token", "text": chunk}
@@ -398,7 +688,53 @@ class AssistantService:
                     user_message=payload.message,
                 )
                 yield {"type": "actions", "actions": []}
-                yield {"type": "done", "session_id": session.id, "full_reply": proposal_protocol_reply}
+                yield {"type": "done", "session_id": session.id, "full_reply": proposal_protocol_reply, "render_blocks": [block.model_dump(mode="json") for block in render_blocks]}
+                return
+            daily_review_reply = await self._maybe_handle_daily_review_reply(
+                user_id=user_id,
+                session_id=session.id,
+                user_message=payload.message,
+                events=events,
+                tasks=tasks,
+            )
+            if daily_review_reply is not None:
+                render_blocks = await self._create_assistant_message(
+                    session_id=session.id,
+                    content=daily_review_reply,
+                )
+                for chunk in self._chunk_text(daily_review_reply):
+                    yield {"type": "token", "text": chunk}
+                await self._maybe_autorename_session(
+                    user_id=user_id,
+                    session_id=session.id,
+                    session_title=session.title,
+                    user_message=payload.message,
+                )
+                yield {"type": "actions", "actions": []}
+                yield {"type": "done", "session_id": session.id, "full_reply": daily_review_reply, "render_blocks": [block.model_dump(mode="json") for block in render_blocks]}
+                return
+            deterministic_reply = await self._maybe_handle_deterministic_acceptance_message(
+                user_id=user_id,
+                session_id=session.id,
+                user_message=payload.message,
+                history=history,
+                events=events,
+            )
+            if deterministic_reply is not None:
+                render_blocks = await self._create_assistant_message(
+                    session_id=session.id,
+                    content=deterministic_reply,
+                )
+                for chunk in self._chunk_text(deterministic_reply):
+                    yield {"type": "token", "text": chunk}
+                await self._maybe_autorename_session(
+                    user_id=user_id,
+                    session_id=session.id,
+                    session_title=session.title,
+                    user_message=payload.message,
+                )
+                yield {"type": "actions", "actions": []}
+                yield {"type": "done", "session_id": session.id, "full_reply": deterministic_reply, "render_blocks": [block.model_dump(mode="json") for block in render_blocks]}
                 return
             conductor_result = await self._run_conductor_for_message(
                 user_id=user_id,
@@ -416,11 +752,13 @@ class AssistantService:
                     user_message=payload.message,
                     memory_candidates=memory_candidates,
                 )
+                render_blocks = self._build_proposal_render_blocks_from_result(conductor_result)
                 await self.repository.create_message(
                     session_id=session.id,
                     role="assistant",
                     content=conductor_reply,
                     tool_calls_json=None,
+                    render_blocks_json=[block.model_dump(mode="json") for block in render_blocks] or None,
                 )
                 for chunk in self._chunk_text(conductor_reply):
                     yield {"type": "token", "text": chunk}
@@ -431,7 +769,78 @@ class AssistantService:
                     user_message=payload.message,
                 )
                 yield {"type": "actions", "actions": []}
-                yield {"type": "done", "session_id": session.id, "full_reply": conductor_reply}
+                yield {
+                    "type": "done",
+                    "session_id": session.id,
+                    "full_reply": conductor_reply,
+                    "render_blocks": [block.model_dump(mode="json") for block in render_blocks],
+                }
+                return
+            answer_plan = await self._maybe_build_orchestration_answer_plan(
+                user_id=user_id,
+                user_message=payload.message,
+                conductor_result=conductor_result,
+                history=history,
+                events=events,
+                tasks=tasks,
+                profile=profile,
+                external_context=external_context,
+            )
+            if answer_plan is not None:
+                requested_actions = answer_plan.get("actions", [])
+                actions = await self._execute_actions(
+                    user_id=user_id,
+                    actions=requested_actions,
+                    user_message=payload.message,
+                    existing_events=events,
+                    profile=profile,
+                )
+                reply_text = self._format_reply_text(
+                    answer_plan.get("reply") or "",
+                    user_message=payload.message,
+                )
+                reply_text = self._append_memory_candidate_notice(
+                    reply_text,
+                    user_message=payload.message,
+                    memory_candidates=memory_candidates,
+                )
+                await self._persist_pending_action(
+                    user_id=user_id,
+                    session_id=session.id,
+                    existing_context=session_context,
+                    actions=actions,
+                )
+                render_blocks = await self._create_assistant_message(
+                    session_id=session.id,
+                    content=reply_text,
+                    tool_calls_json=[action.model_dump() for action in actions] or None,
+                )
+                for chunk in self._chunk_text(reply_text):
+                    yield {"type": "token", "text": chunk}
+                yield {"type": "actions", "actions": [action.model_dump() for action in actions]}
+                yield {"type": "done", "session_id": session.id, "full_reply": reply_text, "render_blocks": [block.model_dump(mode="json") for block in render_blocks]}
+                return
+            if self._should_block_legacy_fallback(
+                conductor_result,
+                user_message=payload.message,
+                external_context=external_context,
+            ):
+                blocked_reply = self._format_reply_text(
+                    self._primary_mode_fallback_reply(
+                        payload.message,
+                        conductor_result,
+                        external_context=external_context,
+                    ),
+                    user_message=payload.message,
+                )
+                render_blocks = await self._create_assistant_message(
+                    session_id=session.id,
+                    content=blocked_reply,
+                )
+                for chunk in self._chunk_text(blocked_reply):
+                    yield {"type": "token", "text": chunk}
+                yield {"type": "actions", "actions": []}
+                yield {"type": "done", "session_id": session.id, "full_reply": blocked_reply, "render_blocks": [block.model_dump(mode="json") for block in render_blocks]}
                 return
 
             pending_decision = await self._maybe_handle_pending_action_decision(
@@ -443,36 +852,39 @@ class AssistantService:
             )
             if pending_decision is not None:
                 pending_reply = self._format_reply_text(pending_decision.reply, user_message=payload.message)
-                await self.repository.create_message(
+                render_blocks = await self._create_assistant_message(
                     session_id=session.id,
-                    role="assistant",
                     content=pending_reply,
                     tool_calls_json=[action.model_dump() for action in pending_decision.actions] or None,
                 )
                 for chunk in self._chunk_text(pending_reply):
                     yield {"type": "token", "text": chunk}
                 yield {"type": "actions", "actions": [action.model_dump() for action in pending_decision.actions]}
-                yield {"type": "done", "session_id": session.id, "full_reply": pending_reply}
+                yield {"type": "done", "session_id": session.id, "full_reply": pending_reply, "render_blocks": [block.model_dump(mode="json") for block in render_blocks]}
                 return
 
-            if self.settings.enable_workflow:
-                async for item in self._respond_with_workflow_stream(
-                    user_id=user_id,
-                    session_id=session.id,
-                    session_title=session.title,
-                    session_context=session_context,
+            if not self._should_use_plan_compatibility_fallback(conductor_result):
+                blocked_reply = self._format_reply_text(
+                    self._primary_mode_fallback_reply(
+                        payload.message,
+                        conductor_result,
+                        external_context=external_context,
+                    ),
                     user_message=payload.message,
-                    history=history,
-                    profile=profile,
-                    memory_candidates=memory_candidates,
-                    external_context=external_context,
-                ):
-                    yield item
+                )
+                render_blocks = await self._create_assistant_message(
+                    session_id=session.id,
+                    content=blocked_reply,
+                )
+                for chunk in self._chunk_text(blocked_reply):
+                    yield {"type": "token", "text": chunk}
+                yield {"type": "actions", "actions": []}
+                yield {"type": "done", "session_id": session.id, "full_reply": blocked_reply, "render_blocks": [block.model_dump(mode="json") for block in render_blocks]}
                 return
 
             full_reply = ""
             used_streaming = False
-            if self.gemini.enabled:
+            if self._should_use_streaming_plan_fallback(conductor_result):
                 try:
                     async for chunk in self.gemini.generate_plan_stream(
                         user_message=payload.message,
@@ -523,6 +935,7 @@ class AssistantService:
                     tasks=tasks,
                     profile=profile,
                     external_context=external_context,
+                    allow_answer_like_rule_short_circuit=self._should_allow_answer_like_rule_short_circuit(conductor_result),
                 )
                 requested_actions = plan.get("actions", [])
                 actions = await self._execute_actions(
@@ -560,9 +973,8 @@ class AssistantService:
                 actions=actions,
             )
 
-            await self.repository.create_message(
+            render_blocks = await self._create_assistant_message(
                 session_id=session.id,
-                role="assistant",
                 content=reply_text,
                 tool_calls_json=[action.model_dump() for action in actions] or None,
             )
@@ -575,7 +987,7 @@ class AssistantService:
             )
 
             yield {"type": "actions", "actions": [action.model_dump() for action in actions]}
-            yield {"type": "done", "session_id": session.id, "full_reply": reply_text}
+            yield {"type": "done", "session_id": session.id, "full_reply": reply_text, "render_blocks": [block.model_dump(mode="json") for block in render_blocks]}
         except HTTPException:
             raise
         except Exception as exc:
@@ -643,24 +1055,159 @@ class AssistantService:
         user_message: str,
     ) -> list[Any]:
         """Persist explicit long-term memory requests as confirmable candidates only."""
-        candidate_payload = self.memory_specialist.extract_candidate(user_message)
-        if candidate_payload is None:
+        candidate_payloads = self._extract_multiple_memory_candidates(user_message)
+        if not candidate_payloads:
+            candidate_payload = self.memory_specialist.extract_candidate(user_message)
+            candidate_payloads = [candidate_payload] if candidate_payload is not None else []
+        if not candidate_payloads:
             return []
 
+        candidates: list[Any] = []
         try:
-            payload = AssistantMemoryCandidateCreate.model_validate(candidate_payload)
-            candidate = await self.memory_service.create_candidate(user_id=user_id, payload=payload)
-            logger.bind(component="assistant.memory").info(
-                "Created assistant memory candidate: {candidate_id}",
-                candidate_id=candidate.id,
-            )
-            return [candidate]
+            for candidate_payload in candidate_payloads:
+                payload = AssistantMemoryCandidateCreate.model_validate(candidate_payload)
+                candidate = await self.memory_service.create_candidate(user_id=user_id, payload=payload)
+                logger.bind(component="assistant.memory").info(
+                    "Created assistant memory candidate: {candidate_id}",
+                    candidate_id=candidate.id,
+                )
+                candidates.append(candidate)
+            return candidates
         except Exception as exc:
             logger.bind(component="assistant.memory").warning(
                 "Failed to create assistant memory candidate: {error}",
                 error=str(exc),
             )
             return []
+
+    def _extract_multiple_memory_candidates(self, user_message: str) -> list[dict[str, Any]]:
+        text = user_message.strip()
+        if not text.startswith("以后") or "，" not in text:
+            return []
+        fragments = [part.strip(" ，。,；;") for part in re.split(r"[，,；;]", text) if part.strip(" ，。,；;")]
+        candidates: list[dict[str, Any]] = []
+        for index, fragment in enumerate(fragments):
+            candidate_text = fragment if fragment.startswith("以后") else f"以后{fragment}"
+            candidate = self.memory_specialist.extract_candidate(candidate_text)
+            if candidate is not None:
+                candidates.append(candidate)
+                continue
+            sleep_match = re.search(r"(?:我)?一般(?P<habit>晚上\d{1,2}点睡|早上\d{1,2}点起|[\u4e00-\u9fa5A-Za-z0-9]+)", fragment)
+            if sleep_match:
+                content = sleep_match.group("habit").strip()
+                digest_source = f"habits:{content}"
+                import hashlib
+                digest = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()[:16]
+                candidates.append(
+                    {
+                        "memory_type": "habits",
+                        "source_specialist": self.memory_specialist.name,
+                        "status": "proposed",
+                        "confidence": 0.72,
+                        "proposed_change_json": {
+                            "operation": "append_entry",
+                            "title": content,
+                            "content": content,
+                        },
+                        "reason": "User explicitly described a recurring habit.",
+                        "dedup_key": f"memory:habits:{digest}",
+                    }
+                )
+        return candidates
+
+    async def _maybe_handle_memory_conflict_message(
+        self,
+        *,
+        user_id: str,
+        user_message: str,
+    ) -> str | None:
+        candidate_payload = self.memory_specialist.extract_candidate(user_message)
+        if candidate_payload is None:
+            return None
+        memory_type = candidate_payload.get("memory_type")
+        if memory_type != "places":
+            return None
+        proposed_change = candidate_payload.get("proposed_change_json") or {}
+        content = str(proposed_change.get("content") or "").strip()
+        if "=" not in content:
+            return None
+        alias, target = [part.strip() for part in content.split("=", 1)]
+        if not alias or not target:
+            return None
+
+        try:
+            memory_context = await self.memory_service.build_runtime_context(user_id=user_id)
+        except Exception:
+            memory_context = {}
+        existing_aliases = self.memory_service.extract_place_aliases(memory_context)
+        for item in existing_aliases:
+            if item.get("alias", "").strip() != alias:
+                continue
+            old_target = item.get("location_name", "").strip()
+            if old_target and old_target != target:
+                return (
+                    f"你之前把“{alias}”记成“{old_target}”，"
+                    f"这次想改成“{target}”。要替换旧记忆吗？"
+                )
+            if old_target == target:
+                return f"“{alias}”已经记成“{target}”，这次不用重复写入。"
+        return None
+
+    async def _maybe_handle_memory_candidate_text_protocol(
+        self,
+        *,
+        user_id: str,
+        user_message: str,
+    ) -> str | None:
+        normalized = re.sub(r"\s+", "", (user_message or "").strip())
+        if not normalized:
+            return None
+
+        confirm_markers = {"记住", "记一下", "保存", "确认记住", "保存这条", "保存这个", "记下来", "记这个"}
+        reject_markers = {"不要记", "别记", "不用记", "先别记", "别保存", "不要保存"}
+        explicit_candidate_id = self._extract_memory_candidate_display_id(normalized)
+        if explicit_candidate_id is None and not any(marker == normalized or normalized.startswith(marker) for marker in confirm_markers | reject_markers):
+            return None
+
+        candidates = await self.memory_service.list_candidates(user_id=user_id, statuses=["proposed"], limit=10)
+        if not candidates:
+            if any(marker == normalized or normalized.startswith(marker) for marker in reject_markers):
+                return "当前没有待确认记忆可拒绝。"
+            return "当前没有待确认记忆可保存。"
+        if explicit_candidate_id is not None:
+            candidate = next((item for item in candidates if getattr(item, "id", None) == explicit_candidate_id), None)
+            if candidate is None:
+                return f"当前没有待确认记忆 M{explicit_candidate_id}。"
+        elif len(candidates) > 1:
+            return "我不确定你要确认哪条记忆，请先在待确认记忆区选择对应候选，或补充说明要保存的内容。"
+        else:
+            candidate = candidates[0]
+
+        if any(marker in normalized for marker in reject_markers):
+            rejected = await self.memory_service.reject_candidate(user_id=user_id, candidate_id=candidate.id)
+            label = self._describe_memory_candidate(rejected)
+            return f"已拒绝这条待确认记忆：{label}。"
+
+        written = await self.memory_service.confirm_candidate(user_id=user_id, candidate_id=candidate.id)
+        label = self._describe_memory_candidate(written)
+        return f"已确认并写入长期记忆：{label}。"
+
+    def _extract_memory_candidate_display_id(self, normalized_message: str) -> int | None:
+        match = re.search(r"(?<![A-Za-z0-9])M(?P<id>\d+)(?![A-Za-z0-9])", normalized_message, re.I)
+        if not match:
+            return None
+        try:
+            return int(match.group("id"))
+        except ValueError:
+            return None
+
+    def _describe_memory_candidate(self, candidate) -> str:
+        change = getattr(candidate, "proposed_change_json", None) or {}
+        title = str(change.get("title") or "").strip()
+        content = str(change.get("content") or "").strip()
+        if title and content:
+            return f"{title}（{content}）"
+        return title or content or f"{getattr(candidate, 'memory_type', 'memory')} 记忆"
 
     def _build_memory_only_reply(
         self,
@@ -749,6 +1296,13 @@ class AssistantService:
             return enriched
         state_json = thread_state.state_json or {}
         active_target = state_json.get("active_target") if isinstance(state_json, dict) else None
+        conversation_state = state_json.get("conversation_state") if isinstance(state_json, dict) else None
+        if isinstance(conversation_state, dict):
+            enriched["conversation_state"] = {
+                **conversation_state,
+                "thread_state_id": thread_state.id,
+                "thread_state_updated_at": thread_state.updated_at.isoformat() if thread_state.updated_at else None,
+            }
         if not isinstance(active_target, dict):
             return enriched
         enriched["active_target"] = {
@@ -768,17 +1322,92 @@ class AssistantService:
     ) -> str | None:
         intent = self._classify_proposal_text_protocol(user_message)
         if intent is None:
-            return None
+            if not hasattr(self.proposal_manager, "list_proposals"):
+                return None
+            active = await self._list_text_protocol_proposals(
+                user_id=user_id,
+                session_id=session_id,
+                statuses=["pending"],
+                limit=10,
+            )
+            if self._looks_like_event_targeted_reschedule_request(
+                user_message,
+                events=(external_context or {}).get("events"),
+            ):
+                return None
+            if active and self._looks_like_contextual_event_creation_directive(user_message):
+                return self._build_existing_event_creation_proposal_reply(active, user_message=user_message)
+            if not active or not self._looks_like_contextual_proposal_revision(user_message):
+                return None
+            intent = "revise"
         proposal = await self._resolve_text_protocol_proposal(
             user_id=user_id,
             session_id=session_id,
             user_message=user_message,
             external_context=external_context,
         )
+        assessment = self._build_proposal_protocol_assessment(
+            user_message=user_message,
+            intent=intent,
+            proposal=proposal,
+            external_context=external_context,
+        )
         if proposal == "ambiguous":
             return self._build_proposal_protocol_clarification(user_message)
         if proposal is None:
+            return self._build_missing_proposal_protocol_reply(
+                user_message=user_message,
+                intent=intent,
+                assessment=assessment,
+            )
+        if intent == "revise" and not self._proposal_supports_contextual_revision(proposal, user_message):
             return None
+
+        proposal_status = getattr(proposal, "status", None)
+        if intent == "retry":
+            if proposal_status != "execution_failed":
+                if self.text_runtime._prefers_chinese(user_message):
+                    return "这个方案当前不是执行失败状态，不能重试；我不会重复执行。"
+                return "This proposal is not in execution_failed state, so I will not retry it."
+            retried = await self.proposal_manager.retry_proposal(
+                user_id=user_id,
+                proposal_id=int(proposal.id),
+            )
+            await self._persist_active_target_for_proposal(
+                user_id=user_id,
+                session_id=session_id,
+                proposal=retried,
+                user_message=user_message,
+            )
+            if getattr(retried, "status", None) == "execution_failed":
+                return self._build_proposal_execution_failed_reply(retried, user_message=user_message)
+            if self.text_runtime._prefers_chinese(user_message):
+                return "已通过助手消息重试这个方案。"
+            return "Retried this proposal through the assistant message protocol."
+
+        if intent == "confirm" and proposal_status == "expired":
+            if self.text_runtime._prefers_chinese(user_message):
+                return "这个方案已经过期，不能再执行；我不会写入任何日程或任务。请重新说明需求，我可以生成新的待确认方案。"
+            return "This proposal has expired and cannot be executed. I did not write any data; please describe the request again for a new proposal."
+        if intent == "confirm" and proposal_status == "superseded":
+            if self.text_runtime._prefers_chinese(user_message):
+                return "这个方案已经被新的方案替代，不能再执行；请确认最新方案，或重新生成方案。"
+            return "This proposal has been superseded and cannot be executed. Please confirm the latest proposal or regenerate one."
+
+        if intent == "reject":
+            rejected = await self.proposal_manager.reject_proposal(
+                user_id=user_id,
+                proposal_id=int(proposal.id),
+            )
+            await self._persist_active_target_for_proposal(
+                user_id=user_id,
+                session_id=session_id,
+                proposal=rejected,
+                user_message=user_message,
+            )
+            if self.text_runtime._prefers_chinese(user_message):
+                return "已暂不安排这个方案，没有执行任何写入。"
+            return "I rejected this proposal and did not write anything."
 
         if intent == "revise":
             revised = await self.proposal_manager.revise_proposal(
@@ -792,12 +1421,24 @@ class AssistantService:
                 proposal=revised,
                 user_message=user_message,
             )
+            self._queue_inline_render_block_from_proposal(revised)
             if self.text_runtime._prefers_chinese(user_message):
                 return "我已根据你的修改生成新的待确认方案，旧方案不会再执行。"
             return "I created a revised pending proposal and superseded the previous one."
 
+        if getattr(proposal, "status", None) == "executed":
+            if self.text_runtime._prefers_chinese(user_message):
+                return "这个方案已经执行完成，不会重复写入。需要新安排的话，请直接告诉我要安排什么。"
+            return "This proposal has already been executed, so I will not write it again."
+        if getattr(proposal, "status", None) == "execution_failed":
+            return self._build_proposal_execution_failed_reply(proposal, user_message=user_message)
+
+        option_id = (
+            self._extract_proposal_option_id(user_message)
+            or proposal.recommended_option_id
+            or self._first_proposal_option_id(proposal.payload_json or {})
+        )
         try:
-            option_id = proposal.recommended_option_id or self._first_proposal_option_id(proposal.payload_json or {})
             if not option_id:
                 return None
             confirmed = await self.proposal_manager.confirm_proposal(
@@ -811,7 +1452,23 @@ class AssistantService:
                 proposal=confirmed,
                 user_message=user_message,
             )
-        except HTTPException:
+        except HTTPException as exc:
+            failed_proposal = await self.proposal_manager.get_proposal(
+                user_id=user_id,
+                proposal_id=int(proposal.id),
+            )
+            if getattr(failed_proposal, "status", None) == "pending" and str(exc.detail) == "option not found":
+                if self.text_runtime._prefers_chinese(user_message):
+                    return f"这个方案没有方案 {option_id}；请改用已有选项，或先让我重新生成方案。"
+                return f"This proposal does not have option {option_id}; please choose an existing option or regenerate it."
+            if getattr(failed_proposal, "status", None) == "execution_failed":
+                await self._persist_active_target_for_proposal(
+                    user_id=user_id,
+                    session_id=session_id,
+                    proposal=failed_proposal,
+                    user_message=user_message,
+                )
+                return self._build_proposal_execution_failed_reply(failed_proposal, user_message=user_message)
             raise
         except Exception as exc:
             logger.bind(component="assistant.thread_state").warning(
@@ -820,9 +1477,24 @@ class AssistantService:
             )
             return None
 
+        if getattr(confirmed, "status", None) == "execution_failed":
+            return self._build_proposal_execution_failed_reply(confirmed, user_message=user_message)
+
         if self.text_runtime._prefers_chinese(user_message):
             return "已按这个方案确认并执行。"
         return "Confirmed and executed this proposal."
+
+    def _build_proposal_execution_failed_reply(self, proposal: Any, *, user_message: str) -> str:
+        error = getattr(proposal, "execution_error", None)
+        if not error:
+            payload = getattr(proposal, "payload_json", None) or {}
+            execution = payload.get("execution") if isinstance(payload, dict) else None
+            if isinstance(execution, dict):
+                error = execution.get("last_error")
+        error_text = str(error or "执行失败")
+        if self.text_runtime._prefers_chinese(user_message):
+            return f"方案执行失败：{error_text}。我没有重复执行；请修正问题后使用重试入口重新尝试。"
+        return f"The proposal execution failed: {error_text}. I did not repeat execution; use retry after fixing the issue."
 
     async def _maybe_confirm_active_proposal_from_text(
         self,
@@ -839,7 +1511,868 @@ class AssistantService:
             external_context=external_context,
         )
 
+    async def _maybe_handle_daily_review_reply(
+        self,
+        *,
+        user_id: str,
+        session_id: int,
+        user_message: str,
+        events: list[Any],
+        tasks: list[Any],
+    ) -> str | None:
+        message = user_message.strip()
+        batch_done = bool(re.search(r"(今天)?这两个都完成了?|两个都完成了?", message))
+        mixed = bool(
+            re.search(r"政治课.{0,8}完成", message)
+            and re.search(r"复习.{0,8}(没做|没完成|未完成|没弄|没搞)", message)
+        )
+        if not batch_done and not mixed:
+            return None
+
+        politics_event = self._find_daily_review_event(events, "政治课")
+        review_task = self._find_daily_review_task(tasks, "复习")
+        if politics_event is None or review_task is None:
+            missing = []
+            if politics_event is None:
+                missing.append("政治课")
+            if review_task is None:
+                missing.append("复习块")
+            return f"我理解你在回应睡前复盘，但还不能唯一定位：{'、'.join(missing)}。请直接说清楚要标记完成或顺延的事项。"
+
+        event_id = int(getattr(politics_event, "id"))
+        task_id = int(getattr(review_task, "id"))
+        if batch_done:
+            summary = "建议将睡前复盘中的“政治课”和“复习块”分别标记为完成"
+            actions = [
+                {"type": "mark_event_completed", "payload": {"event_id": event_id}},
+                {"type": "mark_task_completed", "payload": {"task_id": task_id}},
+            ]
+            rationale = "确认后会分别更新一次日程和任务状态，不会重复写入。"
+            reply = (
+                "我已把这两个事项整理成可确认的完成方案：政治课标记为完成，复习块标记为完成。"
+                "确认后才会分别更新一次。"
+            )
+        else:
+            summary = "建议将“政治课”标记完成，并将“复习块”保留为未完成待补排"
+            actions = [
+                {"type": "mark_event_completed", "payload": {"event_id": event_id}},
+                {
+                    "type": "acknowledge_signal",
+                    "payload": {
+                        "signal_type": "daily_review_unfinished_task",
+                        "message": "复习块今天未完成，需要后续协商补排。",
+                        "task_id": task_id,
+                    },
+                },
+            ]
+            rationale = "确认后只会把政治课标记完成；复习块不会被误标完成，会进入后续补排协商。"
+            reply = (
+                "我已把混合结果整理成可确认方案：政治课走完成确认，复习块保留为未完成并后续补排协商。"
+                "确认前不会把两个事项都标记完成。"
+            )
+
+        proposal = await self.proposal_manager.create_proposal(
+            user_id=user_id,
+            payload=AssistantProposalCreate(
+                session_id=session_id,
+                proposal_type="daily_review_status_update",
+                trigger_type="user_message",
+                status="pending",
+                summary=summary,
+                payload_json={
+                    "source": "daily_review_reply",
+                    "target_title": "睡前复盘",
+                    "options": [
+                        {
+                            "option_id": "A",
+                            "title": "按睡前复盘结果更新",
+                            "summary": summary,
+                            "actions": actions,
+                            "rationale": rationale,
+                        }
+                    ],
+                },
+                recommended_option_id="A",
+                related_event_id=event_id,
+                related_task_id=task_id,
+            ),
+        )
+        await self._persist_active_target_for_proposal(
+            user_id=user_id,
+            session_id=session_id,
+            proposal=proposal,
+            user_message=user_message,
+        )
+        self._queue_inline_render_block_from_proposal(proposal)
+        return f"{reply}\n\n我已把方案放进“待确认方案”，你确认后我才会执行写入。"
+
+    def _find_daily_review_event(self, events: list[Any], keyword: str) -> Any | None:
+        today = datetime.now(ZoneInfo(self.settings.app_timezone)).date()
+        matches = [
+            event
+            for event in events
+            if keyword in str(getattr(event, "title", ""))
+            and (getattr(event, "status", None) or "planned") not in {"canceled", "completed"}
+            and getattr(getattr(event, "start_time", None), "date", lambda: None)() == today
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    def _find_daily_review_task(self, tasks: list[Any], keyword: str) -> Any | None:
+        matches = [
+            task
+            for task in tasks
+            if keyword in str(getattr(task, "content", ""))
+            and (getattr(task, "status", None) or "pending") not in {"done", "completed", "archived"}
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    async def _maybe_handle_deterministic_acceptance_message(
+        self,
+        *,
+        user_id: str,
+        session_id: int,
+        user_message: str,
+        history: list[Any] | None = None,
+        events: list[Any],
+    ) -> str | None:
+        message = user_message.strip()
+        departure_reply = self._maybe_build_deterministic_departure_context_reply(
+            user_message=message,
+            history=history or [],
+        )
+        if departure_reply is not None:
+            return departure_reply
+        if re.search(r"看看今天安排|看一下今天安排|今天安排", message):
+            return "今天安排我可以帮你查看和梳理；如果要新增、调整或取消某个事项，请直接说明具体时间和内容。"
+        if re.fullmatch(r"帮我安排一下复习[。！!]*", message):
+            return "这个复习安排还缺少截止时间、预计时长或希望安排到哪天。请补充这些具体信息后，我再生成待确认方案。"
+
+        explicit_list_reply = await self._maybe_create_deterministic_explicit_event_list_proposal(
+            user_id=user_id,
+            session_id=session_id,
+            user_message=message,
+        )
+        if explicit_list_reply is not None:
+            return explicit_list_reply
+
+        batch_reply = await self._maybe_create_deterministic_batch_event_proposal(
+            user_id=user_id,
+            session_id=session_id,
+            user_message=message,
+            events=events,
+        )
+        if batch_reply is not None:
+            return batch_reply
+
+        compound_reply = await self._maybe_create_deterministic_compound_event_proposals(
+            user_id=user_id,
+            session_id=session_id,
+            user_message=message,
+            events=events,
+        )
+        if compound_reply is not None:
+            return compound_reply
+
+        timed_reply = await self._maybe_create_deterministic_timed_reminder_proposal(
+            user_id=user_id,
+            session_id=session_id,
+            user_message=message,
+        )
+        if timed_reply is not None:
+            return timed_reply
+
+        if self._should_try_deterministic_event_proposal(message):
+            event_reply = await self._maybe_create_deterministic_event_proposal(
+                user_id=user_id,
+                session_id=session_id,
+                user_message=message,
+                events=events,
+            )
+            if event_reply is not None:
+                return event_reply
+
+        return None
+
+    def _should_try_deterministic_event_proposal(self, message: str) -> bool:
+        if self._looks_like_event_update_text(message):
+            return False
+        return bool(re.search(r"出发\s*(?:去|到)\s*[\u4e00-\u9fa5A-Za-z0-9·（）()]{1,24}", message))
+
+    @staticmethod
+    def _looks_like_event_update_text(message: str) -> bool:
+        return bool(re.search(r"改到|改成|改为|调整到|挪到|推到|推迟到|提前到|延期到|顺延到|延后到", message))
+
+    async def _maybe_create_deterministic_explicit_event_list_proposal(
+        self,
+        *,
+        user_id: str,
+        session_id: int,
+        user_message: str,
+    ) -> str | None:
+        if not re.search(r"以下|这些|批量|清单|列表|日程", user_message):
+            return None
+
+        parsed_events = self._parse_explicit_event_lines(user_message)
+        if len(parsed_events) < 2:
+            return None
+        if len(parsed_events) > 120:
+            return f"这次包含 {len(parsed_events)} 条可识别日程，范围过大。请拆成每批不超过 120 条，我不会直接写入。"
+
+        actions = [
+            {
+                "type": "create_event",
+                "payload": {
+                    "title": item["title"],
+                    "start_time": item["start_time"].isoformat(),
+                    "end_time": item["end_time"].isoformat(),
+                    "location_name": item.get("location_name"),
+                    "event_type": "general",
+                },
+            }
+            for item in parsed_events
+        ]
+        first_start = min(item["start_time"] for item in parsed_events)
+        last_start = max(item["start_time"] for item in parsed_events)
+        preview = "；".join(
+            f"{item['title']} {item['start_time'].strftime('%m-%d %H:%M')}-{item['end_time'].strftime('%H:%M')}"
+            for item in parsed_events[:5]
+        )
+        summary = (
+            f"建议批量创建 {len(parsed_events)} 个日程"
+            f"（{first_start.strftime('%m-%d')} 至 {last_start.strftime('%m-%d')}）"
+        )
+        proposal = await self.proposal_manager.create_proposal(
+            user_id=user_id,
+            payload=AssistantProposalCreate(
+                session_id=session_id,
+                proposal_type="event_batch_creation",
+                trigger_type="user_message",
+                status="pending",
+                summary=summary,
+                payload_json={
+                    "source": "deterministic_explicit_event_list",
+                    "target_scope": "batch",
+                    "event_count": len(parsed_events),
+                    "start_date": first_start.date().isoformat(),
+                    "end_date": last_start.date().isoformat(),
+                    "preview": preview,
+                    "options": [
+                        {
+                            "option_id": "A",
+                            "title": "按清单批量创建日程",
+                            "summary": f"{summary}。预览：{preview}",
+                            "actions": actions,
+                            "rationale": "每条日程来自用户逐行给出的明确日期、时间段和标题；确认后才会批量写入。",
+                        }
+                    ],
+                },
+                recommended_option_id="A",
+                is_time_sensitive=True,
+            ),
+        )
+        proposal = await self._label_direct_proposal(user_id=user_id, session_id=session_id, proposal=proposal)
+        await self._persist_active_target_for_proposal(
+            user_id=user_id,
+            session_id=session_id,
+            proposal=proposal,
+            user_message=user_message,
+        )
+        self._queue_inline_render_block_from_proposal(proposal)
+        label = self._proposal_protocol_label(proposal) or "P1"
+        return (
+            f"{label}：{summary}。预览：{preview}。"
+            "我已放入待确认方案；确认前不会写入日程。"
+        )
+
+    def _parse_explicit_event_lines(self, user_message: str) -> list[dict[str, Any]]:
+        now = datetime.now(ZoneInfo(self.settings.app_timezone))
+        parsed: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for raw_line in user_message.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            line = re.sub(r"^(?:[-*•]|\d+[.、)]|[（(]?\d+[）)])\s*", "", line).strip()
+            start_time, end_time = self.text_runtime._extract_time_range(line, reference=now)
+            if start_time is None:
+                continue
+            end_time = end_time or start_time + timedelta(hours=1)
+            title_source = line
+            location_name = None
+            location_match = re.search(r"(?:@|地点[:：]\s*)(?P<location>[\u4e00-\u9fa5A-Za-z0-9·（）()_\- ]{1,40})\s*$", title_source)
+            if location_match:
+                location_name = location_match.group("location").strip()
+                title_source = title_source[: location_match.start()].strip()
+            title = self._clean_explicit_event_line_title(title_source)
+            if not title:
+                continue
+            key = (title, start_time.isoformat(), end_time.isoformat())
+            if key in seen:
+                continue
+            seen.add(key)
+            parsed.append(
+                {
+                    "title": title,
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "location_name": location_name,
+                }
+            )
+        return parsed
+
+    def _clean_explicit_event_line_title(self, line: str) -> str | None:
+        cleaned = re.sub(r"(?:(?:\d{4}年)?\d{1,2}月\d{1,2}[日号]|\d{4}[-/]\d{1,2}[-/]\d{1,2})", " ", line)
+        cleaned = re.sub(r"\d{1,2}:\d{2}\s*(?:到|至|~|～|—|－|-)\s*\d{1,2}:\d{2}", " ", cleaned)
+        cleaned = re.sub(
+            rf"{TIME_TOKEN_PATTERN.pattern}\s*(?:到|至|~|～|—|－|-)\s*{TIME_TOKEN_PATTERN.pattern}",
+            " ",
+            cleaned,
+        )
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" ，。,；;:：-")
+        return cleaned[:60] if cleaned else None
+
+    def _maybe_build_deterministic_departure_context_reply(
+        self,
+        *,
+        user_message: str,
+        history: list[Any],
+    ) -> str | None:
+        if not re.search(r"几点出发|多久出发|什么时候出发|要提前多久|通勤|怎么去", user_message):
+            return None
+        start_time, _end_time = self.text_runtime._extract_time_range(user_message)
+        if start_time is not None and re.search(
+            r"日程|会议|开会|组会|答辩|面试|约会|聚餐|上课|演示|汇报|看医生|见面|碰头",
+            user_message,
+            re.I,
+        ):
+            return None
+        runtime_origin = self._recent_runtime_origin_from_history(history)
+        location_match = re.search(
+            r"(?:去|到|在)\s*(?P<location>[\u4e00-\u9fa5A-Za-z0-9·（）()]{1,24}?)(?=上课|开会|会议|办手续|体检|面试|聚餐|见面|[，。,；;!！?？]|$)",
+            user_message,
+        )
+        location_name = location_match.group("location").strip() if location_match else None
+        if runtime_origin:
+            destination = location_name or "目的地"
+            return (
+                f"我会优先按你刚说的“{runtime_origin}”作为出发地，目的地按“{destination}”理解。"
+                "这只是当前对话里的临时位置，不会写入长期地点记忆；如果要精确到分钟，请补充交通方式或允许我使用通勤数据。"
+            )
+        if location_name:
+            return f"我知道目的地是“{location_name}”，但还不能判断你届时从哪里出发。请补充出发地，我不会直接写入日程或长期记忆。"
+        return None
+
+    async def _maybe_create_deterministic_batch_event_proposal(
+        self,
+        *,
+        user_id: str,
+        session_id: int,
+        user_message: str,
+        events: list[Any],
+    ) -> str | None:
+        if not re.search(r"(所有|全部|全都).{0,8}(日程|安排|会议|活动)|(?:日程|安排|会议|活动).{0,8}(所有|全部|全都)", user_message):
+            return None
+        if "明天" not in user_message:
+            return "这个批量操作范围还不够明确。请说明具体日期、对象和要改成什么，我再生成待确认方案。"
+
+        target_date = self.text_runtime._extract_target_date(
+            user_message,
+            datetime.now(ZoneInfo(self.settings.app_timezone)).date(),
+        )
+        target_events = [
+            event
+            for event in events
+            if (getattr(event, "status", None) or "planned") != "canceled"
+            and getattr(getattr(event, "start_time", None), "date", lambda: None)() == target_date
+        ]
+        if len(target_events) > 8:
+            return f"明天共有 {len(target_events)} 个安排，范围过大。请缩小范围或明确列出要处理的项目，我不会直接批量执行。"
+        if not target_events:
+            return "我没有找到明天可批量处理的日程。请确认日期或具体事项。"
+        if re.search(r"取消|删除|删掉", user_message):
+            if len(target_events) > 5:
+                return f"明天共有 {len(target_events)} 个安排，取消范围过大。请先缩小范围，我不会直接批量取消。"
+            actions = [{"type": "cancel_event", "payload": {"event_id": int(getattr(event, "id"))}} for event in target_events]
+            summary = f"建议取消明天的 {len(target_events)} 个日程"
+            proposal_type = "event_batch_cancel"
+        elif re.search(r"推迟|延期|延后|顺延", user_message):
+            actions = []
+            for event in target_events:
+                start_time = getattr(event, "start_time", None)
+                end_time = getattr(event, "end_time", None)
+                if start_time is None or end_time is None or getattr(event, "id", None) is None:
+                    return None
+                actions.append(
+                    {
+                        "type": "reschedule_event",
+                        "payload": {
+                            "event_id": int(getattr(event, "id")),
+                            "update": {
+                                "start_time": (start_time + timedelta(days=1)).isoformat(),
+                                "end_time": (end_time + timedelta(days=1)).isoformat(),
+                            },
+                        },
+                    }
+                )
+            summary = f"建议把明天的 {len(target_events)} 个日程整体推迟 1 天"
+            proposal_type = "event_batch_reschedule"
+        else:
+            return "这个批量调整还缺少具体动作。请说明要推迟、提前、改期还是取消，我再生成待确认方案。"
+
+        proposal = await self.proposal_manager.create_proposal(
+            user_id=user_id,
+            payload=AssistantProposalCreate(
+                session_id=session_id,
+                proposal_type=proposal_type,
+                trigger_type="user_message",
+                status="pending",
+                summary=summary,
+                payload_json={
+                    "source": "deterministic_acceptance_rule",
+                    "target_scope": "batch",
+                    "target_date": target_date.isoformat(),
+                    "target_event_ids": [int(getattr(event, "id")) for event in target_events if getattr(event, "id", None) is not None],
+                    "options": [
+                        {
+                            "option_id": "A",
+                            "title": "按建议处理这批日程",
+                            "summary": summary,
+                            "actions": actions,
+                            "rationale": "确认后才会逐个执行这些批量动作。",
+                        }
+                    ],
+                },
+                recommended_option_id="A",
+                is_time_sensitive=True,
+            ),
+        )
+        proposal = await self._label_direct_proposal(user_id=user_id, session_id=session_id, proposal=proposal)
+        await self._persist_active_target_for_proposal(
+            user_id=user_id,
+            session_id=session_id,
+            proposal=proposal,
+            user_message=user_message,
+        )
+        self._queue_inline_render_block_from_proposal(proposal)
+        label = self._proposal_protocol_label(proposal) or "P1"
+        return f"{label}：{summary}。我已放入待确认方案，确认前不会写入或修改日程。"
+
+    async def _maybe_create_deterministic_timed_reminder_proposal(
+        self,
+        *,
+        user_id: str,
+        session_id: int,
+        user_message: str,
+    ) -> str | None:
+        if not re.search(r"提醒我|记得叫我|提醒一下", user_message):
+            return None
+        start_time, end_time = self.text_runtime._extract_time_range(
+            user_message,
+            reference=datetime.now(ZoneInfo(self.settings.app_timezone)),
+        )
+        if start_time is None:
+            return None
+        location_match = re.search(r"(?:去|到|在|于)\s*(?P<location>[\u4e00-\u9fa5A-Za-z0-9·（）()]{1,24})(?:$|[，。,；;!！?？])", user_message)
+        location_name = location_match.group("location").strip() if location_match else None
+        if not location_name:
+            return None
+        title = f"去{location_name}"
+        end_time = end_time or start_time + timedelta(hours=1)
+        summary = f"建议创建日程“{title}”：{start_time.strftime('%m-%d %H:%M')}-{end_time.strftime('%H:%M')}，地点：{location_name}"
+        proposal = await self.proposal_manager.create_proposal(
+            user_id=user_id,
+            payload=AssistantProposalCreate(
+                session_id=session_id,
+                proposal_type="event_creation",
+                trigger_type="user_message",
+                status="pending",
+                summary=summary,
+                payload_json={
+                    "source": "deterministic_timed_reminder",
+                    "options": [
+                        {
+                            "option_id": "A",
+                            "title": "按提醒创建日程",
+                            "summary": summary,
+                            "actions": [
+                                {
+                                    "type": "create_event",
+                                    "payload": {
+                                        "title": title,
+                                        "start_time": start_time.isoformat(),
+                                        "end_time": end_time.isoformat(),
+                                        "location_name": location_name,
+                                        "event_type": "general",
+                                    },
+                                }
+                            ],
+                            "rationale": "这句话包含明确时间和地点，先作为待确认日程处理。",
+                        }
+                    ],
+                },
+                recommended_option_id="A",
+                is_time_sensitive=True,
+            ),
+        )
+        proposal = await self._label_direct_proposal(user_id=user_id, session_id=session_id, proposal=proposal)
+        await self._persist_active_target_for_proposal(
+            user_id=user_id,
+            session_id=session_id,
+            proposal=proposal,
+            user_message=user_message,
+        )
+        self._queue_inline_render_block_from_proposal(proposal)
+        label = self._proposal_protocol_label(proposal) or "P1"
+        return f"{label}：{summary}。我已放入待确认方案，确认后才会创建日程。"
+
+    async def _maybe_create_deterministic_compound_event_proposals(
+        self,
+        *,
+        user_id: str,
+        session_id: int,
+        user_message: str,
+        events: list[Any],
+    ) -> str | None:
+        parts = self._split_compound_event_request(user_message)
+        if len(parts) < 2:
+            return None
+
+        created: list[Any] = []
+        summaries: list[str] = []
+        for part in parts[:5]:
+            draft = self._build_deterministic_event_proposal_draft(part, events=events, source="deterministic_compound_event")
+            if draft is None:
+                continue
+            proposal = await self.proposal_manager.create_proposal(
+                user_id=user_id,
+                payload=AssistantProposalCreate(session_id=session_id, **draft),
+            )
+            created.append(proposal)
+
+        if len(created) < 2:
+            return None
+
+        labelled: list[Any] = []
+        for proposal in created:
+            proposal = await self._label_direct_proposal(user_id=user_id, session_id=session_id, proposal=proposal)
+            labelled.append(proposal)
+            await self._persist_active_target_for_proposal(
+                user_id=user_id,
+                session_id=session_id,
+                proposal=proposal,
+                user_message=user_message,
+            )
+            self._queue_inline_render_block_from_proposal(proposal)
+            label = self._proposal_protocol_label(proposal) or f"P{len(labelled)}"
+            summaries.append(f"{label}：{getattr(proposal, 'summary', '')}")
+
+        return "我识别到这句话里有多个目标，已分别整理成待确认方案：\n" + "\n".join(summaries) + "\n你可以分别接受或拒绝每个方案。"
+
+    def _split_compound_event_request(self, user_message: str) -> list[str]:
+        if not re.search(r"[，,；;、]|(?:然后|另外|再|以及|并且)", user_message):
+            return []
+        fragments = [
+            item.strip(" \t\r\n，。,；;、")
+            for item in re.split(r"[，,；;、]|(?:然后|另外|以及|并且)", user_message)
+        ]
+        result: list[str] = []
+        inherited_date = self._extract_leading_date_fragment(user_message)
+        for fragment in fragments:
+            if not fragment:
+                continue
+            if not re.search(r"提醒我|记得|开会|会议|组会|答辩|面试|约会|聚餐|上课|复习|学习|去|到|在|于", fragment):
+                continue
+            candidate = fragment
+            if inherited_date and not self._message_has_event_date_reference(candidate):
+                candidate = f"{inherited_date}{candidate}"
+            result.append(candidate)
+        return result
+
+    @staticmethod
+    def _extract_leading_date_fragment(user_message: str) -> str | None:
+        match = re.match(
+            r"\s*(今天|明天|后天|大后天|今晚|明早|明晚|(?:下个?月|下月)(?:的)?(?:\d{1,2}|[一二两三四五六七八九十]{1,3})[日号]?|"
+            r"(?:\d{4}年)?\d{1,2}月\d{1,2}[日号]|(?:\d{4}[-/])?\d{1,2}[-/]\d{1,2}|"
+            r"(?:下下周|下周|本周|这周|周|星期)[一二三四五六日天末])",
+            user_message,
+        )
+        return match.group(1) if match else None
+
+    def _build_deterministic_event_proposal_draft(
+        self,
+        user_message: str,
+        *,
+        events: list[Any],
+        source: str,
+    ) -> dict[str, Any] | None:
+        start_time, end_time = self.text_runtime._extract_time_range(
+            user_message,
+            reference=datetime.now(ZoneInfo(self.settings.app_timezone)),
+        )
+        if start_time is None:
+            start_time = self._deterministic_period_start(user_message)
+        if start_time is None:
+            return None
+        end_time = end_time or start_time + timedelta(hours=1)
+        location_match = re.search(
+            r"(?:出发\s*)?(?:去|到|在|于)\s*(?P<location>[\u4e00-\u9fa5A-Za-z0-9·（）()]{1,24}?)(?=(?:和|跟|同).{0,8}(?:见面|碰头)|见面|碰头|上课|开会|会议|组会|答辩|面试|体检|聚餐|接|送|[，。,；;!！?？]|$)",
+            user_message,
+        )
+        location_name = location_match.group("location").strip() if location_match else None
+        if location_name:
+            location_name = re.sub(r"(?:开|去|参加)$", "", location_name).strip() or location_name
+        title = self._deterministic_event_title(user_message=user_message, location_name=location_name)
+        if title in {"开会", "会议", "上课", "办手续", "办事"} and location_name:
+            title = f"去{location_name}{title}"
+        if title:
+            title = re.sub(r"^(?:提醒我|记得叫我|记得|提醒一下)\s*", "", title).strip() or title
+        if not title:
+            return None
+        conflicts = [
+            event
+            for event in events
+            if (getattr(event, "status", None) or "planned") != "canceled"
+            and getattr(event, "start_time", None) is not None
+            and getattr(event, "end_time", None) is not None
+            and start_time < getattr(event, "end_time")
+            and end_time > getattr(event, "start_time")
+        ]
+        payload = {
+            "title": title,
+            "start_time": start_time.isoformat(),
+            "end_time": end_time.isoformat(),
+            "location_name": location_name,
+            "event_type": "general",
+        }
+        summary = f"建议创建日程“{title}”：{start_time.strftime('%m-%d %H:%M')}-{end_time.strftime('%H:%M')}"
+        if location_name:
+            summary += f"，地点：{location_name}"
+        options = [
+            {
+                "option_id": "A",
+                "title": "按建议创建日程",
+                "summary": summary,
+                "actions": [{"type": "create_event", "payload": payload}],
+                "rationale": "结束时间未明确，默认1小时，可在确认前修改。",
+            }
+        ]
+        if conflicts:
+            conflict = conflicts[0]
+            conflict_title = str(getattr(conflict, "title", "已有日程"))
+            summary += f"；与{conflict_title}存在时间冲突"
+            delayed_start = end_time
+            delayed_end = delayed_start + (end_time - start_time)
+            delayed_payload = dict(payload)
+            delayed_payload["start_time"] = delayed_start.isoformat()
+            delayed_payload["end_time"] = delayed_end.isoformat()
+            options = [
+                {
+                    "option_id": "A",
+                    "title": "后移新日程以避开当前时段",
+                    "summary": f"方案A：将“{title}”调整至 {delayed_start.strftime('%H:%M')}-{delayed_end.strftime('%H:%M')}，原日程“{conflict_title}”保持不变。",
+                    "actions": [{"type": "create_event", "payload": delayed_payload}],
+                    "rationale": f"与{conflict_title}存在时间冲突，先给出不修改原日程的候选方案。",
+                },
+                {
+                    "option_id": "B",
+                    "title": "维持原时间并提示处理冲突",
+                    "summary": f"方案B：维持原时间 {start_time.strftime('%H:%M')}-{end_time.strftime('%H:%M')}，但会与“{conflict_title}”冲突。",
+                    "actions": [{"type": "create_event", "payload": payload}],
+                    "rationale": "确认前需要你明确接受这个冲突风险。",
+                },
+            ]
+        return {
+            "proposal_type": "event_creation",
+            "trigger_type": "user_message",
+            "status": "pending",
+            "summary": summary,
+            "payload_json": {
+                "source": source,
+                "diagnostics": {
+                    "direct_conflicts": [
+                        {
+                            "event_id": getattr(event, "id", None),
+                            "title": getattr(event, "title", None),
+                            "start_time": getattr(event, "start_time").isoformat(),
+                            "end_time": getattr(event, "end_time").isoformat(),
+                        }
+                        for event in conflicts
+                    ],
+                },
+                "options": options,
+            },
+            "recommended_option_id": "A",
+            "is_time_sensitive": True,
+        }
+
+    async def _maybe_create_deterministic_event_proposal(
+        self,
+        *,
+        user_id: str,
+        session_id: int,
+        user_message: str,
+        events: list[Any],
+    ) -> str | None:
+        has_deterministic_event_keyword = bool(re.search(r"见面|碰头|上课|开会|会议|组会|答辩|面试|体检|聚餐|接|送", user_message))
+        has_explicit_departure_destination = bool(re.search(r"出发\s*(?:去|到)\s*[\u4e00-\u9fa5A-Za-z0-9·（）()]{1,24}", user_message))
+        if not (has_deterministic_event_keyword or has_explicit_departure_destination):
+            return None
+        start_time, end_time = self.text_runtime._extract_time_range(
+            user_message,
+            reference=datetime.now(ZoneInfo(self.settings.app_timezone)),
+        )
+        if start_time is None:
+            start_time = self._deterministic_period_start(user_message)
+        if start_time is None:
+            return None
+        end_time = end_time or start_time + timedelta(hours=1)
+        location_match = re.search(
+            r"(?:出发\s*)?(?:去|到|在|于)\s*(?P<location>[\u4e00-\u9fa5A-Za-z0-9·（）()]{1,24}?)(?=(?:和|跟|同).{0,8}(?:见面|碰头)|见面|碰头|上课|开会|会议|组会|答辩|面试|体检|聚餐|接|送|[，。,；;!！?？]|$)",
+            user_message,
+        )
+        location_name = location_match.group("location").strip() if location_match else None
+        if location_name:
+            location_name = re.sub(r"(?:开|去|参加)$", "", location_name).strip() or location_name
+        title = self._deterministic_event_title(user_message=user_message, location_name=location_name)
+        if not title:
+            return None
+        conflicts = [
+            event
+            for event in events
+            if (getattr(event, "status", None) or "planned") != "canceled"
+            and getattr(event, "start_time", None) is not None
+            and getattr(event, "end_time", None) is not None
+            and start_time < getattr(event, "end_time")
+            and end_time > getattr(event, "start_time")
+        ]
+        payload = {
+            "title": title,
+            "start_time": start_time.isoformat(),
+            "end_time": end_time.isoformat(),
+            "location_name": location_name,
+            "event_type": "general",
+        }
+        base_summary = f"建议创建日程“{title}”：{start_time.strftime('%m-%d %H:%M')}-{end_time.strftime('%H:%M')}"
+        if location_name:
+            base_summary += f"，地点：{location_name}"
+        default_duration_note = "结束时间未明确，默认1小时，可在确认前修改。"
+        options = [
+            {
+                "option_id": "A",
+                "title": "按建议创建日程",
+                "summary": base_summary,
+                "actions": [{"type": "create_event", "payload": payload}],
+                "rationale": default_duration_note,
+            }
+        ]
+        summary = base_summary
+        if conflicts:
+            conflict = conflicts[0]
+            conflict_title = str(getattr(conflict, "title", "已有日程"))
+            summary += f"；与{conflict_title}存在时间冲突"
+            delayed_start = end_time
+            delayed_end = delayed_start + (end_time - start_time)
+            delayed_payload = dict(payload)
+            delayed_payload["start_time"] = delayed_start.isoformat()
+            delayed_payload["end_time"] = delayed_end.isoformat()
+            options = [
+                {
+                    "option_id": "A",
+                    "title": "后移新日程以避开当前时段",
+                    "summary": f"方案A：将“{title}”调整至 {delayed_start.strftime('%H:%M')}-{delayed_end.strftime('%H:%M')}，原日程“{conflict_title}”保持不变。",
+                    "actions": [{"type": "create_event", "payload": delayed_payload}],
+                    "rationale": f"与{conflict_title}存在时间冲突，先给出不修改原日程的候选方案。",
+                },
+                {
+                    "option_id": "B",
+                    "title": "维持原时间并提示处理冲突",
+                    "summary": f"方案B：维持原时间 {start_time.strftime('%H:%M')}-{end_time.strftime('%H:%M')}，但会与“{conflict_title}”冲突。",
+                    "actions": [{"type": "create_event", "payload": payload}],
+                    "rationale": "确认前需要你明确接受这个冲突风险。",
+                },
+            ]
+        proposal = await self.proposal_manager.create_proposal(
+            user_id=user_id,
+            payload=AssistantProposalCreate(
+                session_id=session_id,
+                proposal_type="event_creation",
+                trigger_type="user_message",
+                status="pending",
+                summary=summary,
+                payload_json={
+                    "source": "deterministic_event_creation",
+                    "diagnostics": {
+                        "direct_conflicts": [
+                            {
+                                "event_id": getattr(event, "id", None),
+                                "title": getattr(event, "title", None),
+                                "start_time": getattr(event, "start_time").isoformat(),
+                                "end_time": getattr(event, "end_time").isoformat(),
+                            }
+                            for event in conflicts
+                        ],
+                    },
+                    "options": options,
+                },
+                recommended_option_id="A",
+                is_time_sensitive=True,
+            ),
+        )
+        proposal = await self._label_direct_proposal(user_id=user_id, session_id=session_id, proposal=proposal)
+        await self._persist_active_target_for_proposal(
+            user_id=user_id,
+            session_id=session_id,
+            proposal=proposal,
+            user_message=user_message,
+        )
+        self._queue_inline_render_block_from_proposal(proposal)
+        label = self._proposal_protocol_label(proposal) or "P1"
+        return f"{label}：{summary}。{default_duration_note}我已放入待确认方案，确认前不会写入日程。"
+
+    def _deterministic_period_start(self, user_message: str) -> datetime | None:
+        if not re.search(r"上午|下午|晚上|今晚|早上|中午|凌晨", user_message):
+            return None
+        base_date = self.text_runtime._extract_target_date(
+            user_message,
+            datetime.now(ZoneInfo(self.settings.app_timezone)).date(),
+        )
+        hour = 9
+        if re.search(r"下午", user_message):
+            hour = 15
+        elif re.search(r"晚上|今晚", user_message):
+            hour = 19
+        elif re.search(r"中午", user_message):
+            hour = 12
+        elif re.search(r"凌晨", user_message):
+            hour = 2
+        elif re.search(r"早上|上午", user_message):
+            hour = 9
+        return datetime.combine(base_date, datetime.min.time()).replace(hour=hour, minute=0)
+
+    def _deterministic_event_title(self, *, user_message: str, location_name: str | None) -> str | None:
+        message = re.sub(
+            r"^(?:(?:\d{4}年)?\d{1,2}月\d{1,2}[日号]|今天|明天|后天|大后天|今晚|明早|明晚)?(?:上午|下午|晚上|早上|中午|凌晨)?(?:\d+|[一二两三四五六七八九十半]+)?(?:点|时)?.*?(?:出发\s*)?(?:去|到|在|于)?",
+            "",
+            user_message,
+            count=1,
+        ).strip(" ，。,；;!！?？")
+        if location_name and message.startswith(location_name):
+            message = message[len(location_name):].strip(" ，。,；;!！?？")
+        if message:
+            if location_name and re.match(r"^(?:接|送)[\u4e00-\u9fa5A-Za-z0-9·（）()]{1,24}$", message):
+                return f"去{location_name}{message}"
+            if re.match(r"^(?:和|跟|同)", message):
+                return "和" + re.sub(r"^(?:和|跟|同)\s*", "", message)
+            return message[:40]
+        if location_name:
+            return f"去{location_name}"
+        return None
+
     def _classify_proposal_text_protocol(self, user_message: str) -> str | None:
+        if self._looks_like_proposal_retry(user_message):
+            return "retry"
+        if self._looks_like_proposal_rejection(user_message):
+            return "reject"
         if self._looks_like_proposal_revision(user_message):
             return "revise"
         if self._looks_like_active_proposal_confirmation(user_message):
@@ -849,9 +2382,33 @@ class AssistantService:
     def _looks_like_active_proposal_confirmation(self, user_message: str) -> bool:
         message = user_message.strip()
         return bool(
-            re.fullmatch(r"(就)?按\s*(这个|这条|刚才那个|上一个|P\d+)(方案|建议)?(来|执行|确认)?[。！!]*", message, re.I)
+            re.fullmatch(r"接受\s*(?:P\d+\s*)?(?:方案|option)?\s*[A-ZＡ-Ｚ](?:\s*(?:安排|执行|确认|来))?[。！!]*", message, re.I)
+            or re.fullmatch(r"接受\s*P\d+\s*(?:方案|option)?\s*[A-ZＡ-Ｚ](?:\s*(?:安排|执行|确认|来))?[。！!]*", message, re.I)
+            or re.fullmatch(r"(就)?按\s*(这个|这条|刚才那个|上一个|P\d+)(方案|建议)?(来|执行|确认)?[。！!]*", message, re.I)
             or re.fullmatch(r"(确认|执行)\s*(这个|这条|刚才那个|上一个|P\d+)(方案|建议)?[。！!]*", message, re.I)
+            or re.fullmatch(r"(确认|执行)\s*P\d+\s*(?:方案|option)?\s*[A-ZＡ-Ｚ](?:\s*(?:安排|执行|确认|来))?[。！!]*", message, re.I)
+            or re.fullmatch(r"(?:P\d+\s*)?(?:按|确认|执行)\s*(?:方案|option)?\s*[A-ZＡ-Ｚ](?:\s*(?:安排|执行|确认|来))?[。！!]*", message, re.I)
             or re.fullmatch(r"(同意|可以|好|好的|行|行吧|没问题)[。！!]*", message, re.I)
+        )
+
+    def _looks_like_proposal_retry(self, user_message: str) -> bool:
+        message = user_message.strip()
+        return bool(
+            re.fullmatch(r"(?:重试|重新执行)\s*(?:P\d+|这个|这条|刚才那个|上一个)(?:方案|建议)?[。！!]*", message, re.I)
+            or re.fullmatch(r"(?:P\d+|这个|这条|刚才那个|上一个)\s*(?:重试|重新执行)(?:方案|建议)?[。！!]*", message, re.I)
+            or re.fullmatch(r"retry\s*(?:P\d+|this|last)(?:\s*proposal)?[.!！。]*", message, re.I)
+        )
+
+    def _looks_like_proposal_rejection(self, user_message: str) -> bool:
+        message = user_message.strip()
+        return bool(
+            re.fullmatch(
+                r"(?:(?:P\d+|这个|这条|刚才那个|上一个)\s*)?(?:不要|先不要安排|先不安排|暂不安排|先别安排|取消这个方案|这个不行|不行|拒绝|拒绝全部|算了|不选了|算了[，,]\s*不选了)(?:\s*(?:全部)?方案)?[。！!]*",
+                message,
+                re.I,
+            )
+            or re.fullmatch(r"拒绝\s*(?:P\d+)?\s*(?:全部)?方案[。！!]*", message, re.I)
+            or re.fullmatch(r"拒绝全部\s*(?:P\d+)?[。！!]*", message, re.I)
         )
 
     def _looks_like_proposal_revision(self, user_message: str) -> bool:
@@ -864,7 +2421,156 @@ class AssistantService:
             re.I,
         ):
             return False
-        return bool(re.search(r"改一下|修改|改成|改到|调整|换成|revise|change", message, re.I))
+        return bool(re.search(r"改一下|修改|改成|改到|调整|换成|开到|结束到|revise|change", message, re.I))
+
+    def _looks_like_contextual_proposal_revision(self, user_message: str) -> bool:
+        message = user_message.strip()
+        if self._looks_like_independent_timed_event_creation(message):
+            return False
+        return (
+            self._looks_like_contextual_proposal_type_correction(message)
+            or self._looks_like_contextual_proposal_slot_update(message)
+            or bool(
+                re.search(r"改成|改到|改为|修改|调整|换成|开到|结束到|提前|推迟|延后|缩短|延长|revise|change", message, re.I)
+                and re.search(r"(\d{1,2}\s*(?:点|时)|[一二两三四五六七八九十]{1,3}\s*(?:点|时)|上午|下午|晚上|地点|标题|名称|半小时|小时|分钟)", message)
+            )
+        )
+
+    def _looks_like_independent_timed_event_creation(self, user_message: str) -> bool:
+        message = user_message.strip()
+        if not message:
+            return False
+        if re.search(r"(?<![A-Za-z0-9])P\d+(?![A-Za-z0-9])|方案|建议|proposal", message, re.I):
+            return False
+        if self.text_runtime._extract_time_range(message)[0] is None:
+            return False
+        if re.search(r"改成|改到|改为|修改|调整|换成|开到|结束到|提前|推迟|延后|缩短|延长", message):
+            return False
+        has_event_phrase = bool(re.search(r"约会|聚餐|见面|碰头|上课|开会|会议|组会|答辩|面试|体检|看医生|接|送", message))
+        has_destination = bool(re.search(r"(?:去|到|在|于)\s*[\u4e00-\u9fa5A-Za-z0-9·（）()]{1,24}", message))
+        return has_event_phrase or has_destination
+
+    def _looks_like_contextual_proposal_slot_update(self, user_message: str) -> bool:
+        message = user_message.strip()
+        if not message:
+            return False
+        if re.search(r"(?<![A-Za-z0-9])P\d+(?![A-Za-z0-9])|方案|建议|proposal", message, re.I):
+            return False
+        if re.search(r"创建|新增|安排|生成|取消|不去了|不用去了|不做了|拒绝|确认|执行|可以|好的", message):
+            return False
+        has_time_range = self.text_runtime._extract_time_range(message)[0] is not None
+        has_slot_label = bool(re.search(r"开始|起|结束|截止|持续|时长|地点|位置|标题|名称", message))
+        has_time_token = bool(
+            re.search(
+                r"\d{1,2}\s*(?:点|时)|[一二两三四五六七八九十]{1,3}\s*(?:点|时)|上午|下午|晚上|半小时|小时|分钟",
+                message,
+            )
+        )
+        return has_time_range or (has_slot_label and has_time_token)
+
+    def _looks_like_contextual_event_creation_directive(self, user_message: str) -> bool:
+        message = user_message.strip()
+        return bool(
+            re.fullmatch(r"(?:请|帮我)?(?:创建|新增|安排|生成|做成|转成).{0,8}(?:独立|单次|一次性)?日程[。！!]*", message)
+            or re.fullmatch(r"(?:独立|单次|一次性)日程[。！!]*", message)
+        )
+
+    def _build_existing_event_creation_proposal_reply(self, proposals: list[Any], *, user_message: str) -> str | None:
+        event_proposals = [
+            proposal for proposal in proposals
+            if str(getattr(proposal, "proposal_type", "") or "") == "event_creation"
+        ]
+        if not event_proposals:
+            return None
+        if len(event_proposals) > 1:
+            if self.text_runtime._prefers_chinese(user_message):
+                labels = [self._proposal_protocol_label(proposal) or f"#{getattr(proposal, 'id', '?')}" for proposal in event_proposals[:5]]
+                return "当前有多个待确认日程方案，请明确要处理哪一个：" + "、".join(labels) + "。例如回复“确认 P1 方案A”或“修改 P2”。"
+            return "There are multiple pending event proposals. Please specify which one to use, for example: confirm P1 option A."
+        proposal = event_proposals[0]
+        label = self._proposal_protocol_label(proposal) or f"#{getattr(proposal, 'id', '?')}"
+        option_id = (
+            getattr(proposal, "recommended_option_id", None)
+            or self._first_proposal_option_id(getattr(proposal, "payload_json", None) or {})
+            or "A"
+        )
+        summary = str(getattr(proposal, "summary", "") or "这个日程方案")
+        if self.text_runtime._prefers_chinese(user_message):
+            return f"已经有待确认的独立日程方案：{label}「{summary}」。我还没有写入日程；如果要创建，请回复“确认 {label} 方案{option_id}”，或者直接告诉我要改哪里。"
+        return f"There is already a pending event proposal: {label} \"{summary}\". I have not written it yet; confirm {label} option {option_id} to create it."
+
+    def _looks_like_event_targeted_reschedule_request(
+        self,
+        user_message: str,
+        *,
+        events: object | None = None,
+    ) -> bool:
+        message = user_message.strip()
+        if not message or re.search(r"(?<![A-Za-z0-9])P\d+(?![A-Za-z0-9])|方案|建议|proposal", message, re.I):
+            return False
+        match = re.search(r"改到|改成|改为|调整到|挪到|推到|推迟到|提前到|延期到|顺延到|延后到", message)
+        if not match:
+            return False
+        target_text = message[: match.start()]
+        if not re.search(r"日程|安排|会议|见面|课|自习|复习块|块|考试|体检|开会|组会|培训|面试|活动", target_text):
+            return False
+        if events is None:
+            return False
+        return self._message_matches_existing_event_target(target_text, events)
+
+    @staticmethod
+    def _message_matches_existing_event_target(target_text: str, events: object) -> bool:
+        if not isinstance(events, Sequence) or isinstance(events, (str, bytes)):
+            return False
+        normalized_target = re.sub(r"[\s，。,、的]+", "", target_text)
+        if not normalized_target:
+            return False
+        for event in events:
+            title = getattr(event, "title", None)
+            if title is None and isinstance(event, dict):
+                title = event.get("title")
+            if not isinstance(title, str):
+                continue
+            normalized_title = re.sub(r"[\s，。,、的]+", "", title)
+            if normalized_title and (normalized_title in normalized_target or normalized_target in normalized_title):
+                return True
+        return False
+
+    def _looks_like_contextual_proposal_type_correction(self, user_message: str) -> bool:
+        message = user_message.strip()
+        return bool(
+            re.search(r"这个|这条|刚才|上一个|不是|应(?:该)?是|改成|改为", message)
+            and re.search(r"任务|待办|todo|日程|单次日程|事件|event", message, re.I)
+            and re.search(r"不是|应(?:该)?是|改成|改为|类型", message)
+        )
+
+    def _proposal_supports_contextual_revision(self, proposal: Any, user_message: str) -> bool:
+        if self._looks_like_contextual_proposal_type_correction(user_message):
+            return True
+
+        proposal_type = str(getattr(proposal, "proposal_type", "") or "")
+        if proposal_type in {"event_creation", "event_reschedule"}:
+            return True
+
+        payload_json = getattr(proposal, "payload_json", None) or {}
+        if not isinstance(payload_json, dict):
+            return False
+        options = payload_json.get("options")
+        if not isinstance(options, list):
+            return False
+
+        for option in options:
+            if not isinstance(option, dict):
+                continue
+            actions = option.get("actions")
+            if not isinstance(actions, list):
+                continue
+            for action in actions:
+                if not isinstance(action, dict):
+                    continue
+                if action.get("type") in {"create_event", "reschedule_event"}:
+                    return True
+        return False
 
     async def _resolve_text_protocol_proposal(
         self,
@@ -874,17 +2580,134 @@ class AssistantService:
         user_message: str,
         external_context: dict[str, Any],
     ) -> Any | str | None:
-        active = await self.proposal_manager.list_proposals(
+        active = []
+        if hasattr(self.proposal_manager, "list_proposals"):
+            active = await self._list_text_protocol_proposals(
+                user_id=user_id,
+                session_id=session_id,
+                statuses=["pending"],
+                limit=10,
+            )
+
+        explicit_label = self._extract_proposal_display_label(user_message)
+        if explicit_label is not None and hasattr(self.proposal_manager, "list_proposals"):
+            terminal = await self._list_text_protocol_proposals(
+                user_id=user_id,
+                session_id=session_id,
+                statuses=["expired", "superseded", "execution_failed"],
+                limit=10,
+            )
+            labelled = self._find_proposal_by_protocol_label([*active, *terminal], explicit_label)
+            if labelled is not None:
+                return labelled
+            stable_labelled = self._find_proposal_by_stable_protocol_label([*active, *terminal], explicit_label)
+            if stable_labelled is not None:
+                return stable_labelled
+            if self._proposal_list_has_protocol_labels(active) or self._proposal_list_has_protocol_labels(terminal):
+                return None
+
+        resolved = self._resolve_text_protocol_proposal_from_active(
+            active=active,
+            user_message=user_message,
+            external_context=external_context,
+        )
+        if resolved is not None:
+            return resolved
+
+        if not active and hasattr(self.proposal_manager, "list_proposals"):
+            terminal = await self._list_text_protocol_proposals(
+                user_id=user_id,
+                session_id=session_id,
+                statuses=["expired", "superseded", "execution_failed"],
+                limit=10,
+            )
+            resolved = self._resolve_text_protocol_proposal_from_active(
+                active=terminal,
+                user_message=user_message,
+                external_context=external_context,
+            )
+            if resolved is not None:
+                return resolved
+
+        active_target = (external_context or {}).get("active_target")
+        proposal_id = active_target.get("proposal_id") if isinstance(active_target, dict) else None
+        if proposal_id is None or active:
+            return None
+        try:
+            proposal_id_int = int(proposal_id)
+        except (TypeError, ValueError):
+            return None
+        if not hasattr(self.proposal_manager, "get_proposal"):
+            return None
+        try:
+            proposal = await self.proposal_manager.get_proposal(user_id=user_id, proposal_id=proposal_id_int)
+        except HTTPException:
+            return None
+        if getattr(proposal, "status", None) in {"accepted", "execution_pending", "executed", "execution_failed"}:
+            return proposal
+        return None
+
+    async def _list_text_protocol_proposals(
+        self,
+        *,
+        user_id: str,
+        session_id: int | None,
+        statuses: list[str],
+        limit: int,
+    ) -> list[Any]:
+        session_items = await self.proposal_manager.list_proposals(
             user_id=user_id,
             session_id=session_id,
-            statuses=["pending"],
-            limit=10,
+            statuses=statuses,
+            limit=limit,
         )
+        if session_id is None or len(session_items) >= limit:
+            return list(session_items)
+        all_items = await self.proposal_manager.list_proposals(
+            user_id=user_id,
+            session_id=None,
+            statuses=statuses,
+            limit=limit,
+        )
+        scoped_all_items = [
+            item
+            for item in all_items
+            if getattr(item, "session_id", None) in {None, session_id}
+        ]
+        merged: list[Any] = []
+        seen: set[Any] = set()
+        for item in [*session_items, *scoped_all_items]:
+            key = getattr(item, "id", id(item))
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+            if len(merged) >= limit:
+                break
+        return merged
+
+    def _resolve_text_protocol_proposal_from_active(
+        self,
+        *,
+        active: list[Any],
+        user_message: str,
+        external_context: dict[str, Any],
+    ) -> Any | str | None:
         active = sorted(active, key=lambda item: getattr(item, "id", 0) or 0)
+        explicit_label = self._extract_proposal_display_label(user_message)
+        if explicit_label is not None:
+            for proposal in active:
+                payload_json = getattr(proposal, "payload_json", None) or {}
+                if isinstance(payload_json, dict) and str(payload_json.get("protocol_label") or "").upper() == explicit_label:
+                    return proposal
+
         explicit_index = self._extract_proposal_display_index(user_message)
         if explicit_index is not None:
             if 0 <= explicit_index < len(active):
                 return active[explicit_index]
+            return "ambiguous"
+
+        if len(active) > 1:
             return "ambiguous"
 
         active_target = (external_context or {}).get("active_target")
@@ -900,9 +2723,86 @@ class AssistantService:
 
         if len(active) == 1:
             return active[0]
-        if len(active) > 1:
-            return "ambiguous"
         return None
+
+    def _find_proposal_by_protocol_label(self, proposals: list[Any], label: str) -> Any | None:
+        normalized = label.upper()
+        for proposal in proposals:
+            payload_json = getattr(proposal, "payload_json", None) or {}
+            if isinstance(payload_json, dict) and str(payload_json.get("protocol_label") or "").upper() == normalized:
+                return proposal
+        return None
+
+    def _find_proposal_by_stable_protocol_label(self, proposals: list[Any], label: str) -> Any | None:
+        proposals_by_id = {
+            getattr(proposal, "id", None): proposal
+            for proposal in proposals
+            if getattr(proposal, "id", None) is not None
+        }
+        if not proposals_by_id:
+            return None
+        label_by_id = self._assign_stable_proposal_labels(list(proposals_by_id.values()))
+        normalized = label.upper()
+        for proposal_id, assigned_label in label_by_id.items():
+            if assigned_label.upper() == normalized:
+                return proposals_by_id.get(proposal_id)
+        return None
+
+    def _proposal_list_has_protocol_labels(self, proposals: list[Any]) -> bool:
+        for proposal in proposals:
+            payload_json = getattr(proposal, "payload_json", None) or {}
+            if isinstance(payload_json, dict) and str(payload_json.get("protocol_label") or "").strip():
+                return True
+        return False
+
+    def _build_proposal_protocol_assessment(
+        self,
+        *,
+        user_message: str,
+        intent: str,
+        proposal: Any | str | None,
+        external_context: dict[str, Any],
+    ) -> OrchestrationAssessment:
+        active_target = (external_context or {}).get("active_target")
+        proposal_id = active_target.get("proposal_id") if isinstance(active_target, dict) else None
+        target_scope = TargetScope(kind="proposal", resolution="missing", proposal_id=proposal_id)
+        if proposal == "ambiguous":
+            target_scope = TargetScope(kind="proposal", resolution="ambiguous", proposal_id=proposal_id)
+        elif proposal is not None:
+            target_scope = TargetScope(
+                kind="proposal",
+                resolution="resolved",
+                proposal_id=getattr(proposal, "id", None),
+                label=getattr(proposal, "summary", None),
+            )
+        continuation = ContinuationSignals(
+            is_following_previous_context=True,
+            based_on_active_target=isinstance(active_target, dict) and active_target.get("proposal_id") is not None,
+            based_on_pending_proposal=proposal is not None,
+            based_on_history=self._has_context_reference(user_message),
+            reason="proposal_text_protocol",
+        )
+        return OrchestrationAssessment(
+            conversation_mode=(
+                "revise_existing"
+                if intent == "revise"
+                else "reject_existing"
+                if intent == "reject"
+                else "confirm_existing"
+            ),
+            user_goal=(
+                "revise_existing_proposal"
+                if intent == "revise"
+                else "reject_existing_proposal"
+                if intent == "reject"
+                else "confirm_existing_proposal"
+            ),
+            target_scope=target_scope,
+            continuation=continuation,
+            planning_intent=PlanningIntent(),
+            missing_information=["pending_proposal"] if proposal is None else [],
+            notes=["phase9a_proposal_protocol"],
+        )
 
     def _extract_proposal_display_index(self, user_message: str) -> int | None:
         match = re.search(r"(?<![A-Za-z0-9])P(?P<index>\d+)(?![A-Za-z0-9])", user_message, re.I)
@@ -910,10 +2810,47 @@ class AssistantService:
             return None
         return int(match.group("index")) - 1
 
+    def _extract_proposal_display_label(self, user_message: str) -> str | None:
+        match = re.search(r"(?<![A-Za-z0-9])P(?P<index>\d+)(?![A-Za-z0-9])", user_message, re.I)
+        if not match:
+            return None
+        return f"P{int(match.group('index'))}"
+
+    def _extract_proposal_option_id(self, user_message: str) -> str | None:
+        match = re.search(r"(?:方案|option)\s*(?P<option>[A-ZＡ-Ｚ])|按\s*(?!P\d)(?P<option_after_action>[A-ZＡ-Ｚ])", user_message, re.I)
+        if not match:
+            return None
+        option = (match.group("option") or match.group("option_after_action")).upper()
+        return chr(ord(option) - ord("Ａ") + ord("A")) if "Ａ" <= option <= "Ｚ" else option
+
     def _build_proposal_protocol_clarification(self, user_message: str) -> str:
         if self.text_runtime._prefers_chinese(user_message):
             return "我不确定你指的是哪个待确认方案。请直接说“按 P1”或“把 P2 改到明天上午”。"
         return "I am not sure which pending proposal you mean. Please refer to it as P1 or P2."
+
+    def _build_missing_proposal_protocol_reply(
+        self,
+        *,
+        user_message: str,
+        intent: str,
+        assessment: OrchestrationAssessment | None = None,
+    ) -> str:
+        if self.text_runtime._prefers_chinese(user_message):
+            if assessment is not None and assessment.target_scope.resolution == "ambiguous":
+                return "我知道你是在操作已有方案，但现在还不能唯一定位到哪一个。请直接说“按 P1”或“把 P2 改到明天下午”。"
+            if intent == "revise":
+                return "我知道你是在修改现有方案，但当前没有可修改的待确认方案。请先让我给你出一个方案，或者明确指出要修改哪条历史方案。"
+            if intent == "reject":
+                return "我知道你是在拒绝现有方案，但当前没有待确认方案可拒绝。"
+            return "我知道你是在确认现有方案，但当前没有待确认方案可执行；如果你是在重复确认刚刚已执行的方案，它已经执行完成，不会重复写入。需要新安排的话，请直接告诉我要安排什么。"
+        if intent == "revise":
+            return "I understand that you want to revise an existing proposal, but there is no pending proposal to revise right now."
+        if intent == "reject":
+            return "I understand that you want to reject an existing proposal, but there is no pending proposal to reject right now."
+        return "I understand that you want to confirm an existing proposal, but there is no pending proposal to execute right now."
+
+    def _has_context_reference(self, user_message: str) -> bool:
+        return bool(re.search(r"这个|那个|这条|那条|它|刚才|刚刚|上一个|前面那个|刚说的|继续", user_message))
 
     def _first_proposal_option_id(self, payload_json: dict[str, Any]) -> str | None:
         options = payload_json.get("options") if isinstance(payload_json, dict) else None
@@ -950,7 +2887,80 @@ class AssistantService:
         if result is None:
             return False
         mode = (self.settings.assistant_conductor_mode or "legacy").lower()
-        return mode == "proposal" and result.decision in {"proposal", "clarification"}
+        return mode in {"proposal", "primary"} and result.decision in {"proposal", "clarification", "answer"}
+
+    def _should_block_legacy_fallback(
+        self,
+        result: ConductorResult | None,
+        *,
+        user_message: str = "",
+        external_context: dict[str, Any] | None = None,
+    ) -> bool:
+        if result is None:
+            return False
+        mode = (self.settings.assistant_conductor_mode or "legacy").lower()
+        if result.decision not in {"legacy", "unsupported"}:
+            return False
+        if mode == "primary":
+            return True
+        if mode != "proposal":
+            return False
+        return self._should_prefer_model_driven_path(
+            user_message=user_message,
+            external_context=external_context or {},
+        )
+
+    def _should_allow_answer_like_rule_short_circuit(self, result: ConductorResult | None) -> bool:
+        mode = (self.settings.assistant_conductor_mode or "legacy").lower()
+        return not (mode in {"proposal", "primary"} and result is not None)
+
+    def _should_use_streaming_plan_fallback(self, result: ConductorResult | None) -> bool:
+        if not self.gemini.enabled:
+            return False
+        mode = (self.settings.assistant_conductor_mode or "legacy").lower()
+        if mode in {"proposal", "primary"} and result is not None:
+            return False
+        return True
+
+    def _should_use_plan_compatibility_fallback(self, result: ConductorResult | None) -> bool:
+        mode = (self.settings.assistant_conductor_mode or "legacy").lower()
+        if mode in {"proposal", "primary"} and result is not None:
+            return False
+        return True
+
+    def _primary_mode_fallback_reply(
+        self,
+        user_message: str,
+        result: ConductorResult | None,
+        *,
+        external_context: dict[str, Any] | None = None,
+    ) -> str:
+        if result and result.reply:
+            return result.reply
+        active_target = (external_context or {}).get("active_target")
+        if isinstance(active_target, dict) and active_target.get("task_id") is not None and self.text_runtime._prefers_chinese(user_message):
+            return "我先不把这句丢回旧规则链了。你现在像是在继续规划已有任务，请直接告诉我这个任务想安排到哪几天、几点到几点。"
+        if isinstance(active_target, dict) and active_target.get("proposal_id") is not None and self.text_runtime._prefers_chinese(user_message):
+            return "我先不把这句丢回旧规则链了。你现在像是在继续操作已有方案，请直接说“确认 P1”或“把 P1 改到明天下午”。"
+        if self.text_runtime._prefers_chinese(user_message):
+            return "我先不走旧的规则回退链路了。请直接告诉我你现在是想继续规划哪个任务，还是要修改哪个已有日程。"
+        return "I am not falling back to the legacy rule path here. Tell me whether you want to continue planning a task or modify an existing event."
+
+    def _should_prefer_model_driven_path(self, *, user_message: str, external_context: dict[str, Any]) -> bool:
+        active_target = (external_context or {}).get("active_target")
+        if isinstance(active_target, dict) and any(
+            active_target.get(key) is not None for key in ("proposal_id", "task_id", "event_id")
+        ):
+            return True
+        if self._looks_like_active_proposal_confirmation(user_message):
+            return True
+        if self._looks_like_proposal_revision(user_message):
+            return True
+        if self._has_context_reference(user_message):
+            return True
+        if re.search(r"继续规划|继续安排|继续排|这个任务|那个任务|这一项任务|把今天所有", user_message):
+            return True
+        return False
 
     def _format_conductor_reply(
         self,
@@ -960,6 +2970,8 @@ class AssistantService:
         memory_candidates: list[Any],
     ) -> str:
         reply = result.reply or ""
+        reply = self._apply_persisted_proposal_labels(reply, result.metadata or {})
+        reply = self._prefix_if_model_unavailable(reply, user_message=user_message)
         persisted_ids = (result.metadata or {}).get("persisted_proposal_ids") or []
         if persisted_ids and self.text_runtime._prefers_chinese(user_message):
             reply = f"{reply}\n\n我已把方案放进“待确认方案”，你确认后我才会执行写入。"
@@ -970,6 +2982,371 @@ class AssistantService:
             user_message=user_message,
             memory_candidates=memory_candidates,
         )
+
+    def _build_proposal_render_blocks_from_result(self, result: ConductorResult | None) -> list[AssistantRenderBlock]:
+        if result is None:
+            return []
+        proposal_ids = (result.metadata or {}).get("persisted_proposal_ids") or []
+        proposals = (result.metadata or {}).get("persisted_proposals") or []
+        if not isinstance(proposals, list):
+            proposals = []
+
+        blocks: list[AssistantRenderBlock] = []
+        for proposal in proposals:
+            proposal_id = getattr(proposal, "id", None)
+            if proposal_id is None or proposal_id not in proposal_ids:
+                continue
+            block_payload = self._build_proposal_options_render_payload(proposal)
+            if block_payload is not None:
+                blocks.append(AssistantRenderBlock(type="proposal_options", payload=block_payload))
+        return blocks
+
+    def _build_proposal_options_render_payload(self, proposal: Any) -> dict[str, Any] | None:
+        payload_json = getattr(proposal, "payload_json", None) or {}
+        if not isinstance(payload_json, dict):
+            return None
+        options = payload_json.get("options")
+        if not isinstance(options, list) or not options:
+            return None
+
+        protocol_label = self._proposal_protocol_label(proposal) or f"#{getattr(proposal, 'id', '')}"
+        status_value = str(getattr(proposal, "status", "pending") or "pending")
+        selected_option_id = getattr(proposal, "selected_option_id", None)
+        recommended_option_id = getattr(proposal, "recommended_option_id", None)
+        rendered_options: list[dict[str, Any]] = []
+        for index, option in enumerate(options, start=1):
+            if not isinstance(option, dict):
+                continue
+            option_id = str(option.get("option_id") or chr(64 + index)).strip() or chr(64 + index)
+            rendered_options.append(
+                {
+                    "option_id": option_id,
+                    "title": str(option.get("title") or f"方案{option_id}"),
+                    "summary": option.get("summary"),
+                    "rationale": option.get("rationale"),
+                    "recommended": bool(option_id == recommended_option_id),
+                    "selected": bool(option_id == selected_option_id),
+                    "prompt_on_click": f"接受 {protocol_label} 方案{option_id}",
+                }
+            )
+
+        if not rendered_options:
+            return None
+        return {
+            "proposal_id": getattr(proposal, "id", None),
+            "protocol_label": protocol_label,
+            "status": status_value,
+            "selection_mode": "single",
+            "summary": getattr(proposal, "summary", None),
+            "proposal_type": getattr(proposal, "proposal_type", None),
+            "selected_option_id": selected_option_id,
+            "recommended_option_id": recommended_option_id,
+            "options": rendered_options,
+            "reject_option": {
+                "title": "拒绝全部方案",
+                "prompt_on_click": f"拒绝 {protocol_label} 全部方案",
+            },
+        }
+
+    def _queue_inline_render_block_from_proposal(self, proposal: Any) -> None:
+        block_payload = self._build_proposal_options_render_payload(proposal)
+        if block_payload is None:
+            return
+        self._pending_inline_render_blocks.append(
+            AssistantRenderBlock(type="proposal_options", payload=block_payload)
+        )
+
+    def _take_inline_render_blocks(self) -> list[AssistantRenderBlock]:
+        blocks = list(self._pending_inline_render_blocks)
+        self._pending_inline_render_blocks.clear()
+        return blocks
+
+    def _take_inline_render_block_payloads(self) -> list[dict[str, Any]]:
+        return [block.model_dump(mode="json") for block in self._take_inline_render_blocks()]
+
+    async def _create_assistant_message(
+        self,
+        *,
+        session_id: int,
+        content: str,
+        tool_calls_json: list[dict[str, Any]] | None = None,
+    ) -> list[AssistantRenderBlock]:
+        render_blocks = self._take_inline_render_blocks()
+        await self.repository.create_message(
+            session_id=session_id,
+            role="assistant",
+            content=content,
+            tool_calls_json=tool_calls_json,
+            render_blocks_json=[block.model_dump(mode="json") for block in render_blocks] or None,
+        )
+        return render_blocks
+
+    def _build_assistant_response(self, *, session_id: int, reply: str, actions: list[AssistantAction]) -> AssistantResponse:
+        return AssistantResponse(
+            session_id=session_id,
+            reply=reply,
+            actions=actions,
+            render_blocks=self._take_inline_render_blocks(),
+        )
+
+    def _prefix_if_model_unavailable(self, reply: str, *, user_message: str) -> str:
+        if not getattr(self.gemini, "_last_generation_failed_all", False):
+            return reply
+        if self.text_runtime._prefers_chinese(user_message):
+            notice = "AI 服务暂时不可用，但我仍根据本地规则给出一个临时回复。"
+        else:
+            notice = "AI service is temporarily unavailable, but I can still provide a local rule-based response."
+        stripped = reply.strip()
+        return f"{notice}\n\n{stripped}" if stripped else notice
+
+    def _apply_persisted_proposal_labels(self, reply: str, metadata: dict[str, Any]) -> str:
+        labels = metadata.get("persisted_proposal_labels")
+        if not isinstance(labels, list) or not labels:
+            return reply
+        updated = reply
+        for index, label in enumerate(labels, start=1):
+            if not isinstance(label, str) or label == f"P{index}":
+                continue
+            updated = re.sub(rf"\bP{index}\b", label, updated)
+        return updated
+
+    async def _maybe_build_orchestration_answer_plan(
+        self,
+        *,
+        user_id: str,
+        user_message: str,
+        conductor_result: ConductorResult | None,
+        history,
+        events,
+        tasks,
+        profile,
+        external_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        if conductor_result is None or conductor_result.understanding is None:
+            return None
+        orchestration = conductor_result.understanding.orchestration
+        if orchestration is None or orchestration.conversation_mode != "answer":
+            return None
+        if orchestration.user_goal == "schedule_guidance":
+            return await self._build_rule_based_plan(
+                user_id=user_id,
+                user_message=user_message,
+                events=events,
+                tasks=tasks,
+                profile=profile,
+                external_context=external_context,
+            )
+        if orchestration.user_goal == "progress_followup":
+            return await self._build_progress_followup_plan(
+                user_id=user_id,
+                user_message=user_message,
+                tasks=tasks,
+            )
+        if orchestration.user_goal == "event_context_advice":
+            return await self._build_event_context_advice_plan_from_understanding(
+                user_message=user_message,
+                understanding_slots=conductor_result.understanding.slots,
+                history=history,
+                profile=profile,
+                external_context=external_context,
+            )
+        return None
+
+    async def _maybe_handle_departure_signal_reply(
+        self,
+        *,
+        user_id: str,
+        user_message: str,
+    ) -> str | None:
+        arrival_location = self._extract_arrival_update_location(user_message)
+        if not arrival_location:
+            return None
+
+        signals = await self.signal_manager.list_signals(
+            user_id=user_id,
+            statuses=["new", "evaluated", "proposal_created"],
+            signal_type="departure_readiness",
+            limit=10,
+        )
+        signal = self._select_departure_signal_for_arrival(signals, arrival_location=arrival_location)
+        if signal is None:
+            return None
+
+        await self.signal_manager.dismiss_signal(user_id=user_id, signal_id=signal.id)
+        context = signal.context_json or {}
+        title = str(context.get("title") or context.get("reason") or "这次行程")
+        return (
+            f"收到，你已经在{arrival_location}了。"
+            f"我已把「{title}」这次出发提醒按已到达处理，不会继续催同一次出发；"
+            "我不会把这句话写入长期地点记忆。"
+        )
+
+    async def _maybe_handle_departure_signal_cancel_reply(
+        self,
+        *,
+        user_id: str,
+        session_id: int,
+        user_message: str,
+    ) -> str | None:
+        if not self._looks_like_departure_cancel_reply(user_message):
+            return None
+
+        signals = await self.signal_manager.list_signals(
+            user_id=user_id,
+            statuses=["new", "evaluated", "proposal_created"],
+            signal_type="departure_readiness",
+            limit=10,
+        )
+        if len(signals) != 1:
+            if signals:
+                return "我看到多条出发提醒。请说明要取消哪一个行程，我再生成可确认的取消方案。"
+            return None
+
+        signal = signals[0]
+        context = getattr(signal, "context_json", None) or {}
+        event_id = getattr(signal, "target_id", None) or context.get("event_id")
+        try:
+            event_id = int(event_id)
+        except (TypeError, ValueError):
+            return "我理解你今天不去了，但这条出发提醒没有可操作的日程编号。请说明要取消哪个日程。"
+
+        title = str(context.get("title") or "这次行程")
+        summary = f"建议取消日程“{title}”"
+        proposal = await self.proposal_manager.create_proposal(
+            user_id=user_id,
+            payload=AssistantProposalCreate(
+                session_id=session_id,
+                proposal_type="event_cancel",
+                trigger_type="user_message",
+                status="pending",
+                dedup_key=f"departure_cancel:signal:{getattr(signal, 'id', event_id)}:event:{event_id}",
+                priority=3,
+                summary=summary,
+                payload_json={
+                    "source": "departure_signal_cancel",
+                    "target_title": title,
+                    "signal": {
+                        "id": getattr(signal, "id", None),
+                        "signal_type": getattr(signal, "signal_type", None),
+                        "target_type": getattr(signal, "target_type", None),
+                        "target_id": getattr(signal, "target_id", None),
+                        "context": context,
+                    },
+                    "options": [
+                        {
+                            "option_id": "A",
+                            "title": "取消这个日程",
+                            "summary": summary,
+                            "actions": [{"type": "cancel_event", "payload": {"event_id": event_id}}],
+                            "rationale": "确认后只把该日程标记为取消，不会物理删除。",
+                        }
+                    ],
+                },
+                recommended_option_id="A",
+                is_time_sensitive=True,
+                related_event_id=event_id,
+                source_signal_id=getattr(signal, "id", None),
+            ),
+        )
+        proposal = await self._label_direct_proposal(user_id=user_id, session_id=session_id, proposal=proposal)
+        try:
+            await self.signal_manager.mark_proposal_created(user_id=user_id, signal_id=signal.id)
+        except Exception:
+            logger.bind(component="assistant.signal").warning(
+                "Failed to mark departure cancel signal proposal_created signal_id={}",
+                getattr(signal, "id", None),
+            )
+        label = self._proposal_protocol_label(proposal)
+        prefix = f"{label} " if label else ""
+        return f"收到。{prefix}{summary}已生成，确认前不会取消或删除原日程。你可以回复“确认 {label or '方案A'} 方案A”来执行，或回复“先不要安排”。"
+
+    @staticmethod
+    def _looks_like_departure_cancel_reply(user_message: str) -> bool:
+        text = user_message.strip()
+        return bool(re.search(r"(今天|这次|这个|那就|算了)?.*(不去|不去了|不用去了|不出发|不走了|取消|跳过)", text))
+
+    def _select_departure_signal_for_arrival(self, signals: Sequence[Any], *, arrival_location: str) -> Any | None:
+        if not signals:
+            return None
+        normalized_arrival = self._normalize_location_text(arrival_location)
+        for signal in signals:
+            context = getattr(signal, "context_json", None) or {}
+            location = self._normalize_location_text(str(context.get("location_name") or ""))
+            if location and normalized_arrival and (location in normalized_arrival or normalized_arrival in location):
+                return signal
+        return signals[0]
+
+    @staticmethod
+    def _normalize_location_text(value: str) -> str:
+        return re.sub(r"\s+", "", value.strip(" ，。,；;.!！?？"))
+
+    async def _build_event_context_advice_plan_from_understanding(
+        self,
+        *,
+        user_message: str,
+        understanding_slots: dict[str, Any],
+        history=None,
+        profile,
+        external_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        arrival_location = self._extract_arrival_update_location(user_message)
+        if arrival_location:
+            return {
+                "reply": (
+                    f"收到，你已经在{arrival_location}了。这次出发提醒可以按已到达处理；"
+                    "我不会把这句话写入长期地点记忆。"
+                ),
+                "actions": [],
+            }
+        event_payload = {
+            "title": understanding_slots.get("title"),
+            "start_time": understanding_slots.get("start_time"),
+            "end_time": understanding_slots.get("end_time"),
+            "location_name": understanding_slots.get("location_name"),
+            "event_type": "general",
+        }
+        if event_payload.get("start_time") and not event_payload.get("end_time"):
+            event_payload["end_time"] = (
+                datetime.fromisoformat(str(event_payload["start_time"])) + timedelta(hours=1)
+            ).isoformat()
+        self._fill_sparse_event_advice_payload(event_payload, user_message=user_message)
+        event_payload = self._apply_place_memory_to_event_payload(
+            payload=event_payload,
+            user_message=user_message,
+            external_context=external_context,
+        )
+        event_context = await self._build_event_specific_context(
+            payload=event_payload,
+            profile=profile,
+            user_message=user_message,
+        )
+        runtime_origin = self._recent_runtime_origin_from_history(history or [])
+        if runtime_origin and re.search(r"^那|刚才|前面|这个|那个|几点出发|出发", user_message):
+            event_context["runtime_origin"] = runtime_origin
+            event_context.pop("origin_ambiguity", None)
+            event_context.pop("origin_clarification", None)
+        actions: list[dict[str, Any]] = []
+        if event_payload.get("title") and event_payload.get("start_time") and event_payload.get("end_time"):
+            actions.append(
+                {
+                    "type": "propose_event",
+                    "payload": {
+                        **event_payload,
+                        "commute_summary": event_context.get("commute_summary"),
+                        "weather_summary": event_context.get("weather_summary"),
+                        "advice_summary": event_context.get("advice_summary"),
+                    },
+                }
+            )
+        return {
+            "reply": self._build_event_advice_reply(
+                payload=event_payload,
+                user_message=user_message,
+                event_context=event_context,
+                profile=profile,
+            ),
+            "actions": actions,
+        }
 
     async def _persist_conductor_proposals(
         self,
@@ -1006,6 +3383,59 @@ class AssistantService:
                 )
         if persisted:
             result.metadata["persisted_proposal_ids"] = [proposal.id for proposal in persisted if getattr(proposal, "id", None) is not None]
+            if hasattr(self.proposal_manager, "list_proposals"):
+                active = await self.proposal_manager.list_proposals(
+                    user_id=user_id,
+                    session_id=session_id,
+                    statuses=["pending"],
+                    limit=50,
+                )
+                label_scope = await self.proposal_manager.list_proposals(
+                    user_id=user_id,
+                    session_id=session_id,
+                    statuses=None,
+                    limit=200,
+                )
+            else:
+                active = list(persisted)
+                label_scope = list(persisted)
+            proposals_by_id = {
+                getattr(proposal, "id", None): proposal
+                for proposal in [*label_scope, *active, *persisted]
+                if getattr(proposal, "id", None) is not None
+            }
+            label_by_id = self._assign_stable_proposal_labels(list(proposals_by_id.values()))
+            result.metadata["persisted_proposal_labels"] = [
+                label_by_id.get(getattr(proposal, "id", None), f"P{index}")
+                for index, proposal in enumerate(persisted, start=1)
+            ]
+            labeled_by_id: dict[Any, Any] = {}
+            for proposal_id, label in label_by_id.items():
+                proposal = proposals_by_id.get(proposal_id)
+                if proposal is None:
+                    continue
+                if not isinstance(label, str):
+                    continue
+                payload_json = dict(getattr(proposal, "payload_json", None) or {})
+                if payload_json.get("protocol_label") == label:
+                    labeled_by_id[proposal_id] = proposal
+                    continue
+                payload_json["protocol_label"] = label
+                repository = getattr(self.proposal_manager, "repository", None)
+                if repository is None or not hasattr(repository, "update_proposal"):
+                    try:
+                        setattr(proposal, "payload_json", payload_json)
+                    except Exception:
+                        pass
+                    labeled_by_id[proposal_id] = proposal
+                    continue
+                updated = await repository.update_proposal(
+                    proposal_id,
+                    user_id=user_id,
+                    payload={"payload_json": payload_json},
+                )
+                labeled_by_id[proposal_id] = updated or proposal
+            persisted = [labeled_by_id.get(getattr(proposal, "id", None), proposal) for proposal in persisted]
             for proposal in persisted:
                 await self._persist_active_target_for_proposal(
                     user_id=user_id,
@@ -1013,7 +3443,210 @@ class AssistantService:
                     proposal=proposal,
                     user_message=user_message,
                 )
+                self._queue_inline_render_block_from_proposal(proposal)
+            result.metadata["persisted_proposals"] = persisted
         return persisted
+
+    async def _persist_conversation_state_from_conductor(
+        self,
+        *,
+        user_id: str,
+        session_id: int,
+        result: ConductorResult,
+        user_message: str,
+        external_context: dict[str, Any],
+    ) -> None:
+        if not session_id or result.understanding is None:
+            return
+        conversation_state = self._conversation_state_from_understanding(
+            result=result,
+            user_message=user_message,
+            external_context=external_context,
+        )
+        if conversation_state is None:
+            return
+        active_target = (external_context or {}).get("active_target")
+        active_target_payload = dict(active_target) if isinstance(active_target, dict) else {}
+        try:
+            existing_state = await self.thread_state_repository.get_active_target_state(
+                user_id=user_id,
+                session_id=session_id,
+            )
+            existing_json = existing_state.state_json if existing_state is not None else None
+            existing_active_target = existing_json.get("active_target") if isinstance(existing_json, dict) else None
+            if isinstance(existing_active_target, dict):
+                active_target_payload = dict(existing_active_target)
+        except Exception:
+            pass
+        payload = {
+            "status": "active",
+            "related_task_id": active_target_payload.get("task_id"),
+            "related_event_id": active_target_payload.get("event_id"),
+            "active_proposal_id": active_target_payload.get("proposal_id"),
+            "state_json": {
+                "active_target": active_target_payload,
+                "conversation_state": conversation_state,
+            },
+            "is_waiting_user": result.decision == "clarification",
+            "last_specialist": "conversation_state",
+            "last_user_message_at": datetime.now(ZoneInfo(self.settings.app_timezone)),
+            "last_system_message_at": datetime.now(ZoneInfo(self.settings.app_timezone)),
+        }
+        try:
+            await self.thread_state_repository.upsert_active_target_state(
+                user_id=user_id,
+                session_id=session_id,
+                payload=payload,
+            )
+        except Exception as exc:
+            logger.bind(component="assistant.thread_state").warning(
+                "Failed to persist conversation state: {error}",
+                error=str(exc),
+            )
+
+    def _conversation_state_from_understanding(
+        self,
+        *,
+        result: ConductorResult,
+        user_message: str,
+        external_context: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        understanding = result.understanding
+        if understanding is None or understanding.goal_type != "event" or understanding.intent != "create_event":
+            return None
+        slots = dict(understanding.slots or {})
+        known_slots: dict[str, Any] = {}
+        for key in ("title", "start_time", "end_time", "location_name"):
+            value = slots.get(key)
+            if value:
+                known_slots[key] = value
+        start_raw = slots.get("start_time")
+        if start_raw:
+            try:
+                known_slots["date"] = datetime.fromisoformat(str(start_raw)).date().isoformat()
+            except ValueError:
+                pass
+        elif self._message_has_event_date_reference(user_message):
+            reference_date = datetime.now(ZoneInfo(self.settings.app_timezone)).date()
+            known_slots["date"] = self.text_runtime._extract_target_date(user_message, reference_date).isoformat()
+        if not known_slots:
+            return None
+        existing_state = (external_context or {}).get("conversation_state")
+        existing_goal = existing_state.get("active_goal") if isinstance(existing_state, dict) else None
+        if isinstance(existing_goal, dict) and existing_goal.get("type") == "create_event":
+            existing_slots = existing_goal.get("known_slots")
+            if isinstance(existing_slots, dict):
+                merged_slots = dict(existing_slots)
+                merged_slots.update(known_slots)
+                known_slots = merged_slots
+        missing_fields = [
+            field
+            for field in ("title", "start_time", "end_time_or_duration", "location_name")
+            if field in set(understanding.missing_fields or [])
+        ]
+        return {
+            "active_goal": {
+                "type": "create_event",
+                "status": "collecting_slots" if missing_fields else "proposal_ready",
+                "known_slots": known_slots,
+                "missing_fields": missing_fields,
+                "source_message": user_message,
+            },
+            "last_referenced": {
+                "proposal_id": None,
+                "event_id": None,
+                "task_id": None,
+            },
+            "recent_entities": [
+                {
+                    "kind": "event",
+                    "label": str(known_slots.get("title") or known_slots.get("location_name") or "event"),
+                }
+            ],
+        }
+
+    @staticmethod
+    def _message_has_event_date_reference(message: str) -> bool:
+        return bool(
+            re.search(
+                r"今天|明天|后天|大后天|昨天|前天|本周|这周|下周|周[一二三四五六日天]|"
+                r"(?:下个?月|下月)(?:的)?(?:\d{1,2}|[一二两三四五六七八九十]{1,3})[日号]?|"
+                r"\d{1,2}\s*月\s*\d{1,2}\s*[日号]?|\d{4}-\d{1,2}-\d{1,2}",
+                message,
+            )
+        )
+
+    def _assign_stable_proposal_labels(self, proposals: Sequence[Any]) -> dict[Any, str]:
+        label_by_id: dict[Any, str] = {}
+        used_numbers: set[int] = set()
+        needs_label: list[Any] = []
+        for proposal in sorted(proposals, key=lambda item: getattr(item, "id", 0) or 0):
+            proposal_id = getattr(proposal, "id", None)
+            payload_json = getattr(proposal, "payload_json", None) or {}
+            existing_label = payload_json.get("protocol_label") if isinstance(payload_json, dict) else None
+            match = re.fullmatch(r"P(?P<number>\d+)", existing_label or "")
+            if match:
+                number = int(match.group("number"))
+                if number not in used_numbers:
+                    used_numbers.add(number)
+                    label_by_id[proposal_id] = existing_label
+                    continue
+            needs_label.append(proposal)
+        next_number = max(used_numbers, default=0) + 1
+        for proposal in needs_label:
+            while next_number in used_numbers:
+                next_number += 1
+            proposal_id = getattr(proposal, "id", None)
+            label_by_id[proposal_id] = f"P{next_number}"
+            used_numbers.add(next_number)
+            next_number += 1
+        return label_by_id
+
+    async def _label_direct_proposal(self, *, user_id: str, session_id: int, proposal: Any) -> Any:
+        active = await self.proposal_manager.list_proposals(
+            user_id=user_id,
+            session_id=session_id,
+            statuses=["pending"],
+            limit=50,
+        )
+        proposals_by_id = {
+            getattr(item, "id", None): item
+            for item in [*active, proposal]
+            if getattr(item, "id", None) is not None
+        }
+        label_by_id = self._assign_stable_proposal_labels(list(proposals_by_id.values()))
+        labelled = proposal
+        repository = getattr(self.proposal_manager, "repository", None)
+        for proposal_id, label in label_by_id.items():
+            item = proposals_by_id.get(proposal_id)
+            if item is None:
+                continue
+            payload_json = dict(getattr(item, "payload_json", None) or {})
+            if payload_json.get("protocol_label") == label:
+                continue
+            payload_json["protocol_label"] = label
+            if repository is not None and hasattr(repository, "update_proposal"):
+                updated = await repository.update_proposal(
+                    proposal_id,
+                    user_id=user_id,
+                    payload={"payload_json": payload_json},
+                )
+                if updated is not None and proposal_id == getattr(proposal, "id", None):
+                    labelled = updated
+            else:
+                try:
+                    setattr(item, "payload_json", payload_json)
+                except Exception:
+                    pass
+        return labelled
+
+    @staticmethod
+    def _proposal_protocol_label(proposal: Any) -> str | None:
+        payload_json = getattr(proposal, "payload_json", None) or {}
+        if not isinstance(payload_json, dict):
+            return None
+        label = str(payload_json.get("protocol_label") or "").strip()
+        return label or None
 
     async def _persist_active_target_for_proposal(
         self,
@@ -1030,12 +3663,26 @@ class AssistantService:
             return
         active_target["source"] = "conductor_proposal"
         active_target["last_user_message"] = user_message
+        conversation_state = None
+        try:
+            existing_state = await self.thread_state_repository.get_active_target_state(
+                user_id=user_id,
+                session_id=session_id,
+            )
+            existing_json = existing_state.state_json if existing_state is not None else None
+            if isinstance(existing_json, dict) and isinstance(existing_json.get("conversation_state"), dict):
+                conversation_state = existing_json["conversation_state"]
+        except Exception:
+            conversation_state = None
         payload = {
             "status": "active",
             "related_task_id": active_target.get("task_id"),
             "related_event_id": active_target.get("event_id"),
             "active_proposal_id": active_target.get("proposal_id"),
-            "state_json": {"active_target": active_target},
+            "state_json": {
+                "active_target": active_target,
+                **({"conversation_state": conversation_state} if conversation_state is not None else {}),
+            },
             "is_waiting_user": getattr(proposal, "status", None) == "pending",
             "last_specialist": "proposal_manager",
             "last_user_message_at": datetime.now(ZoneInfo(self.settings.app_timezone)),
@@ -1147,14 +3794,14 @@ class AssistantService:
         mode = (self.settings.assistant_conductor_mode or "legacy").lower()
         if mode == "legacy":
             return None
-        if mode not in {"shadow", "proposal"}:
+        if mode not in {"shadow", "proposal", "primary"}:
             logger.bind(component="assistant.conductor").warning(
                 "Unknown ASSISTANT_CONDUCTOR_MODE={mode}; falling back to legacy",
                 mode=mode,
             )
             return None
         if self.conductor is None:
-            self.conductor = AssistantConductor.build_default(self.text_runtime)
+            self.conductor = AssistantConductor.build_default(self.text_runtime, semantic_extractor=self.gemini)
 
         context = AssistantAgentContext(
             user_id=user_id,
@@ -1177,6 +3824,13 @@ class AssistantService:
                     user_message=user_message,
                     external_context=external_context,
                 )
+                await self._persist_conversation_state_from_conductor(
+                    user_id=user_id,
+                    session_id=session_id,
+                    result=result,
+                    user_message=user_message,
+                    external_context=external_context,
+                )
             logger.bind(component="assistant.conductor").info(
                 "Assistant conductor result: {result}",
                 result=result.to_log_payload(),
@@ -1188,147 +3842,6 @@ class AssistantService:
                 error=str(exc),
             )
             return None
-
-    async def _run_workflow_for_message(
-        self,
-        *,
-        user_id: str,
-        session_id: int,
-        user_message: str,
-        history,
-        profile,
-        external_context: dict[str, Any] | None = None,
-    ) -> WorkflowState:
-        initial_state: WorkflowState = {
-            "user_message": user_message,
-            "user_id": user_id,
-            "session_id": str(session_id),
-            "history": history,
-            "profile": profile,
-            "external_context": dict(external_context or {}),
-            "intent": None,
-            "extracted_slots": {},
-            "confidence": 0.0,
-            "existing_events": [],
-            "existing_tasks": [],
-            "habits": [],
-            "weather": None,
-            "traffic": None,
-            "actions": [],
-            "conflicts": [],
-            "suggestions": [],
-            "reply": "",
-            "needs_clarification": False,
-            "clarification_question": None,
-            "retry_count": 0,
-            "use_react": False,
-            "react_observations": [],
-            "react_steps": [],
-            "assistant_service": self,
-        }
-        return await run_workflow(self.workflow_graph, initial_state)
-
-    async def _respond_with_workflow(
-        self,
-        *,
-        user_id: str,
-        session_id: int,
-        session_title: str,
-        session_context: dict[str, Any],
-        user_message: str,
-        history,
-        profile,
-        memory_candidates: list[Any] | None = None,
-        external_context: dict[str, Any] | None = None,
-    ) -> AssistantResponse:
-        workflow_state = await self._run_workflow_for_message(
-            user_id=user_id,
-            session_id=session_id,
-            user_message=user_message,
-            history=history,
-            profile=profile,
-            external_context=external_context,
-        )
-        actions = [self._ensure_assistant_action(action) for action in workflow_state.get("actions", [])]
-        reply = self._format_reply_text(workflow_state.get("reply", ""), user_message=user_message)
-        reply = self._append_memory_candidate_notice(
-            reply,
-            user_message=user_message,
-            memory_candidates=memory_candidates or [],
-        )
-
-        await self._persist_pending_action(
-            user_id=user_id,
-            session_id=session_id,
-            existing_context=session_context,
-            actions=actions,
-        )
-        await self.repository.create_message(
-            session_id=session_id,
-            role="assistant",
-            content=reply,
-            tool_calls_json=[action.model_dump() for action in actions] or None,
-        )
-        await self._maybe_autorename_session(
-            user_id=user_id,
-            session_id=session_id,
-            session_title=session_title,
-            user_message=user_message,
-        )
-        return AssistantResponse(session_id=session_id, reply=reply, actions=actions)
-
-    async def _respond_with_workflow_stream(
-        self,
-        *,
-        user_id: str,
-        session_id: int,
-        session_title: str,
-        session_context: dict[str, Any],
-        user_message: str,
-        history,
-        profile,
-        memory_candidates: list[Any] | None = None,
-        external_context: dict[str, Any] | None = None,
-    ) -> AsyncIterator[dict[str, Any]]:
-        workflow_state = await self._run_workflow_for_message(
-            user_id=user_id,
-            session_id=session_id,
-            user_message=user_message,
-            history=history,
-            profile=profile,
-            external_context=external_context,
-        )
-        actions = [self._ensure_assistant_action(action) for action in workflow_state.get("actions", [])]
-        reply = self._format_reply_text(workflow_state.get("reply", ""), user_message=user_message)
-        reply = self._append_memory_candidate_notice(
-            reply,
-            user_message=user_message,
-            memory_candidates=memory_candidates or [],
-        )
-
-        for chunk in self._chunk_text(reply):
-            yield {"type": "token", "text": chunk}
-
-        await self._persist_pending_action(
-            user_id=user_id,
-            session_id=session_id,
-            existing_context=session_context,
-            actions=actions,
-        )
-        await self.repository.create_message(
-            session_id=session_id,
-            role="assistant",
-            content=reply,
-            tool_calls_json=[action.model_dump() for action in actions] or None,
-        )
-        await self._maybe_autorename_session(
-            user_id=user_id,
-            session_id=session_id,
-            session_title=session_title,
-            user_message=user_message,
-        )
-        yield {"type": "actions", "actions": [action.model_dump() for action in actions]}
-        yield {"type": "done", "session_id": session_id, "full_reply": reply}
 
     def _format_reply_text(self, reply: str, *, user_message: str) -> str:
         return self.formatter.format_reply(reply, prefers_chinese=self.text_runtime._prefers_chinese(user_message))
@@ -1412,6 +3925,7 @@ class AssistantService:
         tasks,
         profile,
         external_context,
+        allow_answer_like_rule_short_circuit: bool = True,
     ) -> dict[str, Any]:
         return await self.plan_runtime.build_plan(
             user_id=user_id,
@@ -1421,6 +3935,7 @@ class AssistantService:
             tasks=tasks,
             profile=profile,
             external_context=external_context,
+            allow_answer_like_rule_short_circuit=allow_answer_like_rule_short_circuit,
         )
 
     async def _execute_actions(
@@ -1452,7 +3967,7 @@ class AssistantService:
         task_count: int,
         external_context: dict[str, Any] | None = None,
     ) -> str:
-        return self.plan_runtime.compose_reply(
+        reply = self.plan_runtime.compose_reply(
             user_message=user_message,
             base_reply=base_reply,
             actions=actions,
@@ -1462,6 +3977,7 @@ class AssistantService:
             task_count=task_count,
             external_context=external_context,
         )
+        return self._prefix_if_model_unavailable(reply, user_message=user_message)
 
     def _compose_action_reply(
         self,
@@ -1680,12 +4196,14 @@ class AssistantService:
                 return followup_plan
 
         if intent == "event_context_advice":
-            event_payload = self.text_runtime._build_rule_based_event_payload(user_message)
-            event_payload = self._apply_place_memory_to_event_payload(
-                payload=event_payload,
-                user_message=user_message,
-                external_context=external_context,
-            )
+            start_time, end_time = self.text_runtime._extract_time_range(user_message)
+            event_payload = {
+                "title": None,
+                "start_time": start_time.isoformat() if start_time else None,
+                "end_time": end_time.isoformat() if end_time else None,
+                "location_name": None,
+                "event_type": "general",
+            }
             event_context = await self._build_event_specific_context(
                 payload=event_payload,
                 profile=profile,
@@ -1715,12 +4233,6 @@ class AssistantService:
             }
 
         if intent == "create_task":
-            payload = self.text_runtime._build_rule_based_task_payload(user_message)
-            if payload.get("content"):
-                return {
-                    "reply": self._build_task_preflight_reply(payload=payload, user_message=user_message),
-                    "actions": [{"type": "create_task", "payload": payload}],
-                }
             return {
                 "reply": self.formatter.build_clarification_reply(
                     intent="create_task",
@@ -1730,35 +4242,13 @@ class AssistantService:
                 "actions": [],
             }
 
-        event_payload = self.text_runtime._build_rule_based_event_payload(user_message)
-        event_payload = self._apply_place_memory_to_event_payload(
-            payload=event_payload,
-            user_message=user_message,
-            external_context=external_context,
-        )
-        if event_payload.get("title") and event_payload.get("start_time") and event_payload.get("end_time"):
-            event_context = await self._build_event_specific_context(
-                payload=event_payload,
-                profile=profile,
-                user_message=user_message,
-            )
-            return {
-                "reply": self._build_event_preflight_reply(
-                    payload=event_payload,
-                    user_message=user_message,
-                    external_context=external_context,
-                    event_context=event_context,
-                ),
-                "actions": [{"type": "create_event", "payload": event_payload}],
-            }
-
         if intent == "create_event":
+            start_time, end_time = self.text_runtime._extract_time_range(user_message)
             missing_fields = []
-            if not event_payload.get("title") or event_payload.get("title") == "New event":
-                missing_fields.append("title")
-            if not event_payload.get("start_time"):
+            missing_fields.append("title")
+            if not start_time:
                 missing_fields.append("start_time")
-            if not event_payload.get("end_time"):
+            if not end_time:
                 missing_fields.append("end_time")
             return {
                 "reply": self.formatter.build_clarification_reply(
@@ -1832,6 +4322,12 @@ class AssistantService:
             parts.append(f"地点是 {location_name}。")
             if event_context.get("commute_summary"):
                 parts.append(event_context["commute_summary"])
+            elif event_context.get("runtime_origin"):
+                parts.append(f"我会优先按你刚说的“{event_context['runtime_origin']}”作为出发地。")
+            elif event_context.get("origin_clarification"):
+                parts.append(f"我还不能判断你届时从哪里出发，{event_context['origin_clarification']}")
+            elif re.search(r"几点出发|多久出发|什么时候出发|要提前多久|通勤|怎么去", user_message, re.I):
+                parts.append("我还不能判断你届时从家、学校还是其他地方出发，请先补充出发地。")
             elif not (profile.home_location_name or profile.work_location_name):
                 parts.append("你还没有设置 home/work 地点，所以我暂时不能精确估算出发时间。")
             if event_context.get("weather_summary"):
@@ -1845,6 +4341,12 @@ class AssistantService:
         parts = [f"For '{title}' at {location_name}:"]
         if event_context.get("commute_summary"):
             parts.append(str(event_context["commute_summary"]))
+        elif event_context.get("runtime_origin"):
+            parts.append(f"I will prioritize '{event_context['runtime_origin']}' as the departure origin.")
+        elif event_context.get("origin_clarification"):
+            parts.append(f"I still need the departure origin. {event_context['origin_clarification']}")
+        elif re.search(r"几点出发|多久出发|什么时候出发|要提前多久|commute|how to go|how long", user_message, re.I):
+            parts.append("I still need the departure origin before I can estimate a departure time.")
         if event_context.get("weather_summary"):
             parts.append(str(event_context["weather_summary"]))
         if event_context.get("advice_summary"):
@@ -1852,6 +4354,34 @@ class AssistantService:
         if payload.get("start_time") and payload.get("end_time"):
             parts.append("If this looks good, reply 'confirm this suggestion' and I will create the event.")
         return " ".join(parts)
+
+    def _fill_sparse_event_advice_payload(self, payload: dict[str, Any], *, user_message: str) -> None:
+        if not payload.get("title"):
+            match = re.search(r"(开会|会议|体检|上课|办手续|见面|聚餐|答辩|面试)", user_message)
+            if match:
+                payload["title"] = match.group(1)
+        if not payload.get("location_name"):
+            match = re.search(r"(?:去|到|在)\s*([\u4e00-\u9fa5A-Za-z0-9]{2,12})\s*(?:开会|会议|体检|上课|办手续|见面|聚餐|答辩|面试)", user_message)
+            if match:
+                payload["location_name"] = match.group(1)
+
+    def _recent_runtime_origin_from_history(self, history) -> str | None:
+        for message in reversed(history or []):
+            role = getattr(message, "role", None) if not isinstance(message, dict) else message.get("role")
+            content = getattr(message, "content", None) if not isinstance(message, dict) else message.get("content")
+            if role != "user" or not content:
+                continue
+            match = re.search(r"(?:我(?:明天|今天|下午|晚上|早上|上午)?(?:会)?(?:先)?在|在)\s*([\u4e00-\u9fa5A-Za-z0-9]{1,12})", str(content))
+            if match:
+                return match.group(1).strip()
+        return None
+
+    @staticmethod
+    def _extract_arrival_update_location(user_message: str) -> str | None:
+        match = re.search(r"我(?:已经|已|现在)?在\s*([\u4e00-\u9fa5A-Za-z0-9]{1,12})\s*了", user_message)
+        if not match:
+            return None
+        return match.group(1).strip()
 
     def _build_task_preflight_reply(self, *, payload: dict[str, Any], user_message: str) -> str:
         if self.text_runtime._prefers_chinese(user_message):
@@ -1888,21 +4418,29 @@ class AssistantService:
         )
 
     def _hydrate_event_payload(self, *, payload: dict[str, Any], user_message: str) -> dict[str, Any]:
-        extracted = self.text_runtime._build_rule_based_event_payload(user_message)
+        start_time, end_time = self.text_runtime._extract_time_range(user_message)
+        extracted = {
+            "start_time": start_time.isoformat() if start_time else None,
+            "end_time": end_time.isoformat() if end_time else None,
+            "event_type": "general",
+        }
         enriched = dict(payload)
-        for key in ("title", "description", "start_time", "end_time", "location_name", "location_coords", "event_type"):
+        for key in ("start_time", "end_time", "event_type"):
             if enriched.get(key) in (None, "", "event", "new event", "New event") and extracted.get(key):
                 enriched[key] = extracted[key]
-        enriched["title"] = self.text_runtime._normalize_event_title(
-            current_title=enriched.get("title"),
-            user_message=user_message,
-        )
         return enriched
 
     def _hydrate_task_payload(self, *, payload: dict[str, Any], user_message: str) -> dict[str, Any]:
-        extracted = self.text_runtime._build_rule_based_task_payload(user_message)
+        deadline = self.text_runtime._extract_task_deadline(user_message)
+        extracted = {
+            "deadline": deadline.isoformat() if deadline else None,
+            "estimated_duration_minutes": self.text_runtime._extract_duration_minutes(user_message),
+            "priority": 3,
+            "can_split": bool(re.search(r"拆分|拆成|分成|分两次|分几次|分块", user_message)),
+            "preferred_period": self.text_runtime._extract_period_preference(user_message),
+        }
         enriched = dict(payload)
-        for key in ("content", "description", "deadline", "estimated_duration_minutes", "priority", "can_split", "preferred_period"):
+        for key in ("deadline", "estimated_duration_minutes", "priority", "can_split", "preferred_period"):
             if enriched.get(key) in (None, "", False) and extracted.get(key) not in (None, "", False):
                 enriched[key] = extracted[key]
         return enriched
@@ -1915,14 +4453,7 @@ class AssistantService:
         tasks,
     ) -> dict[str, Any] | None:
         followup_reminders = await self.reminder_repository.list_recent_task_followups(user_id=user_id, limit=6)
-        active_tasks = [task for task in tasks if (task.status or "pending") not in {"done"}]
-        active_tasks.sort(
-            key=lambda task: (
-                -(task.completed_minutes or 0),
-                -(task.scheduled_minutes or 0),
-                task.id,
-            )
-        )
+        active_tasks = self._select_progress_followup_tasks(user_message=user_message, tasks=tasks)
 
         target_task_ids = [task.id for task in active_tasks[:3]]
         schedule_items = await self.suggestion_service.build_suggestions_for_dates(
@@ -1931,9 +4462,6 @@ class AssistantService:
             limit=6,
             related_task_ids=target_task_ids or None,
         )
-
-        if not followup_reminders and not schedule_items and not active_tasks:
-            return None
 
         prefers_chinese = self.text_runtime._prefers_chinese(user_message)
         reply = self._build_progress_followup_reply(
@@ -1956,6 +4484,53 @@ class AssistantService:
             )
         return {"reply": reply, "actions": actions}
 
+    def _select_progress_followup_tasks(self, *, user_message: str, tasks) -> list[Any]:
+        candidates = [task for task in tasks if (task.status or "pending") not in {"canceled", "archived"}]
+        ranked_candidates = self._rank_progress_followup_tasks(user_message=user_message, tasks=candidates)
+        mentioned = [
+            task
+            for task in ranked_candidates
+            if self._score_progress_followup_task(user_message=user_message, task=task) > 0
+        ]
+        if mentioned:
+            return mentioned
+        active_tasks = [task for task in candidates if (task.status or "pending") not in {"done"}]
+        return self._rank_progress_followup_tasks(user_message=user_message, tasks=active_tasks)
+
+    def _rank_progress_followup_tasks(self, *, user_message: str, tasks) -> list[Any]:
+        scored: list[tuple[int, int, int, Any]] = []
+        for task in tasks:
+            score = self._score_progress_followup_task(user_message=user_message, task=task)
+            scored.append((score, -(task.completed_minutes or 0), -(task.scheduled_minutes or 0), task))
+        scored.sort(key=lambda item: (-item[0], item[1], item[2], getattr(item[3], "id", 0)))
+        ranked = [item[3] for item in scored]
+        return ranked if ranked else list(tasks)
+
+    def _score_progress_followup_task(self, *, user_message: str, task) -> int:
+        title = str(getattr(task, "content", "") or "").strip()
+        if not title:
+            return 0
+        message = user_message or ""
+        if title and title in message:
+            return 8
+        compact_title = re.sub(r"[^\u4e00-\u9fa5A-Za-z0-9]", "", title)
+        compact_message = re.sub(r"[^\u4e00-\u9fa5A-Za-z0-9]", "", message)
+        if compact_title and compact_title in compact_message:
+            return 7
+        if re.search(r"[\u4e00-\u9fa5]", title):
+            best = 0
+            for size in range(2, min(len(compact_title), 4) + 1):
+                for index in range(0, len(compact_title) - size + 1):
+                    token = compact_title[index : index + size]
+                    if token in compact_message:
+                        best = max(best, min(size, 4))
+            if best:
+                return best
+        for token in re.findall(r"[\u4e00-\u9fa5A-Za-z0-9]{2,}", title):
+            if token and token in message:
+                return max(4, len(token))
+        return 0
+
     def _build_progress_followup_reply(
         self,
         *,
@@ -1968,11 +4543,14 @@ class AssistantService:
             parts: list[str] = []
             if tasks:
                 task = tasks[0]
-                parts.append(
-                    f"你当前最值得继续推进的是“{task.content}”，"
-                    f"已完成 {task.completed_minutes} 分钟，"
-                    f"还剩 {task.remaining_minutes if task.remaining_minutes is not None else '未知'} 分钟。"
-                )
+                if (task.status or "pending") == "done":
+                    parts.append(f"你问到的任务“{task.content}”目前已完成，已完成 {task.completed_minutes} 分钟。")
+                else:
+                    parts.append(
+                        f"你当前最值得继续推进的是“{task.content}”，"
+                        f"已完成 {task.completed_minutes} 分钟，"
+                        f"还剩 {task.remaining_minutes if task.remaining_minutes is not None else '未知'} 分钟。"
+                    )
             if followup_reminders:
                 parts.append("最近执行反馈：" + "；".join(reminder.message for reminder in followup_reminders[:2]) + "。")
             if schedule_items:
@@ -1986,10 +4564,13 @@ class AssistantService:
         parts = []
         if tasks:
             task = tasks[0]
-            parts.append(
-                f"Your main active task is '{task.content}', with {task.completed_minutes} minutes completed "
-                f"and {task.remaining_minutes if task.remaining_minutes is not None else 'unknown'} minutes remaining."
-            )
+            if (task.status or "pending") == "done":
+                parts.append(f"The task you asked about, '{task.content}', is done with {task.completed_minutes} minutes completed.")
+            else:
+                parts.append(
+                    f"Your main active task is '{task.content}', with {task.completed_minutes} minutes completed "
+                    f"and {task.remaining_minutes if task.remaining_minutes is not None else 'unknown'} minutes remaining."
+                )
         if followup_reminders:
             parts.append("Recent execution updates: " + "; ".join(reminder.message for reminder in followup_reminders[:2]) + ".")
         if schedule_items:

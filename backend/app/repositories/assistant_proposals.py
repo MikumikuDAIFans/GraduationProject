@@ -39,7 +39,7 @@ class AssistantProposalRepository(AsyncRepository[AssistantProposal]):
         await self.get_or_create_user(user_id)
         stmt = select(AssistantProposal).where(AssistantProposal.user_id == user_id)
         if session_id is not None:
-            stmt = stmt.where(AssistantProposal.session_id == session_id)
+            stmt = stmt.where(or_(AssistantProposal.session_id == session_id, AssistantProposal.session_id.is_(None)))
         if statuses:
             stmt = stmt.where(AssistantProposal.status.in_(list(statuses)))
         if proposal_type:

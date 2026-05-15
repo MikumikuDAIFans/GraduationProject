@@ -1,0 +1,1011 @@
+{
+  "run_id": "20260515053916",
+  "api_base": "http://127.0.0.1:18741/api",
+  "web_url": "http://127.0.0.1:8894",
+  "db_path": "E:\\GraduationProject\\backend\\data\\browser_full_acceptance_20260515053916.db",
+  "memory_path": "E:\\GraduationProject\\backend\\data\\browser_full_acceptance_memory_20260515053916",
+  "summary": {
+    "total": 99,
+    "pass": 94,
+    "fail": 0,
+    "tracked": 5
+  },
+  "results": [
+    {
+      "id": "BAI-P0-001",
+      "title": "明确日程创建必须先提案",
+      "status": "PASS",
+      "duration_ms": 4864,
+      "evidence": [
+        "pending proposals=1"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-002",
+      "title": "单 proposal 自然语言确认执行",
+      "status": "PASS",
+      "duration_ms": 5883,
+      "evidence": [
+        "events=1"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-003",
+      "title": "重复确认幂等",
+      "status": "PASS",
+      "duration_ms": 7593,
+      "evidence": [
+        "repeat confirm kept one event"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-004",
+      "title": "模糊任务请求不得直接拆日程",
+      "status": "PASS",
+      "duration_ms": 3247,
+      "evidence": [
+        "no event writes for vague request"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-005",
+      "title": "任务 / 日程类型澄清",
+      "status": "PASS",
+      "duration_ms": 6104,
+      "evidence": [
+        "proposals=2"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-006",
+      "title": "自然语言修改 proposal",
+      "status": "PASS",
+      "duration_ms": 5847,
+      "evidence": [
+        "revision chain visible"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-007",
+      "title": "拒绝 proposal",
+      "status": "PASS",
+      "duration_ms": 6945,
+      "evidence": [
+        "rejected without writes"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-008",
+      "title": "多 proposal 下可以必须澄清",
+      "status": "PASS",
+      "duration_ms": 5943,
+      "evidence": [
+        "ambiguous confirmation preserved two pending proposals"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-009",
+      "title": "多 proposal 带标识确认",
+      "status": "PASS",
+      "duration_ms": 5870,
+      "evidence": [
+        "小组会调整"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-010",
+      "title": "冲突日程必须给多方案",
+      "status": "PASS",
+      "duration_ms": 3654,
+      "evidence": [
+        "pending proposals=1"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-011",
+      "title": "批量调整必须拆成可确认动作",
+      "status": "PASS",
+      "duration_ms": 3370,
+      "evidence": [
+        "pending proposals=1"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-012",
+      "title": "过大批量调整必须防失控",
+      "status": "PASS",
+      "duration_ms": 3727,
+      "evidence": [
+        "oversized batch guarded"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-013",
+      "title": "多轮日程槽位补全必须继承上下文",
+      "status": "PASS",
+      "duration_ms": 6484,
+      "evidence": [
+        "single pending proposal retained context"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-014",
+      "title": "单 pending proposal 下纯时间补充必须走 revise",
+      "status": "PASS",
+      "duration_ms": 5910,
+      "evidence": [
+        "time-only supplement revised proposal"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-015",
+      "title": "执行导向话术不得复制 proposal",
+      "status": "PASS",
+      "duration_ms": 5896,
+      "evidence": [
+        "no duplicate proposal"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-016",
+      "title": "带时间和地点的提醒不得误判为普通任务",
+      "status": "PASS",
+      "duration_ms": 3278,
+      "evidence": [
+        "timed reminder created event proposal"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-017",
+      "title": "连续发送与加载状态",
+      "status": "PASS",
+      "duration_ms": 39341,
+      "evidence": [
+        "send lock avoided duplicate proposal"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-001",
+      "title": "不完整日程应澄清",
+      "status": "PASS",
+      "duration_ms": 25480,
+      "evidence": [
+        "events=0, tasks=0, proposals=0, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-002",
+      "title": "带自然语言时间的日程",
+      "status": "PASS",
+      "duration_ms": 4325,
+      "evidence": [
+        "pending proposals=1",
+        "events=0, tasks=0, proposals=1, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-003",
+      "title": "默认时长推断",
+      "status": "PASS",
+      "duration_ms": 3283,
+      "evidence": [
+        "pending proposals=1",
+        "events=0, tasks=0, proposals=1, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-004",
+      "title": "任务创建",
+      "status": "PASS",
+      "duration_ms": 27467,
+      "evidence": [
+        "events=0, tasks=0, proposals=1, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-008",
+      "title": "查询进展不应写入",
+      "status": "PASS",
+      "duration_ms": 4282,
+      "evidence": [
+        "events=0, tasks=0, proposals=0, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-012",
+      "title": "跨午夜时间段解析",
+      "status": "PASS",
+      "duration_ms": 4303,
+      "evidence": [
+        "pending proposals=1",
+        "events=0, tasks=0, proposals=1, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-014",
+      "title": "同句包含多个日程目标",
+      "status": "PASS",
+      "duration_ms": 3267,
+      "evidence": [
+        "events=0, tasks=0, proposals=1, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-015",
+      "title": "任务与日程混合句拆分语义",
+      "status": "PASS",
+      "duration_ms": 17900,
+      "evidence": [
+        "events=0, tasks=0, proposals=0, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-101",
+      "title": "明确 origin 的出发建议",
+      "status": "PASS",
+      "duration_ms": 5455,
+      "evidence": [
+        "events=0, tasks=0, proposals=1, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-102",
+      "title": "origin 不确定必须澄清或条件化",
+      "status": "PASS",
+      "duration_ms": 3237,
+      "evidence": [
+        "events=0, tasks=0, proposals=0, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-110",
+      "title": "天气影响不改日程",
+      "status": "PASS",
+      "duration_ms": 3225,
+      "evidence": [
+        "events=0, tasks=0, proposals=0, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-111",
+      "title": "外部地图失败降级",
+      "status": "PASS",
+      "duration_ms": 3296,
+      "evidence": [
+        "events=0, tasks=0, proposals=0, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-304",
+      "title": "隐式偏好不得低置信写入",
+      "status": "PASS",
+      "duration_ms": 4258,
+      "evidence": [
+        "events=0, tasks=0, proposals=0, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-307",
+      "title": "对话事实不等于长期偏好",
+      "status": "PASS",
+      "duration_ms": 25512,
+      "evidence": [
+        "events=0, tasks=0, proposals=0, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-401",
+      "title": "Proposal 文本结构",
+      "status": "PASS",
+      "duration_ms": 3343,
+      "evidence": [
+        "pending proposals=1",
+        "events=0, tasks=0, proposals=1, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-409",
+      "title": "Markdown 与特殊字符安全",
+      "status": "PASS",
+      "duration_ms": 4306,
+      "evidence": [
+        "events=0, tasks=0, proposals=1, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-101",
+      "title": "不得硬分句误拆",
+      "status": "PASS",
+      "duration_ms": 3221,
+      "evidence": [
+        "events=0, tasks=0, proposals=1, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-102",
+      "title": "不得绕过 proposal 直接写入",
+      "status": "PASS",
+      "duration_ms": 3299,
+      "evidence": [
+        "pending proposals=1",
+        "events=0, tasks=0, proposals=1, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-103",
+      "title": "普通建议不应触发旧 workflow 文案",
+      "status": "PASS",
+      "duration_ms": 14887,
+      "evidence": [
+        "events=0, tasks=0, proposals=0, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-104",
+      "title": "未知请求应澄清",
+      "status": "PASS",
+      "duration_ms": 47813,
+      "evidence": [
+        "events=0, tasks=0, proposals=0, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-106",
+      "title": "无确认不写长期记忆",
+      "status": "PASS",
+      "duration_ms": 19143,
+      "evidence": [
+        "events=0, tasks=0, proposals=1, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-107",
+      "title": "中文相对时间不解析为持续时长",
+      "status": "PASS",
+      "duration_ms": 3199,
+      "evidence": [
+        "events=0, tasks=0, proposals=1, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-005",
+      "title": "任务排程",
+      "status": "PASS",
+      "duration_ms": 3245,
+      "evidence": [
+        "pending proposals=1"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-006",
+      "title": "有限期重复任务完成判定",
+      "status": "PASS",
+      "duration_ms": 11053,
+      "evidence": [
+        "completion path generated or preserved quantifiable task state"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-007",
+      "title": "取消重复任务单个切片",
+      "status": "PASS",
+      "duration_ms": 4335,
+      "evidence": [
+        "single slice not directly canceled"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-009",
+      "title": "多轮时间补全后再补地点",
+      "status": "PASS",
+      "duration_ms": 9298,
+      "evidence": [
+        "proposals=4"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-010",
+      "title": "先改标题再改时间",
+      "status": "PASS",
+      "duration_ms": 8539,
+      "evidence": [
+        "proposals=3"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-011",
+      "title": "只给结束时间的部分修正",
+      "status": "PASS",
+      "duration_ms": 4805,
+      "evidence": [
+        "proposals=2"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-017",
+      "title": "拒绝后下一句不要继续执行",
+      "status": "PASS",
+      "duration_ms": 10705,
+      "evidence": [
+        "proposals=2"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-105",
+      "title": "补充回答不当成全新任务",
+      "status": "PASS",
+      "duration_ms": 8097,
+      "evidence": [
+        "proposals=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-013",
+      "title": "相对日期与绝对日期混用",
+      "status": "PASS",
+      "duration_ms": 40073,
+      "evidence": [
+        "conditional date handled without write"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-016",
+      "title": "模糊去学校结合记忆",
+      "status": "PASS",
+      "duration_ms": 6449,
+      "evidence": [
+        "confirmed place memory available"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-103",
+      "title": "当前线程位置优先",
+      "status": "PASS",
+      "duration_ms": 28247,
+      "evidence": [
+        "runtime context only"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-108",
+      "title": "临时位置不污染长期地点",
+      "status": "PASS",
+      "duration_ms": 49174,
+      "evidence": [
+        "runtime context only"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-112",
+      "title": "出发地和目的地相同",
+      "status": "PASS",
+      "duration_ms": 29169,
+      "evidence": [
+        "runtime context only"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-104",
+      "title": "常用地点别名解析",
+      "status": "PASS",
+      "duration_ms": 3279,
+      "evidence": [
+        "pending proposals=1"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-109",
+      "title": "多地点同名歧义",
+      "status": "PASS",
+      "duration_ms": 8461,
+      "evidence": [
+        "ambiguous place clarified"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-105",
+      "title": "出发前提醒",
+      "status": "PASS",
+      "duration_ms": 2857,
+      "evidence": [
+        "departure followup visible"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-106",
+      "title": "出发提醒用户已到达",
+      "status": "PASS",
+      "duration_ms": 4239,
+      "evidence": [
+        "arrival handled without memory write"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-107",
+      "title": "出发提醒取消行程",
+      "status": "PASS",
+      "duration_ms": 4577,
+      "evidence": [
+        "cancel request did not directly cancel event"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-201",
+      "title": "deadline 风险触发",
+      "status": "PASS",
+      "duration_ms": 2566,
+      "evidence": [
+        "deadline risk signal visible"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-202",
+      "title": "signal cooldown 去重",
+      "status": "PASS",
+      "duration_ms": 1548,
+      "evidence": [
+        "deduped signal"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-203",
+      "title": "晨间汇报固定模板",
+      "status": "PASS",
+      "duration_ms": 2530,
+      "evidence": [
+        "daily_morning_review visible"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-205",
+      "title": "睡前复盘固定模板",
+      "status": "PASS",
+      "duration_ms": 2587,
+      "evidence": [
+        "daily_night_review visible"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-208",
+      "title": "pending proposal 跟进",
+      "status": "PASS",
+      "duration_ms": 2586,
+      "evidence": [
+        "proposal_followup visible"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-403",
+      "title": "主动跟进区",
+      "status": "PASS",
+      "duration_ms": 2558,
+      "evidence": [
+        "deadline_risk visible"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-204",
+      "title": "晨间调整单个事项",
+      "status": "PASS",
+      "duration_ms": 4404,
+      "evidence": [
+        "review reply stayed proposal-first"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-206",
+      "title": "睡前批量完成",
+      "status": "PASS",
+      "duration_ms": 4351,
+      "evidence": [
+        "review reply stayed proposal-first"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-207",
+      "title": "睡前完成+未完成混合",
+      "status": "PASS",
+      "duration_ms": 4362,
+      "evidence": [
+        "review reply stayed proposal-first"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-210",
+      "title": "晨间汇报 pending proposal 文本确认",
+      "status": "PASS",
+      "duration_ms": 5426,
+      "evidence": [
+        "review reply stayed proposal-first"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-211",
+      "title": "睡前复盘自然语言顺延",
+      "status": "PASS",
+      "duration_ms": 5374,
+      "evidence": [
+        "review reply stayed proposal-first"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-209",
+      "title": "主动跟进与当前对话冲突",
+      "status": "PASS",
+      "duration_ms": 19878,
+      "evidence": [
+        "ambiguous proactive reference not executed"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-212",
+      "title": "主动消息过期后不可执行",
+      "status": "PASS",
+      "duration_ms": 27452,
+      "evidence": [
+        "expired-like signal command did not write"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-301",
+      "title": "显式地点记忆候选",
+      "status": "PASS",
+      "duration_ms": 3181,
+      "evidence": [
+        "memory candidate proposed"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-302",
+      "title": "确认地点记忆",
+      "status": "PASS",
+      "duration_ms": 4211,
+      "evidence": [
+        "places memory written"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-303",
+      "title": "拒绝记忆候选",
+      "status": "PASS",
+      "duration_ms": 4196,
+      "evidence": [
+        "memory rejected without write"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-305",
+      "title": "记忆冲突必须澄清",
+      "status": "PASS",
+      "duration_ms": 3306,
+      "evidence": [
+        "conflict surfaced without write"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-306",
+      "title": "一次输入多个记忆候选",
+      "status": "PASS",
+      "duration_ms": 3134,
+      "evidence": [
+        "memory candidates=2"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-308",
+      "title": "记忆候选确认指代歧义",
+      "status": "PASS",
+      "duration_ms": 4271,
+      "evidence": [
+        "ambiguous memory confirm clarified/no-op"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-309",
+      "title": "记忆删除也需确认",
+      "status": "PASS",
+      "duration_ms": 6359,
+      "evidence": [
+        "delete/update required confirmation"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-402",
+      "title": "当前待确认事项区",
+      "status": "PASS",
+      "duration_ms": 5010,
+      "evidence": [
+        "P1/P2 visible after refresh"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-404",
+      "title": "移动端布局",
+      "status": "PASS",
+      "duration_ms": 3752,
+      "evidence": [
+        "screenshot=E:\\GraduationProject\\docs\\development\\browser_acceptance_runs\\mobile_20260515053916.png"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-405",
+      "title": "加载与禁用状态",
+      "status": "PASS",
+      "duration_ms": 7651,
+      "evidence": [
+        "send showed loading/busy state"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-406",
+      "title": "WebSocket 状态同步",
+      "status": "PASS",
+      "duration_ms": 5369,
+      "evidence": [
+        "server-side status executed; UI refresh path available"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-407",
+      "title": "会话切换不得串上下文",
+      "status": "PASS",
+      "duration_ms": 6462,
+      "evidence": [
+        "new session did not execute old proposal via bare confirm"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-408",
+      "title": "长对话滚动与最新消息可见",
+      "status": "PASS",
+      "duration_ms": 14870,
+      "evidence": [
+        "long chat latest content visible"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-410",
+      "title": "标签稳定性跨刷新和 revision",
+      "status": "PASS",
+      "duration_ms": 41956,
+      "evidence": [
+        "refreshed P1 confirmed latest proposal"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-411",
+      "title": "多 pending proposal 区域排序",
+      "status": "PASS",
+      "duration_ms": 6840,
+      "evidence": [
+        "P1-P5 visible"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-501",
+      "title": "Provider 失败 fallback",
+      "status": "TRACKED",
+      "duration_ms": 1051,
+      "evidence": [
+        "Requires deterministic primary-provider failure with a valid fallback provider. Current browser harness uses real providers and cannot force only the primary provider to fail without a mock/restart path; LLM fallback itself is covered by backend unit tests."
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-502",
+      "title": "Provider 全部失败",
+      "status": "TRACKED",
+      "duration_ms": 1049,
+      "evidence": [
+        "Requires restarting API with invalid provider credentials; covered as tracked manual/chaos case in this run."
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-503",
+      "title": "执行失败进入 retry",
+      "status": "PASS",
+      "duration_ms": 5250,
+      "evidence": [
+        "execution_failed visible"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-504",
+      "title": "expired proposal 不可确认",
+      "status": "PASS",
+      "duration_ms": 5113,
+      "evidence": [
+        "expired proposal not executed"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-505",
+      "title": "superseded proposal 不可确认",
+      "status": "PASS",
+      "duration_ms": 6293,
+      "evidence": [
+        "superseded old proposal not executed"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-506",
+      "title": "无效方案编号",
+      "status": "PASS",
+      "duration_ms": 5138,
+      "evidence": [
+        "invalid option rejected/no-op"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-507",
+      "title": "网络中断恢复",
+      "status": "TRACKED",
+      "duration_ms": 1047,
+      "evidence": [
+        "Full browser network interruption requires Playwright route/offline orchestration plus API process stop; tracked as manual chaos in this run."
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-508",
+      "title": "后端重启后 pending proposal 可继续确认",
+      "status": "PASS",
+      "duration_ms": 8190,
+      "evidence": [
+        "pending proposal survived backend restart"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-509",
+      "title": "数据库写入失败不显示成功",
+      "status": "PASS",
+      "duration_ms": 5115,
+      "evidence": [
+        "invalid payload failed without success UI"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-510",
+      "title": "AI 返回格式异常",
+      "status": "TRACKED",
+      "duration_ms": 1044,
+      "evidence": [
+        "Requires mock AI provider returning malformed content; protocol fallback is covered by source/unit tests, tracked for browser mock harness."
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-511",
+      "title": "慢响应超时与重试",
+      "status": "TRACKED",
+      "duration_ms": 1037,
+      "evidence": [
+        "Requires deterministic slow provider/mock endpoint beyond front-end timeout; tracked for browser mock harness."
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-108",
+      "title": "不得确认已被替代旧 proposal",
+      "status": "PASS",
+      "duration_ms": 6623,
+      "evidence": [
+        "old behavior guard passed"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-109",
+      "title": "active target 不覆盖多 proposal 歧义",
+      "status": "PASS",
+      "duration_ms": 6091,
+      "evidence": [
+        "old behavior guard passed"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-110",
+      "title": "刷新编号不导致错配",
+      "status": "PASS",
+      "duration_ms": 6909,
+      "evidence": [
+        "P1 visible before confirm",
+        "old behavior guard passed"
+      ],
+      "error": null
+    }
+  ]
+}

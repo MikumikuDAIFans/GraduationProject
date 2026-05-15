@@ -1,0 +1,946 @@
+{
+  "run_id": "20260514205653",
+  "api_base": "http://127.0.0.1:18741/api",
+  "web_url": "http://127.0.0.1:8894",
+  "db_path": "E:\\GraduationProject\\backend\\data\\browser_full_acceptance_20260514205653.db",
+  "memory_path": "E:\\GraduationProject\\backend\\data\\browser_full_acceptance_memory_20260514205653",
+  "summary": {
+    "total": 99,
+    "pass": 64,
+    "fail": 30,
+    "tracked": 5
+  },
+  "results": [
+    {
+      "id": "BAI-P0-001",
+      "title": "明确日程创建必须先提案",
+      "status": "PASS",
+      "duration_ms": 8131,
+      "evidence": [
+        "pending proposals=1"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-002",
+      "title": "单 proposal 自然语言确认执行",
+      "status": "PASS",
+      "duration_ms": 10180,
+      "evidence": [
+        "events=1"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-003",
+      "title": "重复确认幂等",
+      "status": "FAIL",
+      "duration_ms": 60008,
+      "evidence": [],
+      "error": "Error: BAI-P0-003 timed out\n    at Timeout.<anonymous> (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:491:39)\n    at listOnTimeout (node:internal/timers:605:17)\n    at process.processTimers (node:internal/timers:541:7)"
+    },
+    {
+      "id": "BAI-P0-004",
+      "title": "模糊任务请求不得直接拆日程",
+      "status": "FAIL",
+      "duration_ms": 3280,
+      "evidence": [],
+      "error": "Error: no clarification/proposal visible\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:652:5\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:646:3)\n    at async main (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:573:3)"
+    },
+    {
+      "id": "BAI-P0-005",
+      "title": "任务 / 日程类型澄清",
+      "status": "PASS",
+      "duration_ms": 29357,
+      "evidence": [
+        "proposals=1"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-006",
+      "title": "自然语言修改 proposal",
+      "status": "FAIL",
+      "duration_ms": 8152,
+      "evidence": [],
+      "error": "Error: old proposal not superseded\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:669:5\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:665:3)\n    at async main (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:573:3)"
+    },
+    {
+      "id": "BAI-P0-007",
+      "title": "拒绝 proposal",
+      "status": "FAIL",
+      "duration_ms": 6927,
+      "evidence": [],
+      "error": "Error: proposal not rejected\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:679:5\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:675:3)\n    at async main (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:573:3)"
+    },
+    {
+      "id": "BAI-P0-008",
+      "title": "多 proposal 下可以必须澄清",
+      "status": "PASS",
+      "duration_ms": 6018,
+      "evidence": [
+        "ambiguous confirmation preserved two pending proposals"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-009",
+      "title": "多 proposal 带标识确认",
+      "status": "PASS",
+      "duration_ms": 6187,
+      "evidence": [
+        "小组会调整"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-010",
+      "title": "冲突日程必须给多方案",
+      "status": "FAIL",
+      "duration_ms": 6285,
+      "evidence": [],
+      "error": "Error: expected at least one pending proposal\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at expectPendingProposal (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:522:3)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:715:15\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:708:3)\n    at async main (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:573:3)"
+    },
+    {
+      "id": "BAI-P0-011",
+      "title": "批量调整必须拆成可确认动作",
+      "status": "FAIL",
+      "duration_ms": 3436,
+      "evidence": [],
+      "error": "Error: pending proposal does not mention 推迟\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at expectPendingProposal (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:523:17)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:725:15\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:719:3)\n    at async main (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:573:3)"
+    },
+    {
+      "id": "BAI-P0-012",
+      "title": "过大批量调整必须防失控",
+      "status": "FAIL",
+      "duration_ms": 3730,
+      "evidence": [],
+      "error": "Error: no oversized batch guard visible\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:736:5\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:729:3)\n    at async main (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:573:3)"
+    },
+    {
+      "id": "BAI-P0-013",
+      "title": "多轮日程槽位补全必须继承上下文",
+      "status": "FAIL",
+      "duration_ms": 10731,
+      "evidence": [],
+      "error": "Error: expected one latest pending proposal\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:746:5\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:740:3)\n    at async main (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:573:3)"
+    },
+    {
+      "id": "BAI-P0-014",
+      "title": "单 pending proposal 下纯时间补充必须走 revise",
+      "status": "FAIL",
+      "duration_ms": 9067,
+      "evidence": [],
+      "error": "Error: old proposal not superseded\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:755:5\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:751:3)\n    at async main (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:573:3)"
+    },
+    {
+      "id": "BAI-P0-015",
+      "title": "执行导向话术不得复制 proposal",
+      "status": "FAIL",
+      "duration_ms": 29374,
+      "evidence": [],
+      "error": "Error: duplicated pending proposal\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:766:5\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:761:3)\n    at async main (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:573:3)"
+    },
+    {
+      "id": "BAI-P0-016",
+      "title": "带时间和地点的提醒不得误判为普通任务",
+      "status": "FAIL",
+      "duration_ms": 3209,
+      "evidence": [],
+      "error": "Error: did not create event proposal\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:775:5\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:771:3)\n    at async main (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:573:3)"
+    },
+    {
+      "id": "BAI-P0-017",
+      "title": "连续发送与加载状态",
+      "status": "PASS",
+      "duration_ms": 39328,
+      "evidence": [
+        "send lock avoided duplicate proposal"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-001",
+      "title": "不完整日程应澄清",
+      "status": "PASS",
+      "duration_ms": 3329,
+      "evidence": [
+        "events=0, tasks=0, proposals=0, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-002",
+      "title": "带自然语言时间的日程",
+      "status": "FAIL",
+      "duration_ms": 3276,
+      "evidence": [],
+      "error": "Error: expected at least one pending proposal\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at expectPendingProposal (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:522:3)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:808:7\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:900:7\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runRemainingP1AndRegressionScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:895:5)\n    at async runScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:797:3)"
+    },
+    {
+      "id": "BAI-P1-003",
+      "title": "默认时长推断",
+      "status": "FAIL",
+      "duration_ms": 3236,
+      "evidence": [],
+      "error": "Error: expected at least one pending proposal\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at expectPendingProposal (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:522:3)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:812:7\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:900:7\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runRemainingP1AndRegressionScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:895:5)\n    at async runScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:797:3)"
+    },
+    {
+      "id": "BAI-P1-004",
+      "title": "任务创建",
+      "status": "PASS",
+      "duration_ms": 3300,
+      "evidence": [
+        "events=0, tasks=0, proposals=1, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-008",
+      "title": "查询进展不应写入",
+      "status": "PASS",
+      "duration_ms": 3227,
+      "evidence": [
+        "events=0, tasks=0, proposals=0, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-012",
+      "title": "跨午夜时间段解析",
+      "status": "FAIL",
+      "duration_ms": 3289,
+      "evidence": [],
+      "error": "Error: expected at least one pending proposal\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at expectPendingProposal (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:522:3)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:825:17\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:900:7\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runRemainingP1AndRegressionScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:895:5)\n    at async runScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:797:3)"
+    },
+    {
+      "id": "BAI-P1-014",
+      "title": "同句包含多个日程目标",
+      "status": "FAIL",
+      "duration_ms": 3251,
+      "evidence": [],
+      "error": "Error: multi-goal neither proposed nor clarified\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:830:7\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:900:7\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runRemainingP1AndRegressionScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:895:5)\n    at async runScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:797:3)\n    at async main (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:573:3)"
+    },
+    {
+      "id": "BAI-P1-015",
+      "title": "任务与日程混合句拆分语义",
+      "status": "PASS",
+      "duration_ms": 3396,
+      "evidence": [
+        "events=0, tasks=0, proposals=0, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-101",
+      "title": "明确 origin 的出发建议",
+      "status": "PASS",
+      "duration_ms": 3278,
+      "evidence": [
+        "events=0, tasks=0, proposals=0, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-102",
+      "title": "origin 不确定必须澄清或条件化",
+      "status": "PASS",
+      "duration_ms": 3226,
+      "evidence": [
+        "events=0, tasks=0, proposals=0, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-110",
+      "title": "天气影响不改日程",
+      "status": "PASS",
+      "duration_ms": 3312,
+      "evidence": [
+        "events=0, tasks=0, proposals=0, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-111",
+      "title": "外部地图失败降级",
+      "status": "PASS",
+      "duration_ms": 3300,
+      "evidence": [
+        "events=0, tasks=0, proposals=2, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-304",
+      "title": "隐式偏好不得低置信写入",
+      "status": "PASS",
+      "duration_ms": 3234,
+      "evidence": [
+        "events=0, tasks=0, proposals=0, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-307",
+      "title": "对话事实不等于长期偏好",
+      "status": "PASS",
+      "duration_ms": 3647,
+      "evidence": [
+        "events=0, tasks=0, proposals=1, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-401",
+      "title": "Proposal 文本结构",
+      "status": "FAIL",
+      "duration_ms": 3274,
+      "evidence": [],
+      "error": "Error: expected at least one pending proposal\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at expectPendingProposal (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:522:3)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:860:7\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:900:7\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runRemainingP1AndRegressionScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:895:5)\n    at async runScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:797:3)"
+    },
+    {
+      "id": "BAI-P1-409",
+      "title": "Markdown 与特殊字符安全",
+      "status": "PASS",
+      "duration_ms": 3241,
+      "evidence": [
+        "events=0, tasks=0, proposals=1, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-101",
+      "title": "不得硬分句误拆",
+      "status": "FAIL",
+      "duration_ms": 3466,
+      "evidence": [],
+      "error": "Error: title not preserved\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:870:7\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:900:7\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runRemainingP1AndRegressionScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:895:5)\n    at async runScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:797:3)\n    at async main (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:573:3)"
+    },
+    {
+      "id": "BAI-P0-102",
+      "title": "不得绕过 proposal 直接写入",
+      "status": "FAIL",
+      "duration_ms": 3270,
+      "evidence": [],
+      "error": "Error: expected at least one pending proposal\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at expectPendingProposal (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:522:3)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:875:7\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:900:7\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runRemainingP1AndRegressionScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:895:5)\n    at async runScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:797:3)"
+    },
+    {
+      "id": "BAI-P0-103",
+      "title": "普通建议不应触发旧 workflow 文案",
+      "status": "PASS",
+      "duration_ms": 3219,
+      "evidence": [
+        "events=0, tasks=0, proposals=0, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-104",
+      "title": "未知请求应澄清",
+      "status": "FAIL",
+      "duration_ms": 3283,
+      "evidence": [],
+      "error": "Error: unknown request not clarified\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:882:7\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:900:7\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runRemainingP1AndRegressionScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:895:5)\n    at async runScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:797:3)\n    at async main (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:573:3)"
+    },
+    {
+      "id": "BAI-P0-106",
+      "title": "无确认不写长期记忆",
+      "status": "PASS",
+      "duration_ms": 3275,
+      "evidence": [
+        "events=0, tasks=0, proposals=0, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-107",
+      "title": "中文相对时间不解析为持续时长",
+      "status": "PASS",
+      "duration_ms": 3406,
+      "evidence": [
+        "events=0, tasks=0, proposals=0, memories=0"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-005",
+      "title": "任务排程",
+      "status": "PASS",
+      "duration_ms": 3366,
+      "evidence": [
+        "pending proposals=2"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-006",
+      "title": "有限期重复任务完成判定",
+      "status": "PASS",
+      "duration_ms": 4381,
+      "evidence": [
+        "completion path generated or preserved quantifiable task state"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-007",
+      "title": "取消重复任务单个切片",
+      "status": "PASS",
+      "duration_ms": 3377,
+      "evidence": [
+        "single slice not directly canceled"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-009",
+      "title": "多轮时间补全后再补地点",
+      "status": "FAIL",
+      "duration_ms": 31624,
+      "evidence": [],
+      "error": "Error: expected 图书馆 evidence missing\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:946:7\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runRemainingP1AndRegressionScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:942:5)\n    at async runScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:797:3)\n    at async main (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:573:3)"
+    },
+    {
+      "id": "BAI-P1-010",
+      "title": "先改标题再改时间",
+      "status": "FAIL",
+      "duration_ms": 8613,
+      "evidence": [],
+      "error": "Error: expected 同学见面 evidence missing\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:946:7\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runRemainingP1AndRegressionScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:942:5)\n    at async runScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:797:3)\n    at async main (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:573:3)"
+    },
+    {
+      "id": "BAI-P1-011",
+      "title": "只给结束时间的部分修正",
+      "status": "FAIL",
+      "duration_ms": 29223,
+      "evidence": [],
+      "error": "Error: expected 15:30 evidence missing\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:946:7\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runRemainingP1AndRegressionScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:942:5)\n    at async runScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:797:3)\n    at async main (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:573:3)"
+    },
+    {
+      "id": "BAI-P1-017",
+      "title": "拒绝后下一句不要继续执行",
+      "status": "FAIL",
+      "duration_ms": 30852,
+      "evidence": [],
+      "error": "Error: expected rejected evidence missing\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:946:7\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runRemainingP1AndRegressionScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:942:5)\n    at async runScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:797:3)\n    at async main (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:573:3)"
+    },
+    {
+      "id": "BAI-P0-105",
+      "title": "补充回答不当成全新任务",
+      "status": "FAIL",
+      "duration_ms": 60053,
+      "evidence": [],
+      "error": "Error: BAI-P0-105 timed out\n    at Timeout.<anonymous> (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:491:39)\n    at listOnTimeout (node:internal/timers:605:17)\n    at process.processTimers (node:internal/timers:541:7)"
+    },
+    {
+      "id": "BAI-P1-013",
+      "title": "相对日期与绝对日期混用",
+      "status": "PASS",
+      "duration_ms": 3263,
+      "evidence": [
+        "conditional date handled without write"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-016",
+      "title": "模糊去学校结合记忆",
+      "status": "PASS",
+      "duration_ms": 3270,
+      "evidence": [
+        "confirmed place memory available"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-103",
+      "title": "当前线程位置优先",
+      "status": "PASS",
+      "duration_ms": 8028,
+      "evidence": [
+        "runtime context only"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-108",
+      "title": "临时位置不污染长期地点",
+      "status": "PASS",
+      "duration_ms": 15758,
+      "evidence": [
+        "runtime context only"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-112",
+      "title": "出发地和目的地相同",
+      "status": "PASS",
+      "duration_ms": 58915,
+      "evidence": [
+        "runtime context only"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-104",
+      "title": "常用地点别名解析",
+      "status": "FAIL",
+      "duration_ms": 3313,
+      "evidence": [],
+      "error": "Error: expected at least one pending proposal\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at expectPendingProposal (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:522:3)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:996:5\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runLocationSignalMemoryUiFailureCases (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:990:3)\n    at async runRemainingP1AndRegressionScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:960:3)\n    at async runScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:797:3)"
+    },
+    {
+      "id": "BAI-P1-109",
+      "title": "多地点同名歧义",
+      "status": "FAIL",
+      "duration_ms": 3207,
+      "evidence": [],
+      "error": "Error: same-name ambiguity not clarified\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1004:5\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runLocationSignalMemoryUiFailureCases (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:999:3)\n    at async runRemainingP1AndRegressionScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:960:3)\n    at async runScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:797:3)\n    at async main (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:573:3)"
+    },
+    {
+      "id": "BAI-P1-105",
+      "title": "出发前提醒",
+      "status": "PASS",
+      "duration_ms": 5492,
+      "evidence": [
+        "departure followup visible"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-106",
+      "title": "出发提醒用户已到达",
+      "status": "PASS",
+      "duration_ms": 4358,
+      "evidence": [
+        "arrival handled without memory write"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-107",
+      "title": "出发提醒取消行程",
+      "status": "PASS",
+      "duration_ms": 7450,
+      "evidence": [
+        "cancel request did not directly cancel event"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-201",
+      "title": "deadline 风险触发",
+      "status": "PASS",
+      "duration_ms": 2612,
+      "evidence": [
+        "deadline risk signal visible"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-202",
+      "title": "signal cooldown 去重",
+      "status": "PASS",
+      "duration_ms": 1585,
+      "evidence": [
+        "deduped signal"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-203",
+      "title": "晨间汇报固定模板",
+      "status": "PASS",
+      "duration_ms": 2570,
+      "evidence": [
+        "daily_morning_review visible"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-205",
+      "title": "睡前复盘固定模板",
+      "status": "PASS",
+      "duration_ms": 2588,
+      "evidence": [
+        "daily_night_review visible"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-208",
+      "title": "pending proposal 跟进",
+      "status": "PASS",
+      "duration_ms": 2576,
+      "evidence": [
+        "proposal_followup visible"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-403",
+      "title": "主动跟进区",
+      "status": "PASS",
+      "duration_ms": 2644,
+      "evidence": [
+        "deadline_risk visible"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-204",
+      "title": "晨间调整单个事项",
+      "status": "PASS",
+      "duration_ms": 4402,
+      "evidence": [
+        "review reply stayed proposal-first"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-206",
+      "title": "睡前批量完成",
+      "status": "PASS",
+      "duration_ms": 4414,
+      "evidence": [
+        "review reply stayed proposal-first"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-207",
+      "title": "睡前完成+未完成混合",
+      "status": "PASS",
+      "duration_ms": 4401,
+      "evidence": [
+        "review reply stayed proposal-first"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-210",
+      "title": "晨间汇报 pending proposal 文本确认",
+      "status": "PASS",
+      "duration_ms": 4434,
+      "evidence": [
+        "review reply stayed proposal-first"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-211",
+      "title": "睡前复盘自然语言顺延",
+      "status": "PASS",
+      "duration_ms": 4414,
+      "evidence": [
+        "review reply stayed proposal-first"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-209",
+      "title": "主动跟进与当前对话冲突",
+      "status": "PASS",
+      "duration_ms": 6013,
+      "evidence": [
+        "ambiguous proactive reference not executed"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-212",
+      "title": "主动消息过期后不可执行",
+      "status": "PASS",
+      "duration_ms": 3230,
+      "evidence": [
+        "expired-like signal command did not write"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-301",
+      "title": "显式地点记忆候选",
+      "status": "PASS",
+      "duration_ms": 3237,
+      "evidence": [
+        "memory candidate proposed"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-302",
+      "title": "确认地点记忆",
+      "status": "PASS",
+      "duration_ms": 4246,
+      "evidence": [
+        "places memory written"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-303",
+      "title": "拒绝记忆候选",
+      "status": "PASS",
+      "duration_ms": 4267,
+      "evidence": [
+        "memory rejected without write"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-305",
+      "title": "记忆冲突必须澄清",
+      "status": "PASS",
+      "duration_ms": 3244,
+      "evidence": [
+        "conflict surfaced without write"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-306",
+      "title": "一次输入多个记忆候选",
+      "status": "FAIL",
+      "duration_ms": 3318,
+      "evidence": [],
+      "error": "Error: multiple memory candidates not split\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1165:5\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runMemoryCases (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1162:3)\n    at async runLocationSignalMemoryUiFailureCases (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1116:3)\n    at async runRemainingP1AndRegressionScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:960:3)\n    at async runScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:797:3)"
+    },
+    {
+      "id": "BAI-P1-308",
+      "title": "记忆候选确认指代歧义",
+      "status": "PASS",
+      "duration_ms": 4322,
+      "evidence": [
+        "ambiguous memory confirm clarified/no-op"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-309",
+      "title": "记忆删除也需确认",
+      "status": "PASS",
+      "duration_ms": 3282,
+      "evidence": [
+        "delete/update required confirmation"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-402",
+      "title": "当前待确认事项区",
+      "status": "PASS",
+      "duration_ms": 5135,
+      "evidence": [
+        "P1/P2 visible after refresh"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-404",
+      "title": "移动端布局",
+      "status": "PASS",
+      "duration_ms": 3856,
+      "evidence": [
+        "screenshot=E:\\GraduationProject\\docs\\development\\browser_acceptance_runs\\mobile_20260514205653.png"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-405",
+      "title": "加载与禁用状态",
+      "status": "PASS",
+      "duration_ms": 7751,
+      "evidence": [
+        "send showed loading/busy state"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-406",
+      "title": "WebSocket 状态同步",
+      "status": "PASS",
+      "duration_ms": 8839,
+      "evidence": [
+        "server-side status executed; UI refresh path available"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-407",
+      "title": "会话切换不得串上下文",
+      "status": "PASS",
+      "duration_ms": 5380,
+      "evidence": [
+        "new session did not execute old proposal via bare confirm"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-408",
+      "title": "长对话滚动与最新消息可见",
+      "status": "FAIL",
+      "duration_ms": 84603,
+      "evidence": [],
+      "error": "Error: latest message/input not visible in long chat\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at record.timeoutMs (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1253:5)\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runUiAndFailureCases (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1249:3)\n    at async runMemoryCases (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1189:3)\n    at async runLocationSignalMemoryUiFailureCases (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1116:3)\n    at async runRemainingP1AndRegressionScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:960:3)\n    at async runScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:797:3)"
+    },
+    {
+      "id": "BAI-P1-410",
+      "title": "标签稳定性跨刷新和 revision",
+      "status": "FAIL",
+      "duration_ms": 9323,
+      "evidence": [],
+      "error": "Error: refreshed P1 did not map to latest pending proposal\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1264:5\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runUiAndFailureCases (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1257:3)\n    at async runMemoryCases (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1189:3)\n    at async runLocationSignalMemoryUiFailureCases (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1116:3)\n    at async runRemainingP1AndRegressionScenarios (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:960:3)"
+    },
+    {
+      "id": "BAI-P1-411",
+      "title": "多 pending proposal 区域排序",
+      "status": "PASS",
+      "duration_ms": 7186,
+      "evidence": [
+        "P1-P5 visible"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-501",
+      "title": "Provider 失败 fallback",
+      "status": "TRACKED",
+      "duration_ms": 1045,
+      "evidence": [
+        "Requires deterministic primary-provider failure with a valid fallback provider. Current browser harness uses real providers and cannot force only the primary provider to fail without a mock/restart path; LLM fallback itself is covered by backend unit tests."
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-502",
+      "title": "Provider 全部失败",
+      "status": "TRACKED",
+      "duration_ms": 1046,
+      "evidence": [
+        "Requires restarting API with invalid provider credentials; covered as tracked manual/chaos case in this run."
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-503",
+      "title": "执行失败进入 retry",
+      "status": "PASS",
+      "duration_ms": 5156,
+      "evidence": [
+        "execution_failed visible"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-504",
+      "title": "expired proposal 不可确认",
+      "status": "PASS",
+      "duration_ms": 5260,
+      "evidence": [
+        "expired proposal not executed"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-505",
+      "title": "superseded proposal 不可确认",
+      "status": "PASS",
+      "duration_ms": 6488,
+      "evidence": [
+        "superseded old proposal not executed"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-506",
+      "title": "无效方案编号",
+      "status": "PASS",
+      "duration_ms": 5159,
+      "evidence": [
+        "invalid option rejected/no-op"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-507",
+      "title": "网络中断恢复",
+      "status": "TRACKED",
+      "duration_ms": 1050,
+      "evidence": [
+        "Full browser network interruption requires Playwright route/offline orchestration plus API process stop; tracked as manual chaos in this run."
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-508",
+      "title": "后端重启后 pending proposal 可继续确认",
+      "status": "PASS",
+      "duration_ms": 10004,
+      "evidence": [
+        "pending proposal survived backend restart"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-509",
+      "title": "数据库写入失败不显示成功",
+      "status": "PASS",
+      "duration_ms": 5231,
+      "evidence": [
+        "invalid payload failed without success UI"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-510",
+      "title": "AI 返回格式异常",
+      "status": "TRACKED",
+      "duration_ms": 1049,
+      "evidence": [
+        "Requires mock AI provider returning malformed content; protocol fallback is covered by source/unit tests, tracked for browser mock harness."
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P1-511",
+      "title": "慢响应超时与重试",
+      "status": "TRACKED",
+      "duration_ms": 1055,
+      "evidence": [
+        "Requires deterministic slow provider/mock endpoint beyond front-end timeout; tracked for browser mock harness."
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-108",
+      "title": "不得确认已被替代旧 proposal",
+      "status": "FAIL",
+      "duration_ms": 6450,
+      "evidence": [],
+      "error": "Error: superseded proposal executed\n    at assert (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:445:25)\n    at file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1395:9\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:465:7\n    at async withTimeout (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:488:10)\n    at async record (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:462:5)\n    at async runFailureAndOldProposalCases (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1387:5)\n    at async runUiAndFailureCases (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1276:3)\n    at async runMemoryCases (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1189:3)\n    at async runLocationSignalMemoryUiFailureCases (file:///E:/GraduationProject/scripts/assistant_browser_full_acceptance.mjs:1116:3)"
+    },
+    {
+      "id": "BAI-P0-109",
+      "title": "active target 不覆盖多 proposal 歧义",
+      "status": "PASS",
+      "duration_ms": 6029,
+      "evidence": [
+        "old behavior guard passed"
+      ],
+      "error": null
+    },
+    {
+      "id": "BAI-P0-110",
+      "title": "刷新编号不导致错配",
+      "status": "PASS",
+      "duration_ms": 6907,
+      "evidence": [
+        "P1 visible before confirm",
+        "old behavior guard passed"
+      ],
+      "error": null
+    }
+  ]
+}
