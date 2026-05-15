@@ -72,7 +72,7 @@ class PlanningSpecialist:
             summary += f"，地点：{location_name}"
         if diagnostics["risk_summaries"]:
             summary += "；" + "；".join(diagnostics["risk_summaries"])
-        rationale = "结束时间未明确，先按 1 小时估算，可在确认前修改。" if "default_event_duration_60_minutes" in assumptions else None
+        rationale = "结束时间未明确，先按 1小时估算，可在确认前修改。" if "default_event_duration_60_minutes" in assumptions else None
         options = self._build_event_options(
             base_payload=payload,
             base_summary=summary,

@@ -339,21 +339,57 @@ async function sendMessage(message) {
   ensureActiveScenario();
   console.log(`  send: ${message}`);
   const before = await counts().catch(() => ({ proposals: [], memories: [], events: [], tasks: [], signals: [] }));
-  const textbox = page.locator("textarea").last();
+  const beforeMessageCount = await currentAssistantMessageCount();
+  const textbox = await visibleTextarea();
+  await textbox.waitFor({ state: "visible", timeout: 10000 });
+  await page.waitForFunction(
+    () => {
+      const items = Array.from(document.querySelectorAll("textarea"));
+      const el = items.reverse().find((item) => {
+        const style = window.getComputedStyle(item);
+        const rect = item.getBoundingClientRect();
+        return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
+      });
+      return !!el && !el.disabled;
+    },
+    null,
+    { timeout: 15000 },
+  );
   await textbox.fill(message);
-  await page.getByRole("button", { name: /发送|Send/ }).last().click();
+  const sendButton = await visibleSendButton();
+  await sendButton.waitFor({ state: "visible", timeout: 10000 });
+  await page.waitForFunction(
+    () => {
+      const buttons = Array.from(document.querySelectorAll("button"));
+      const el = buttons.reverse().find((item) => {
+        const style = window.getComputedStyle(item);
+        const rect = item.getBoundingClientRect();
+        return /发送|Send/.test(item.textContent || "")
+          && style.visibility !== "hidden"
+          && style.display !== "none"
+          && rect.width > 0
+          && rect.height > 0;
+      });
+      return !!el && !el.disabled;
+    },
+    null,
+    { timeout: 15000 },
+  );
+  await sendButton.click();
   const started = Date.now();
   while (Date.now() - started < 55000) {
     ensureActiveScenario();
     await page.waitForTimeout(1000);
     const body = await page.locator("body").innerText().catch(() => "");
     const now = await counts().catch(() => before);
+    const messageCount = await currentAssistantMessageCount().catch(() => beforeMessageCount);
     const changed =
       now.proposals.length !== before.proposals.length ||
       now.memories.length !== before.memories.length ||
       now.events.length !== before.events.length ||
       now.tasks.length !== before.tasks.length ||
       now.signals.length !== before.signals.length;
+    const assistantResponded = messageCount >= beforeMessageCount + 2;
     const hasAssistantReply = body.includes(message) && (
       body.includes("待确认") ||
       body.includes("方案") ||
@@ -365,7 +401,12 @@ async function sendMessage(message) {
       body.includes("连接中断")
     );
     const stillBusy = body.includes("思考中") || body.includes("Thinking") || body.includes("Loading");
-    if ((changed || hasAssistantReply) && !stillBusy) {
+    const inputReady = await textbox.isEnabled().catch(() => false);
+    if (assistantResponded && inputReady && !stillBusy) {
+      await page.waitForTimeout(500);
+      return;
+    }
+    if (hasAssistantReply && body.includes("发送失败") && inputReady && !stillBusy) {
       await page.waitForTimeout(500);
       return;
     }
@@ -376,9 +417,41 @@ async function sendMessage(message) {
 async function sendQuickMessage(message, settleMs = 2500) {
   ensureActiveScenario();
   console.log(`  quick send: ${message}`);
-  const textbox = page.locator("textarea").last();
+  const textbox = await visibleTextarea();
+  await textbox.waitFor({ state: "visible", timeout: 10000 });
+  await page.waitForFunction(
+    () => {
+      const items = Array.from(document.querySelectorAll("textarea"));
+      const el = items.reverse().find((item) => {
+        const style = window.getComputedStyle(item);
+        const rect = item.getBoundingClientRect();
+        return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
+      });
+      return !!el && !el.disabled;
+    },
+    null,
+    { timeout: 15000 },
+  );
   await textbox.fill(message);
-  await page.getByRole("button", { name: /发送|Send/ }).last().click();
+  const sendButton = await visibleSendButton();
+  await page.waitForFunction(
+    () => {
+      const buttons = Array.from(document.querySelectorAll("button"));
+      const el = buttons.reverse().find((item) => {
+        const style = window.getComputedStyle(item);
+        const rect = item.getBoundingClientRect();
+        return /发送|Send/.test(item.textContent || "")
+          && style.visibility !== "hidden"
+          && style.display !== "none"
+          && rect.width > 0
+          && rect.height > 0;
+      });
+      return !!el && !el.disabled;
+    },
+    null,
+    { timeout: 15000 },
+  );
+  await sendButton.click();
   const started = Date.now();
   while (Date.now() - started < settleMs) {
     ensureActiveScenario();
@@ -428,6 +501,27 @@ async function sendAndWaitProposal(message, fragment = null) {
 
 async function visibleText() {
   return await page.locator("body").innerText();
+}
+
+async function currentAssistantMessageCount() {
+  const current = await api("/assistant/current?include_inbox=false");
+  return current.data?.session?.messages?.length ?? 0;
+}
+
+async function visibleTextarea() {
+  const items = await page.locator("textarea").all();
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (await items[index].isVisible().catch(() => false)) return items[index];
+  }
+  return page.locator("textarea").last();
+}
+
+async function visibleSendButton() {
+  const items = await page.getByRole("button", { name: /发送|Send/ }).all();
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (await items[index].isVisible().catch(() => false)) return items[index];
+  }
+  return page.getByRole("button", { name: /发送|Send/ }).last();
 }
 
 async function counts() {
@@ -1227,12 +1321,15 @@ async function runUiAndFailureCases() {
     const p = await createProposal("WS 同步方案", [{ type: "create_event", payload: { title: "WS同步事项", start_time: isoDatePlus(1, 10), end_time: isoDatePlus(1, 11) } }]);
     await gotoApp();
     const page2 = await browser.newPage();
-    await page2.goto(WEB_URL, { waitUntil: "networkidle" });
-    await api(`/assistant/proposals/${p.id}/confirm`, { method: "POST", body: { option_id: "A" } });
-    await page.waitForTimeout(1500);
-    const data = await counts();
-    assert(data.proposals.find((x) => x.id === p.id).status === "executed", "proposal not executed via second window/API");
-    await page2.close();
+    try {
+      await page2.goto(WEB_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
+      await api(`/assistant/proposals/${p.id}/confirm`, { method: "POST", body: { option_id: "A" } });
+      await page.waitForTimeout(1500);
+      const data = await counts();
+      assert(data.proposals.find((x) => x.id === p.id).status === "executed", "proposal not executed via second window/API");
+    } finally {
+      await page2.close().catch(() => {});
+    }
     item.evidence.push("server-side status executed; UI refresh path available");
   });
 

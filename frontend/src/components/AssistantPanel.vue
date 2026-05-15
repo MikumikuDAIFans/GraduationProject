@@ -63,7 +63,7 @@ let sendUnlockTimer: number | null = null;
 const proposalRevisionDrafts = ref<Record<number, string>>({});
 const messageContainer = ref<HTMLElement | null>(null);
 const sessionBusy = computed(() => props.creatingSession || props.archivingSession || props.clearingSession);
-const canSend = computed(() => draft.value.trim().length > 0 && !props.sending && !locallySubmitting.value);
+const canSend = computed(() => draft.value.trim().length > 0 && !props.sending && !locallySubmitting.value && !sessionBusy.value);
 const isSending = computed(() => props.sending || locallySubmitting.value);
 const visibleProposals = computed(() =>
   props.assistantProposals
@@ -109,6 +109,14 @@ function handleKeydown(event: KeyboardEvent) {
   if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
     send();
   }
+}
+
+function scrollMessagesToBottom(behavior: ScrollBehavior = "smooth") {
+  requestAnimationFrame(() => {
+    const container = messageContainer.value;
+    if (!container) return;
+    container.scrollTo({ top: container.scrollHeight, behavior });
+  });
 }
 
 function actionLabel(type: string) {
@@ -294,9 +302,21 @@ function cancelCommand() {
 watch(
   () => props.messages.length,
   () => {
-    requestAnimationFrame(() => {
-      messageContainer.value?.scrollTo({ top: messageContainer.value.scrollHeight, behavior: "smooth" });
-    });
+    scrollMessagesToBottom();
+  },
+);
+
+watch(
+  () => props.messages.map((message) => `${message.id}:${message.content.length}`).join("|"),
+  () => {
+    scrollMessagesToBottom();
+  },
+);
+
+watch(
+  () => props.sending,
+  (sending) => {
+    scrollMessagesToBottom(sending ? "smooth" : "auto");
   },
 );
 
@@ -708,7 +728,7 @@ watch(
           rows="2"
           class="min-w-0 flex-1 resize-none rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm text-ink placeholder:text-ink-3 focus:border-accent/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-accent/20"
           :placeholder="t('assistantPanel.askPlaceholder')"
-          :disabled="sessionBusy"
+          :disabled="sessionBusy || isSending"
           @keydown="handleKeydown"
         />
         <button

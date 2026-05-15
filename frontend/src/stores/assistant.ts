@@ -179,6 +179,7 @@ const ACTIVE_PROPOSAL_STATUSES = [
 
 const ACTIVE_MEMORY_CANDIDATE_STATUSES = ["proposed"];
 const ACTIVE_SIGNAL_STATUSES = ["new", "evaluated", "proposal_created"];
+const SEND_QUEUE_DELAY_MS = 120;
 
 type AssistantTransportError = Error & {
   assistantRequestSent?: boolean;
@@ -215,6 +216,7 @@ export const useAssistantStore = defineStore("assistant", {
     memoryCandidateBusyId: null as number | null,
     sending: false,
     assistantSendInFlight: false,
+    assistantSendQueue: Promise.resolve() as Promise<void>,
     _cacheTimestamps: {} as Record<string, number>,
   }),
   actions: {
@@ -586,7 +588,6 @@ export const useAssistantStore = defineStore("assistant", {
                 if (assistantMessage) assistantMessage.content = rendered;
                 ws.close();
                 completed = true;
-                this.sending = false;
                 await this.refreshAssistantSidebarsAfterSend();
                 if (onRefresh) await onRefresh();
                 resolve();
@@ -612,7 +613,13 @@ export const useAssistantStore = defineStore("assistant", {
     },
 
     async sendAssistantMessage(message: string, onRefresh?: () => Promise<void>) {
-      if (this.assistantSendInFlight) return;
+      const previousSend = this.assistantSendQueue;
+      let releaseQueuedSend: (() => void) | null = null;
+      this.assistantSendQueue = new Promise<void>((resolve) => {
+        releaseQueuedSend = resolve;
+      });
+      await previousSend.catch(() => {});
+      await new Promise((resolve) => window.setTimeout(resolve, SEND_QUEUE_DELAY_MS));
       this.assistantSendInFlight = true;
       try {
         try {
@@ -678,6 +685,8 @@ export const useAssistantStore = defineStore("assistant", {
         }
       } finally {
         this.assistantSendInFlight = false;
+        this.sending = false;
+        releaseQueuedSend?.();
       }
     },
 

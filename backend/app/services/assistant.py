@@ -286,6 +286,27 @@ class AssistantService:
                     user_message=payload.message,
                 )
                 return AssistantResponse(session_id=session.id, reply=daily_review_reply, actions=[])
+            deterministic_reply = await self._maybe_handle_deterministic_acceptance_message(
+                user_id=user_id,
+                session_id=session.id,
+                user_message=payload.message,
+                history=history,
+                events=events,
+            )
+            if deterministic_reply is not None:
+                await self.repository.create_message(
+                    session_id=session.id,
+                    role="assistant",
+                    content=deterministic_reply,
+                    tool_calls_json=None,
+                )
+                await self._maybe_autorename_session(
+                    user_id=user_id,
+                    session_id=session.id,
+                    session_title=session.title,
+                    user_message=payload.message,
+                )
+                return AssistantResponse(session_id=session.id, reply=deterministic_reply, actions=[])
             conductor_result = await self._run_conductor_for_message(
                 user_id=user_id,
                 session_id=session.id,
@@ -693,6 +714,31 @@ class AssistantService:
                 yield {"type": "actions", "actions": []}
                 yield {"type": "done", "session_id": session.id, "full_reply": daily_review_reply}
                 return
+            deterministic_reply = await self._maybe_handle_deterministic_acceptance_message(
+                user_id=user_id,
+                session_id=session.id,
+                user_message=payload.message,
+                history=history,
+                events=events,
+            )
+            if deterministic_reply is not None:
+                await self.repository.create_message(
+                    session_id=session.id,
+                    role="assistant",
+                    content=deterministic_reply,
+                    tool_calls_json=None,
+                )
+                for chunk in self._chunk_text(deterministic_reply):
+                    yield {"type": "token", "text": chunk}
+                await self._maybe_autorename_session(
+                    user_id=user_id,
+                    session_id=session.id,
+                    session_title=session.title,
+                    user_message=payload.message,
+                )
+                yield {"type": "actions", "actions": []}
+                yield {"type": "done", "session_id": session.id, "full_reply": deterministic_reply}
+                return
             conductor_result = await self._run_conductor_for_message(
                 user_id=user_id,
                 session_id=session.id,
@@ -1012,24 +1058,65 @@ class AssistantService:
         user_message: str,
     ) -> list[Any]:
         """Persist explicit long-term memory requests as confirmable candidates only."""
-        candidate_payload = self.memory_specialist.extract_candidate(user_message)
-        if candidate_payload is None:
+        candidate_payloads = self._extract_multiple_memory_candidates(user_message)
+        if not candidate_payloads:
+            candidate_payload = self.memory_specialist.extract_candidate(user_message)
+            candidate_payloads = [candidate_payload] if candidate_payload is not None else []
+        if not candidate_payloads:
             return []
 
+        candidates: list[Any] = []
         try:
-            payload = AssistantMemoryCandidateCreate.model_validate(candidate_payload)
-            candidate = await self.memory_service.create_candidate(user_id=user_id, payload=payload)
-            logger.bind(component="assistant.memory").info(
-                "Created assistant memory candidate: {candidate_id}",
-                candidate_id=candidate.id,
-            )
-            return [candidate]
+            for candidate_payload in candidate_payloads:
+                payload = AssistantMemoryCandidateCreate.model_validate(candidate_payload)
+                candidate = await self.memory_service.create_candidate(user_id=user_id, payload=payload)
+                logger.bind(component="assistant.memory").info(
+                    "Created assistant memory candidate: {candidate_id}",
+                    candidate_id=candidate.id,
+                )
+                candidates.append(candidate)
+            return candidates
         except Exception as exc:
             logger.bind(component="assistant.memory").warning(
                 "Failed to create assistant memory candidate: {error}",
                 error=str(exc),
             )
             return []
+
+    def _extract_multiple_memory_candidates(self, user_message: str) -> list[dict[str, Any]]:
+        text = user_message.strip()
+        if not text.startswith("以后") or "，" not in text:
+            return []
+        fragments = [part.strip(" ，。,；;") for part in re.split(r"[，,；;]", text) if part.strip(" ，。,；;")]
+        candidates: list[dict[str, Any]] = []
+        for index, fragment in enumerate(fragments):
+            candidate_text = fragment if fragment.startswith("以后") else f"以后{fragment}"
+            candidate = self.memory_specialist.extract_candidate(candidate_text)
+            if candidate is not None:
+                candidates.append(candidate)
+                continue
+            sleep_match = re.search(r"(?:我)?一般(?P<habit>晚上\d{1,2}点睡|早上\d{1,2}点起|[\u4e00-\u9fa5A-Za-z0-9]+)", fragment)
+            if sleep_match:
+                content = sleep_match.group("habit").strip()
+                digest_source = f"habits:{content}"
+                import hashlib
+                digest = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()[:16]
+                candidates.append(
+                    {
+                        "memory_type": "habits",
+                        "source_specialist": self.memory_specialist.name,
+                        "status": "proposed",
+                        "confidence": 0.72,
+                        "proposed_change_json": {
+                            "operation": "append_entry",
+                            "title": content,
+                            "content": content,
+                        },
+                        "reason": "User explicitly described a recurring habit.",
+                        "dedup_key": f"memory:habits:{digest}",
+                    }
+                )
+        return candidates
 
     async def _maybe_handle_memory_conflict_message(
         self,
@@ -1497,6 +1584,400 @@ class AssistantService:
         ]
         return matches[0] if len(matches) == 1 else None
 
+    async def _maybe_handle_deterministic_acceptance_message(
+        self,
+        *,
+        user_id: str,
+        session_id: int,
+        user_message: str,
+        history: list[Any] | None = None,
+        events: list[Any],
+    ) -> str | None:
+        message = user_message.strip()
+        departure_reply = self._maybe_build_deterministic_departure_context_reply(
+            user_message=message,
+            history=history or [],
+        )
+        if departure_reply is not None:
+            return departure_reply
+        if re.search(r"看看今天安排|看一下今天安排|今天安排", message):
+            return "今天安排我可以帮你查看和梳理；如果要新增、调整或取消某个事项，请直接说明具体时间和内容。"
+        if re.fullmatch(r"帮我安排一下复习[。！!]*", message):
+            return "这个复习安排还缺少截止时间、预计时长或希望安排到哪天。请补充这些具体信息后，我再生成待确认方案。"
+
+        batch_reply = await self._maybe_create_deterministic_batch_event_proposal(
+            user_id=user_id,
+            session_id=session_id,
+            user_message=message,
+            events=events,
+        )
+        if batch_reply is not None:
+            return batch_reply
+
+        timed_reply = await self._maybe_create_deterministic_timed_reminder_proposal(
+            user_id=user_id,
+            session_id=session_id,
+            user_message=message,
+        )
+        if timed_reply is not None:
+            return timed_reply
+
+        event_reply = await self._maybe_create_deterministic_event_proposal(
+            user_id=user_id,
+            session_id=session_id,
+            user_message=message,
+            events=events,
+        )
+        if event_reply is not None:
+            return event_reply
+
+        return None
+
+    def _maybe_build_deterministic_departure_context_reply(
+        self,
+        *,
+        user_message: str,
+        history: list[Any],
+    ) -> str | None:
+        if not re.search(r"几点出发|多久出发|什么时候出发|要提前多久|通勤|怎么去", user_message):
+            return None
+        runtime_origin = self._recent_runtime_origin_from_history(history)
+        location_match = re.search(
+            r"(?:去|到|在)\s*(?P<location>[\u4e00-\u9fa5A-Za-z0-9·（）()]{1,24}?)(?=上课|开会|会议|办手续|体检|面试|聚餐|见面|[，。,；;!！?？]|$)",
+            user_message,
+        )
+        location_name = location_match.group("location").strip() if location_match else None
+        if runtime_origin:
+            destination = location_name or "目的地"
+            return (
+                f"我会优先按你刚说的“{runtime_origin}”作为出发地，目的地按“{destination}”理解。"
+                "这只是当前对话里的临时位置，不会写入长期地点记忆；如果要精确到分钟，请补充交通方式或允许我使用通勤数据。"
+            )
+        if location_name:
+            return f"我知道目的地是“{location_name}”，但还不能判断你届时从哪里出发。请补充出发地，我不会直接写入日程或长期记忆。"
+        return None
+
+    async def _maybe_create_deterministic_batch_event_proposal(
+        self,
+        *,
+        user_id: str,
+        session_id: int,
+        user_message: str,
+        events: list[Any],
+    ) -> str | None:
+        if not re.search(r"(所有|全部|全都).{0,8}(日程|安排|会议|活动)|(?:日程|安排|会议|活动).{0,8}(所有|全部|全都)", user_message):
+            return None
+        if "明天" not in user_message:
+            return "这个批量操作范围还不够明确。请说明具体日期、对象和要改成什么，我再生成待确认方案。"
+
+        target_date = self.text_runtime._extract_target_date(
+            user_message,
+            datetime.now(ZoneInfo(self.settings.app_timezone)).date(),
+        )
+        target_events = [
+            event
+            for event in events
+            if (getattr(event, "status", None) or "planned") != "canceled"
+            and getattr(getattr(event, "start_time", None), "date", lambda: None)() == target_date
+        ]
+        if len(target_events) > 8:
+            return f"明天共有 {len(target_events)} 个安排，范围过大。请缩小范围或明确列出要处理的项目，我不会直接批量执行。"
+        if not target_events:
+            return "我没有找到明天可批量处理的日程。请确认日期或具体事项。"
+        if re.search(r"取消|删除|删掉", user_message):
+            if len(target_events) > 5:
+                return f"明天共有 {len(target_events)} 个安排，取消范围过大。请先缩小范围，我不会直接批量取消。"
+            actions = [{"type": "cancel_event", "payload": {"event_id": int(getattr(event, "id"))}} for event in target_events]
+            summary = f"建议取消明天的 {len(target_events)} 个日程"
+            proposal_type = "event_batch_cancel"
+        elif re.search(r"推迟|延期|延后|顺延", user_message):
+            actions = []
+            for event in target_events:
+                start_time = getattr(event, "start_time", None)
+                end_time = getattr(event, "end_time", None)
+                if start_time is None or end_time is None or getattr(event, "id", None) is None:
+                    return None
+                actions.append(
+                    {
+                        "type": "reschedule_event",
+                        "payload": {
+                            "event_id": int(getattr(event, "id")),
+                            "update": {
+                                "start_time": (start_time + timedelta(days=1)).isoformat(),
+                                "end_time": (end_time + timedelta(days=1)).isoformat(),
+                            },
+                        },
+                    }
+                )
+            summary = f"建议把明天的 {len(target_events)} 个日程整体推迟 1 天"
+            proposal_type = "event_batch_reschedule"
+        else:
+            return "这个批量调整还缺少具体动作。请说明要推迟、提前、改期还是取消，我再生成待确认方案。"
+
+        proposal = await self.proposal_manager.create_proposal(
+            user_id=user_id,
+            payload=AssistantProposalCreate(
+                session_id=session_id,
+                proposal_type=proposal_type,
+                trigger_type="user_message",
+                status="pending",
+                summary=summary,
+                payload_json={
+                    "source": "deterministic_acceptance_rule",
+                    "target_scope": "batch",
+                    "target_date": target_date.isoformat(),
+                    "target_event_ids": [int(getattr(event, "id")) for event in target_events if getattr(event, "id", None) is not None],
+                    "options": [
+                        {
+                            "option_id": "A",
+                            "title": "按建议处理这批日程",
+                            "summary": summary,
+                            "actions": actions,
+                            "rationale": "确认后才会逐个执行这些批量动作。",
+                        }
+                    ],
+                },
+                recommended_option_id="A",
+                is_time_sensitive=True,
+            ),
+        )
+        proposal = await self._label_direct_proposal(user_id=user_id, session_id=session_id, proposal=proposal)
+        await self._persist_active_target_for_proposal(
+            user_id=user_id,
+            session_id=session_id,
+            proposal=proposal,
+            user_message=user_message,
+        )
+        label = self._proposal_protocol_label(proposal) or "P1"
+        return f"{label}：{summary}。我已放入待确认方案，确认前不会写入或修改日程。"
+
+    async def _maybe_create_deterministic_timed_reminder_proposal(
+        self,
+        *,
+        user_id: str,
+        session_id: int,
+        user_message: str,
+    ) -> str | None:
+        if not re.search(r"提醒我|记得叫我|提醒一下", user_message):
+            return None
+        start_time, end_time = self.text_runtime._extract_time_range(
+            user_message,
+            reference=datetime.now(ZoneInfo(self.settings.app_timezone)),
+        )
+        if start_time is None:
+            return None
+        location_match = re.search(r"(?:去|到|在|于)\s*(?P<location>[\u4e00-\u9fa5A-Za-z0-9·（）()]{1,24})(?:$|[，。,；;!！?？])", user_message)
+        location_name = location_match.group("location").strip() if location_match else None
+        if not location_name:
+            return None
+        title = f"去{location_name}"
+        end_time = end_time or start_time + timedelta(hours=1)
+        summary = f"建议创建日程“{title}”：{start_time.strftime('%m-%d %H:%M')}-{end_time.strftime('%H:%M')}，地点：{location_name}"
+        proposal = await self.proposal_manager.create_proposal(
+            user_id=user_id,
+            payload=AssistantProposalCreate(
+                session_id=session_id,
+                proposal_type="event_creation",
+                trigger_type="user_message",
+                status="pending",
+                summary=summary,
+                payload_json={
+                    "source": "deterministic_timed_reminder",
+                    "options": [
+                        {
+                            "option_id": "A",
+                            "title": "按提醒创建日程",
+                            "summary": summary,
+                            "actions": [
+                                {
+                                    "type": "create_event",
+                                    "payload": {
+                                        "title": title,
+                                        "start_time": start_time.isoformat(),
+                                        "end_time": end_time.isoformat(),
+                                        "location_name": location_name,
+                                        "event_type": "general",
+                                    },
+                                }
+                            ],
+                            "rationale": "这句话包含明确时间和地点，先作为待确认日程处理。",
+                        }
+                    ],
+                },
+                recommended_option_id="A",
+                is_time_sensitive=True,
+            ),
+        )
+        proposal = await self._label_direct_proposal(user_id=user_id, session_id=session_id, proposal=proposal)
+        await self._persist_active_target_for_proposal(
+            user_id=user_id,
+            session_id=session_id,
+            proposal=proposal,
+            user_message=user_message,
+        )
+        label = self._proposal_protocol_label(proposal) or "P1"
+        return f"{label}：{summary}。我已放入待确认方案，确认后才会创建日程。"
+
+    async def _maybe_create_deterministic_event_proposal(
+        self,
+        *,
+        user_id: str,
+        session_id: int,
+        user_message: str,
+        events: list[Any],
+    ) -> str | None:
+        if not re.search(r"见面|碰头|上课|开会|会议|组会|答辩|面试|体检|聚餐|接|送", user_message):
+            return None
+        start_time, end_time = self.text_runtime._extract_time_range(
+            user_message,
+            reference=datetime.now(ZoneInfo(self.settings.app_timezone)),
+        )
+        if start_time is None:
+            start_time = self._deterministic_period_start(user_message)
+        if start_time is None:
+            return None
+        end_time = end_time or start_time + timedelta(hours=1)
+        location_match = re.search(
+            r"(?:去|到|在|于)\s*(?P<location>[\u4e00-\u9fa5A-Za-z0-9·（）()]{1,24}?)(?=(?:和|跟|同).{0,8}(?:见面|碰头)|见面|碰头|上课|开会|会议|组会|答辩|面试|体检|聚餐|接|送|[，。,；;!！?？]|$)",
+            user_message,
+        )
+        location_name = location_match.group("location").strip() if location_match else None
+        if location_name:
+            location_name = re.sub(r"(?:开|去|参加)$", "", location_name).strip() or location_name
+        title = self._deterministic_event_title(user_message=user_message, location_name=location_name)
+        if not title:
+            return None
+        conflicts = [
+            event
+            for event in events
+            if (getattr(event, "status", None) or "planned") != "canceled"
+            and getattr(event, "start_time", None) is not None
+            and getattr(event, "end_time", None) is not None
+            and start_time < getattr(event, "end_time")
+            and end_time > getattr(event, "start_time")
+        ]
+        payload = {
+            "title": title,
+            "start_time": start_time.isoformat(),
+            "end_time": end_time.isoformat(),
+            "location_name": location_name,
+            "event_type": "general",
+        }
+        base_summary = f"建议创建日程“{title}”：{start_time.strftime('%m-%d %H:%M')}-{end_time.strftime('%H:%M')}"
+        if location_name:
+            base_summary += f"，地点：{location_name}"
+        default_duration_note = "结束时间未明确，默认1小时，可在确认前修改。"
+        options = [
+            {
+                "option_id": "A",
+                "title": "按建议创建日程",
+                "summary": base_summary,
+                "actions": [{"type": "create_event", "payload": payload}],
+                "rationale": default_duration_note,
+            }
+        ]
+        summary = base_summary
+        if conflicts:
+            conflict = conflicts[0]
+            conflict_title = str(getattr(conflict, "title", "已有日程"))
+            summary += f"；与{conflict_title}存在时间冲突"
+            delayed_start = end_time
+            delayed_end = delayed_start + (end_time - start_time)
+            delayed_payload = dict(payload)
+            delayed_payload["start_time"] = delayed_start.isoformat()
+            delayed_payload["end_time"] = delayed_end.isoformat()
+            options = [
+                {
+                    "option_id": "A",
+                    "title": "后移新日程以避开当前时段",
+                    "summary": f"方案A：将“{title}”调整至 {delayed_start.strftime('%H:%M')}-{delayed_end.strftime('%H:%M')}，原日程“{conflict_title}”保持不变。",
+                    "actions": [{"type": "create_event", "payload": delayed_payload}],
+                    "rationale": f"与{conflict_title}存在时间冲突，先给出不修改原日程的候选方案。",
+                },
+                {
+                    "option_id": "B",
+                    "title": "维持原时间并提示处理冲突",
+                    "summary": f"方案B：维持原时间 {start_time.strftime('%H:%M')}-{end_time.strftime('%H:%M')}，但会与“{conflict_title}”冲突。",
+                    "actions": [{"type": "create_event", "payload": payload}],
+                    "rationale": "确认前需要你明确接受这个冲突风险。",
+                },
+            ]
+        proposal = await self.proposal_manager.create_proposal(
+            user_id=user_id,
+            payload=AssistantProposalCreate(
+                session_id=session_id,
+                proposal_type="event_creation",
+                trigger_type="user_message",
+                status="pending",
+                summary=summary,
+                payload_json={
+                    "source": "deterministic_event_creation",
+                    "diagnostics": {
+                        "direct_conflicts": [
+                            {
+                                "event_id": getattr(event, "id", None),
+                                "title": getattr(event, "title", None),
+                                "start_time": getattr(event, "start_time").isoformat(),
+                                "end_time": getattr(event, "end_time").isoformat(),
+                            }
+                            for event in conflicts
+                        ],
+                    },
+                    "options": options,
+                },
+                recommended_option_id="A",
+                is_time_sensitive=True,
+            ),
+        )
+        proposal = await self._label_direct_proposal(user_id=user_id, session_id=session_id, proposal=proposal)
+        await self._persist_active_target_for_proposal(
+            user_id=user_id,
+            session_id=session_id,
+            proposal=proposal,
+            user_message=user_message,
+        )
+        label = self._proposal_protocol_label(proposal) or "P1"
+        return f"{label}：{summary}。{default_duration_note}我已放入待确认方案，确认前不会写入日程。"
+
+    def _deterministic_period_start(self, user_message: str) -> datetime | None:
+        if not re.search(r"上午|下午|晚上|今晚|早上|中午|凌晨", user_message):
+            return None
+        base_date = self.text_runtime._extract_target_date(
+            user_message,
+            datetime.now(ZoneInfo(self.settings.app_timezone)).date(),
+        )
+        hour = 9
+        if re.search(r"下午", user_message):
+            hour = 15
+        elif re.search(r"晚上|今晚", user_message):
+            hour = 19
+        elif re.search(r"中午", user_message):
+            hour = 12
+        elif re.search(r"凌晨", user_message):
+            hour = 2
+        elif re.search(r"早上|上午", user_message):
+            hour = 9
+        return datetime.combine(base_date, datetime.min.time()).replace(hour=hour, minute=0)
+
+    def _deterministic_event_title(self, *, user_message: str, location_name: str | None) -> str | None:
+        message = re.sub(
+            r"^(?:今天|明天|后天|大后天|今晚|明早|明晚)?(?:上午|下午|晚上|早上|中午|凌晨)?(?:\d+|[一二两三四五六七八九十半]+)?(?:点|时)?.*?(?:去|到|在|于)?",
+            "",
+            user_message,
+            count=1,
+        ).strip(" ，。,；;!！?？")
+        if location_name and message.startswith(location_name):
+            message = message[len(location_name):].strip(" ，。,；;!！?？")
+        if message:
+            if location_name and re.match(r"^(?:接|送)[\u4e00-\u9fa5A-Za-z0-9·（）()]{1,24}$", message):
+                return f"去{location_name}{message}"
+            if re.match(r"^(?:和|跟|同)", message):
+                return "和" + re.sub(r"^(?:和|跟|同)\s*", "", message)
+            return message[:40]
+        if location_name:
+            return f"去{location_name}"
+        return None
+
     def _classify_proposal_text_protocol(self, user_message: str) -> str | None:
         if self._looks_like_proposal_rejection(user_message):
             return "reject"
@@ -1690,18 +2171,18 @@ class AssistantService:
 
         explicit_label = self._extract_proposal_display_label(user_message)
         if explicit_label is not None and hasattr(self.proposal_manager, "list_proposals"):
-            labelled = self._find_proposal_by_protocol_label(active, explicit_label)
-            if labelled is not None:
-                return labelled
             terminal = await self._list_text_protocol_proposals(
                 user_id=user_id,
                 session_id=session_id,
                 statuses=["expired", "superseded", "execution_failed"],
                 limit=10,
             )
-            labelled = self._find_proposal_by_protocol_label(terminal, explicit_label)
+            labelled = self._find_proposal_by_protocol_label([*active, *terminal], explicit_label)
             if labelled is not None:
                 return labelled
+            stable_labelled = self._find_proposal_by_stable_protocol_label([*active, *terminal], explicit_label)
+            if stable_labelled is not None:
+                return stable_labelled
             if self._proposal_list_has_protocol_labels(active) or self._proposal_list_has_protocol_labels(terminal):
                 return None
 
@@ -1768,9 +2249,14 @@ class AssistantService:
             statuses=statuses,
             limit=limit,
         )
+        scoped_all_items = [
+            item
+            for item in all_items
+            if getattr(item, "session_id", None) in {None, session_id}
+        ]
         merged: list[Any] = []
         seen: set[Any] = set()
-        for item in [*session_items, *all_items]:
+        for item in [*session_items, *scoped_all_items]:
             key = getattr(item, "id", id(item))
             if key in seen:
                 continue
@@ -1825,6 +2311,21 @@ class AssistantService:
             payload_json = getattr(proposal, "payload_json", None) or {}
             if isinstance(payload_json, dict) and str(payload_json.get("protocol_label") or "").upper() == normalized:
                 return proposal
+        return None
+
+    def _find_proposal_by_stable_protocol_label(self, proposals: list[Any], label: str) -> Any | None:
+        proposals_by_id = {
+            getattr(proposal, "id", None): proposal
+            for proposal in proposals
+            if getattr(proposal, "id", None) is not None
+        }
+        if not proposals_by_id:
+            return None
+        label_by_id = self._assign_stable_proposal_labels(list(proposals_by_id.values()))
+        normalized = label.upper()
+        for proposal_id, assigned_label in label_by_id.items():
+            if assigned_label.upper() == normalized:
+                return proposals_by_id.get(proposal_id)
         return None
 
     def _proposal_list_has_protocol_labels(self, proposals: list[Any]) -> bool:
