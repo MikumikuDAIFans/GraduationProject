@@ -614,7 +614,7 @@ export const useAssistantStore = defineStore("assistant", {
 
     async sendAssistantMessage(message: string, onRefresh?: () => Promise<void>) {
       const previousSend = this.assistantSendQueue;
-      let releaseQueuedSend: (() => void) | null = null;
+      let releaseQueuedSend: (() => void) | undefined;
       this.assistantSendQueue = new Promise<void>((resolve) => {
         releaseQueuedSend = resolve;
       });
@@ -686,7 +686,7 @@ export const useAssistantStore = defineStore("assistant", {
       } finally {
         this.assistantSendInFlight = false;
         this.sending = false;
-        releaseQueuedSend?.();
+        if (releaseQueuedSend) releaseQueuedSend();
       }
     },
 
